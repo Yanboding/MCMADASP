@@ -79,6 +79,8 @@ class AdvanceSchedulingEnv:
     def post_advance_scheduling_state(self, state, action):
         bookings, waitlist, future_first_appts = self.interpret_state(state)
         if any(waitlist != action.sum(axis=0)):
+            print(state)
+            print(action)
             raise ValueError('Invalid Action')
         new_future_first_appts = future_first_appts + action
         next_first_appts = new_future_first_appts[0] if len(new_future_first_appts) > 0 else 0

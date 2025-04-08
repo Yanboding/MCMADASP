@@ -1,12 +1,9 @@
-import time
+from collections import defaultdict
+from pprint import pprint
 
 import numpy as np
-from scipy.special import factorial
-import numpy as np
-from math import comb
 from itertools import combinations, product
 from scipy.stats import poisson, multinomial
-from scipy.special import factorial, gammaln  # gammaln(n) = log(Gamma(n))
 
 
 class MultiClassPoissonArrivalGenerator:
@@ -64,14 +61,34 @@ class MultiClassPoissonArrivalGenerator:
         """
         return self._arrivals_with_probs
 
+    def get_sample_paths_with_prob(self, period_num):
+        """
+            Enumerate all possible sample paths of length `period_num` (i.e., sequences of arrival vectors),
+            along with their probabilities.
+
+            Returns:
+                A list of tuples: [(path_probability, [arrival_vector_t0, arrival_vector_t1, ...]), ...].
+            """
+        # Pre-fetched single-period states: each entry is (prob, arrival_vector).
+        single_period_states = self._arrivals_with_probs
+
+        # Cartesian product to get all paths of length `period_num`.
+        all_paths = []
+        for path_states in product(single_period_states, repeat=period_num):
+            # path_states is a tuple of ( (prob1, vec1), (prob2, vec2), ... ) of length `period_num`.
+            path_prob = 1.0
+            path_vecs = []
+            for (p, vec) in path_states:
+                path_prob *= p
+                path_vecs.append(vec)
+            all_paths.append((path_prob, np.array(path_vecs)))
+
+        return all_paths
+
 
 if __name__ == "__main__":
+    from utils import iter_to_tuple
     class_number = 2
     probability = 1 / class_number
-    mcag = MultiClassPoissonArrivalGenerator(3, 4, [probability] * class_number, 42, 81)
-    print(mcag.get_system_dynamic())
-    '''
-    for prob, arrival in mcag.get_system_dynamic():
-        total_prob+=prob
-    print(total_prob)
-    '''
+    mcag = MultiClassPoissonArrivalGenerator(3, 4, [probability] * class_number, 42)
+    pprint(mcag.get_sample_paths_with_prob(3))

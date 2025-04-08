@@ -1,9 +1,10 @@
-import numpy as np
-import gurobipy as gp
-from gurobipy import GRB
+from pprint import pprint
 
+import numpy as np
+
+from decision_maker import OptimalAgent
+from environment import MultiClassPoissonArrivalGenerator, AdvanceSchedulingEnv
 from utils import iter_to_tuple
-from utils.running_stat import RunningStat
 
 
 class PolicyEvaluator:
@@ -28,6 +29,12 @@ class PolicyEvaluator:
             else:
                 next_state_val = self.evaluate(next_state, t + 1)
             q += prob * (cost + self.discount_factor * next_state_val)
+        '''
+        print('Time:', t)
+        print('State:', state, 'Action:', action)
+        print('Total_cost:', q)
+        print()
+        '''
         self.V[(state_tuple, t)] = q
         return self.V[(state_tuple, t)]
     '''
@@ -151,21 +158,30 @@ class PolicyEvaluator:
     '''
 
 if __name__ == '__main__':
-    from environment import AdvanceSchedulingEnv
-    from environment.utility import get_system_dynamic
-    env_params = {
-        'treatment_pattern': [[2],
-                              [1]],
-        'decision_epoch': 7,
-        'system_dynamic': get_system_dynamic(3, 4, [0.5, 0.5]),
-        'holding_cost': [10, 5],
-        'overtime_cost': 30,
-        'duration': 1,
-        'regular_capacity': 2,
-        'discount_factor': 0.99
-    }
-    env = AdvanceSchedulingEnv(**env_params)
-    evaluator = PolicyEvaluator(env, None, env.discount_factor)
-    print(evaluator.simulation_evaluate(1000))
+    decision_epoch = 3
+    class_number = 2
+    arrival_generator = MultiClassPoissonArrivalGenerator(3, 1, [1 / class_number] * class_number)
 
+    env_params = {
+        'treatment_pattern': [[2, 1]],
+        'decision_epoch': decision_epoch,
+        'arrival_generator': arrival_generator,
+        'holding_cost': [10, 5],
+        'overtime_cost': 40,
+        'duration': 1,
+        'regular_capacity': 5,
+        'discount_factor': 1,
+        'problem_type': 'advance'
+    }
+    bookings = np.array([0])
+    future_schedule = np.array([[0] * class_number for i in range(decision_epoch)])
+    new_arrival = np.array([5, 6])
+    init_state = (bookings, new_arrival, future_schedule)
+    env = AdvanceSchedulingEnv(**env_params)
+    optimal_agent = OptimalAgent(env=env, discount_factor=env_params['discount_factor'])
+    optimal_agent.train(init_state, 1)
+    policy_evaluator = PolicyEvaluator(env, optimal_agent, discount_factor=env_params['discount_factor'])
+    policy_evaluator.evaluate(init_state, 1)
+    pprint(arrival_generator.get_system_dynamic())
+    print(0.25 * (60.625) + 0.375 * (85.625) + 0.375 * (125.625))
 

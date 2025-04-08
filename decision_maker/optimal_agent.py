@@ -207,17 +207,17 @@ class OptimalAgent:
 if __name__ == '__main__':
     decision_epoch = 3
     class_number = 2
-    arrival_generator = MultiClassPoissonArrivalGenerator(100, 1, [1 / class_number] * class_number)
+    arrival_generator = MultiClassPoissonArrivalGenerator(3, 2, [1 / class_number] * class_number)
     env_params = {
-        'treatment_pattern': [[1, 1]],
+        'treatment_pattern': [[2, 1]],
         'decision_epoch': decision_epoch,
         'arrival_generator': arrival_generator,
-        'holding_cost': [10, 5],
-        'overtime_cost': 4000,
+        'holding_cost': [10 - i * 5/(class_number-1)for i in range(class_number)],
+        'overtime_cost': 40,
         'duration': 1,
         'regular_capacity': 5,
         'discount_factor': 0.99,
-        'problem_type': 'advance'
+        'problem_type': 'allocation'
     }
     bookings = np.array([0])
     future_schedule = np.array([[0] * class_number for i in range(decision_epoch)])
@@ -232,8 +232,12 @@ if __name__ == '__main__':
     optimal_agent.train(init_state, t)
     optimal_value = optimal_agent.get_state_value(init_state, t)
     optimal_action = optimal_agent.policy(init_state, t)
-    #print('Optimal Done:', optimal_value, 'Optimal action:', optimal_action)
+    print('Optimal Done:', optimal_value, 'Optimal action:', optimal_action)
+    pprint(optimal_agent.get_action_value(init_state, [4, 0], t))
     pprint(optimal_agent.get_action_values(init_state, t))
-    # [[5, 0], [1, 4], [0, 2]]
-    # [[5, 0], [0, 6], [0, 0]]  [[5, 0], [0, 5], [0, 1]]: 125.6823125
-    # 120.78181249999999
+    #           OPT  SAAllocationAdvanceAgent
+    # 0  489.330991                470.361765
+    #       OPT SAAllocationAdvanceAgent
+    # 0  [4, 1]                   [2, 4]
+    # [4, 0]491.50670496172813
+
