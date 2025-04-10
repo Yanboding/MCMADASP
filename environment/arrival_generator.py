@@ -74,16 +74,18 @@ class MultiClassPoissonArrivalGenerator:
 
         # Cartesian product to get all paths of length `period_num`.
         all_paths = []
+        path_probs = []
         for path_states in product(single_period_states, repeat=period_num):
             # path_states is a tuple of ( (prob1, vec1), (prob2, vec2), ... ) of length `period_num`.
             path_prob = 1.0
-            path_vecs = []
+            zero_holder = [0] * len(self.type_probs)
+            path_vecs = [zero_holder]
             for (p, vec) in path_states:
                 path_prob *= p
                 path_vecs.append(vec)
-            all_paths.append((path_prob, np.array(path_vecs)))
-
-        return all_paths
+            all_paths.append(path_vecs)
+            path_probs.append(path_prob)
+        return np.array(path_probs), np.array(all_paths)
 
 
 if __name__ == "__main__":
@@ -91,4 +93,5 @@ if __name__ == "__main__":
     class_number = 2
     probability = 1 / class_number
     mcag = MultiClassPoissonArrivalGenerator(3, 4, [probability] * class_number, 42)
-    pprint(mcag.get_sample_paths_with_prob(3))
+    P, delta = mcag.get_sample_paths_with_prob(4)
+    print(len(P))

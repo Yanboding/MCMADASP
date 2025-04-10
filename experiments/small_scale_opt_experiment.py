@@ -43,15 +43,17 @@ def basic_policy_evaluation_experiment(env_params, agents, init_state, t, M):
     value_function_df = pd.DataFrame(value_function_df)
     return value_function_df
 
-def period_to_go_experiment(env_params, agents, period_num, init_arrival, plot_labels, data_file_path, image_path, skip_optimal=False):
-    if os.path.exists(data_file_path) and False:
+def period_to_go_experiment(env_params, agents, period_num, init_arrival, plot_labels, data_file_path, image_path, skip_optimal=False, shortcut=False):
+    if os.path.exists(data_file_path) and shortcut:
         print(f"Found '{data_file_path}'. Reading CSV file...")
         df = pd.read_csv(data_file_path,index_col=0)
-
+        txt_labels = []
+        for agent_name, agent in agents.items():
+            txt_labels.append(agent_name)
         print("File loaded successfully!")
         print("Here are the first 5 rows:")
         print(df.head())
-        opt_plot(df, 'period to go', plot_labels, image_path)
+        opt_plot(df, 'period to go', plot_labels, image_path, text_labels=txt_labels)
     else:
         decision_epochs = [decision_epoch for decision_epoch in range(1, period_num + 1)]
         values = {agent_name: [] for agent_name in agents}
@@ -147,7 +149,7 @@ def sample_path_experiment(env_params, agents, sample_path_number, init_state, p
 if __name__ == '__main__':
     decision_epoch = 3
     class_number = 2
-    arrival_generator = MultiClassPoissonArrivalGenerator(3, 2, [1 / class_number] * class_number)
+    arrival_generator = MultiClassPoissonArrivalGenerator(3, 4, [1 / class_number] * class_number)
     env_params = {
         'treatment_pattern': [[2,1]],
         'decision_epoch': decision_epoch,
@@ -172,13 +174,13 @@ if __name__ == '__main__':
                             plot_labels=['Sample Average Advance Policy', 'Sample Average Translate Policy'],
                             data_file_path='data/sa_opt_advance_compare.csv',
                             image_path="figures/sa_opt_advance_compare", skip_optimal=False)
-    
+    '''
     # experiment 2: Only compare the SA Advance scheduling problem with the translation policy
     period_to_go_experiment(env_params=env_params, agents=agents, period_num=7, init_arrival=init_arrival,
                             plot_labels=['Sample Average Advance Policy', 'Sample Average Translate Policy'],
-                            data_file_path='data/sa_advance_translate_compare.csv',
-                            image_path="figures/sa_advance_translate_compare", skip_optimal=True)
-    
+                            data_file_path='data/sa_advance_translate_compare_backup.csv',
+                            image_path="figures/sa_advance_translate_compare", skip_optimal=True, shortcut=True)
+    ''''
     # experiment 3: Compare the approximate value function with the optimal advance scheduling problem
     bookings = np.array([0])
     future_schedule = np.array([[0] * class_number for i in range(decision_epoch)])
@@ -197,18 +199,18 @@ if __name__ == '__main__':
                            plot_labels=['Sample Average Advance Value Function'],
                            data_file_path='data/small_size_advance_converge.csv',
                            image_path='figures/small_size_advance_converge', shortcut=True)
-    '''
     bookings = np.array([0])
     future_schedule = np.array([[0] * class_number for i in range(decision_epoch)])
     new_arrival = init_arrival
     init_state = (bookings, init_arrival, future_schedule)
-    sample_path_number = 40
+    sample_path_number = 3000
+    
     # compare the allocation value function
     env_params['problem_type'] = 'allocation'
     agents = {
         'SAAllocationAdvanceAgent': SAAllocationAdvanceAgent
     }
-    '''
+    
     # env_params, agents, sample_path_number, init_state, plot_labels, data_file_path, image_path
     sample_path_experiment(env_params=env_params,
                            agents=agents,
@@ -217,14 +219,17 @@ if __name__ == '__main__':
                            plot_labels=['Sample Average Allocation Value Function'],
                            data_file_path='data/small_size_allocation_converge.csv',
                            image_path='figures/small_size_allocation_converge',
-                           shortcut=True)
+                           shortcut=False)
     
     # experiment 4: Compare the sa allocation policy with the optimal allocation policy
     period_to_go_experiment(env_params=env_params, agents=agents, period_num=7, init_arrival=init_arrival,
                             plot_labels=['Sample Average Allocation Policy'],
-                            data_file_path='data/sa_opt_advance_compare.csv',
-                            image_path="figures/sa_opt_advance_compare", skip_optimal=False)
-    '''
+                            data_file_path='data/sa_opt_allocation_compare.csv',
+                            image_path="figures/sa_opt_allocation_compare", skip_optimal=False)
+    env_params['problem_type'] = 'allocation'
+    agents = {
+        'SAAllocationAdvanceAgent': SAAllocationAdvanceAgent
+    }
     bookings = np.array([0])
     future_schedule = np.array([[0] * class_number for i in range(decision_epoch)])
     new_arrival = np.array([5, 6])
@@ -234,7 +239,7 @@ if __name__ == '__main__':
     value_function_df, best_action_df = basic_converge_experiment(env_params, agents, init_state, t, M)
     print(value_function_df)
     print(best_action_df)
-    '''
+    
     bookings = np.array([0])
     future_schedule = np.array([[0] * class_number for i in range(decision_epoch)])
     new_arrival = init_arrival
