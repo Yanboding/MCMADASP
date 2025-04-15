@@ -1,10 +1,14 @@
+import os
+import time
+from collections import defaultdict
 from pprint import pprint
-
+from joblib import Parallel, delayed
 import numpy as np
 
-from decision_maker import OptimalAgent
+from decision_maker import OptimalAgent, SAAdvanceAgent
 from environment import MultiClassPoissonArrivalGenerator, AdvanceSchedulingEnv
 from utils import iter_to_tuple
+from utils.running_stat import RunningStat
 
 
 class PolicyEvaluator:
@@ -15,6 +19,7 @@ class PolicyEvaluator:
         self.discount_factor = discount_factor
         if V is None:
             self.V = {}
+        self.sample_average_V = defaultdict(lambda: RunningStat(1))
 
     def evaluate(self, state, t):
         state_tuple = iter_to_tuple(state)
@@ -37,128 +42,47 @@ class PolicyEvaluator:
         '''
         self.V[(state_tuple, t)] = q
         return self.V[(state_tuple, t)]
-    '''
-    def solve(self):
-        """
-        Build and solve the MIP model using GurobiPy.
 
-        Parameters:
-        - N (int): Number of time periods.
-        - I (int): Number of items.
-        - gamma (float): Discount factor per period.
-        - w (list): Waiting cost weights w[i] for i = 0 to I-1.
-        - b1 (list of lists): Backlog parameter b1[t][i] for t = 0 to N-1, i = 0 to I-1.
-        - delta (list of lists): Demand delta[t][i] for t = 0 to N-1, i = 0 to I-1.
-        - r (list): Resource requirements r[i] for i = 0 to I-1.
-        - C (float): Capacity limit per period.
-        - O (float): Overtime cost coefficient.
+    def sample_path_evaluate(self, state, t, sample_path):
+        states = []
+        rewards = []
+        s, info = self.env.reset(state, t, sample_path)
+        for tau in range(len(sample_path)):
+            states.append(s)
+            a = self.agent.policy(s, t + tau)
+            next_state, reward, done, info = self.env.step(a)
+            rewards.append(reward)
+            s = next_state
+            if done:
+                break
+        return states, rewards
 
-        Returns:
-        - solution_a (dict): Optimal values of a[tau, t, i].
-        - solution_y (list): Optimal values of y[t].
-        - obj_val (float): Optimal objective value.
-        - Returns (None, None, None) if no optimal solution is found.
-        """
-        N = self.env.decision_epoch
-        I = self.env.num_types
-        gamma = self.discount_factor
-        w = self.env.holding_cost
-        b1 = self.env.future_first_appts
-        delta = self.env.new_arrivals
-        r = self.env.treatment_pattern
-        C = self.env.regular_capacity
-        O = self.env.overtime_cost
-        # Create the model
-        model = gp.Model("Scheduling_MIP")
+    def simulation_evaluate_helper(self, state, t, sample_paths):
+        sample_average_V = defaultdict(lambda: RunningStat(1))
+        for sample_path in sample_paths:
+            states, rewards = self.sample_path_evaluate(state,t,sample_path)
+            G = 0.0
+            for tau in reversed(range(len(states))):
+                G = self.discount_factor * G + rewards[tau]
+                s = states[tau]
+                sample_average_V[(iter_to_tuple(s), t + tau)].record(G)
+        return sample_average_V
 
-        # Add decision variables
-        # a[tau, t, i] for t in range(N) (periods 1 to N), tau in range(N-t), i in range(I)
-        a = model.addVars(
-            [(tau, t, i) for t in range(N) for tau in range(N - t) for i in range(I)],
-            vtype=GRB.INTEGER,
-            lb=0,
-            name="a"
-        )
-
-        # y[t] for t in range(N)
-        y = model.addVars(
-            N,
-            vtype=GRB.CONTINUOUS,
-            lb=0,
-            name="y"
-        )
-
-        # Set objective function
-        # Minimize sum_{t=1}^N gamma^(t-1) [ sum_{i=1}^I w_i ( sum_{j=0}^{N-t} b^1_{t+j-1, i} + sum_{k=0}^{t-1} a^{t-k}_{k, i} ) + O y^t ]
-        # In code, t ranges from 0 to N-1, so gamma^(t-1) becomes gamma^t
-        obj = gp.quicksum(
-            gamma**t * (
-                gp.quicksum(
-                    w[i] * (
-                        # sum_{j=0}^{N-t} b^1_{t+j-1, i}, ensuring t+j-1 is between 0 and N-1
-                        gp.quicksum(
-                            b1[t + j - 1][i] for j in range(N - t + 1) if 0 <= t + j - 1 < N
-                        )
-                        + # sum_{k=0}^{t-1} a^{t-k}_{k, i}, which is a[k, t-k, i] in code
-                        gp.quicksum(
-                            a[k, t - k, i] for k in range(t)
-                        )
-                    )
-                    for i in range(I)
-                )
-                + O * y[t]
-            )
-            for t in range(N)
-        )
-        model.setObjective(obj, GRB.MINIMIZE)
-
-        # Add constraints
-
-        # 1. Demand constraints: sum_{tau=0}^{N-t} a[tau, t, i] == delta[t][i]
-        for t in range(N):
-            for i in range(I):
-                model.addConstr(
-                    gp.quicksum(a[tau, t, i] for tau in range(N - t)) == delta[t][i],
-                    name=f"demand_t{t}_i{i}"
-                )
-
-        # 2. Overtime constraints: y[t] >= sum_{i=1}^I (b^1_{t-1,i} + sum_{k=0}^{t-1} a^{t-k}_{k,i}) r_i - C
-        for t in range(N):
-            workload = gp.quicksum(
-                (
-                    (b1[t - 1][i] if t >= 1 else 0) +  # b^1_{t-1,i}, no backlog for t=0 (period 1)
-                    gp.quicksum(a[k, t - k, i] for k in range(t))  # sum_{k=0}^{t-1} a^{t-k}_{k,i}
-                ) * r[i, 0]
-                for i in range(I)
-            )
-            model.addConstr(
-                y[t] >= workload - C,
-                name=f"overtime_t{t}"
-            )
-        model.optimize()
-
-        # Check if optimal solution is found
-        if model.status == GRB.OPTIMAL:
-            solution_a = {(tau, t, i): a[tau, t, i].x for tau, t, i in a.keys()}
-            solution_y = [y[t].x for t in range(N)]
-            return solution_a, solution_y, model.objVal
-        else:
-            return None, None, None
-
-    def simulation_evaluate(self, state, replication):
-        for _ in range(replication):
-            self.env.reset(state, 1)
-            solution_a, solution_y, objVal = self.solve()
-            self.value_function_stats.record(objVal)
-        mean = self.value_function_stats.mean()
-        half_window = self.value_function_stats.half_window(.95)
-        print('half_window')
-        print(half_window)
-        return self.value_function_stats.mean(), mean-half_window, mean+half_window
-    '''
+    def simulation_evaluate(self, state, t, replication, confidence):
+        num_cpus = os.cpu_count()
+        sample_paths = [self.env.reset_arrivals(t=t) for _ in range(replication)]
+        responses = Parallel(n_jobs=-1)(
+            delayed(self.simulation_evaluate_helper)(state=state, t=t, sample_paths=sample_paths[i::num_cpus])for i in range(num_cpus))
+        for sample_average_V in responses:
+            for state_tuple, value_stat in sample_average_V.items():
+                self.sample_average_V[state_tuple].merge(value_stat)
+        state_tuple = iter_to_tuple(state)
+        mean = self.sample_average_V[(state_tuple, t)].mean()
+        half_window = self.sample_average_V[(state_tuple, t)].half_window(confidence)
+        return mean, mean-half_window, mean+half_window
 
 if __name__ == '__main__':
-    decision_epoch = 3
+    decision_epoch = 20
     class_number = 2
     arrival_generator = MultiClassPoissonArrivalGenerator(3, 1, [1 / class_number] * class_number)
 
@@ -175,13 +99,17 @@ if __name__ == '__main__':
     }
     bookings = np.array([0])
     future_schedule = np.array([[0] * class_number for i in range(decision_epoch)])
-    new_arrival = np.array([5, 6])
+    new_arrival = np.array([3, 3])
     init_state = (bookings, new_arrival, future_schedule)
+    t = 1
     env = AdvanceSchedulingEnv(**env_params)
-    optimal_agent = OptimalAgent(env=env, discount_factor=env_params['discount_factor'])
-    optimal_agent.train(init_state, 1)
-    policy_evaluator = PolicyEvaluator(env, optimal_agent, discount_factor=env_params['discount_factor'])
-    policy_evaluator.evaluate(init_state, 1)
-    pprint(arrival_generator.get_system_dynamic())
-    print(0.25 * (60.625) + 0.375 * (85.625) + 0.375 * (125.625))
+    sa_advance_agent = SAAdvanceAgent(env=env, discount_factor=env_params['discount_factor'], sample_path_number=50)
+    #print("Action:", sa_advance_agent.policy(init_state, t))
+    policy_evaluator = PolicyEvaluator(env, sa_advance_agent, discount_factor=env_params['discount_factor'])
+    start = time.time()
+    mean, cl, ch = policy_evaluator.simulation_evaluate(init_state, t, 8, confidence=0.95)
+    print(mean, (cl, ch))
+    print(time.time() - start)
+    #print(policy_evaluator.evaluate(init_state, t))
+
 

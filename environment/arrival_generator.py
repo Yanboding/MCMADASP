@@ -8,10 +8,11 @@ from scipy.stats import poisson, multinomial
 
 class MultiClassPoissonArrivalGenerator:
 
-    def __init__(self, mean_arrival_rate, maximum_arrival, type_probs, random_seed1=42):
+    def __init__(self, mean_arrival_rate, maximum_arrival, type_probs, random_seed1=42, is_precompute_state=False):
         self.mean_arrival = mean_arrival_rate
         self.maximum_arrival = maximum_arrival
         self.type_probs = np.asarray(type_probs)
+        self.is_precompute_state = is_precompute_state
 
         self.rng1 = np.random.default_rng(random_seed1)
         # Precompute total-poisson cdf for normalization
@@ -20,7 +21,8 @@ class MultiClassPoissonArrivalGenerator:
         self.truncate_poisson_pmf = np.array([total_poisson.pmf(i) for i in range(maximum_arrival + 1)])/normalizer
 
         # Precompute all states + probabilities for get_system_dynamic.
-        self._arrivals_with_probs = self._precompute_all_states()
+        if is_precompute_state:
+            self._arrivals_with_probs = self._precompute_all_states()
 
     def rvs(self, size=1):
         N_values = self.rng1.choice(

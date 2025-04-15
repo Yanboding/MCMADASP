@@ -47,3 +47,18 @@ class RunningStat:
 
     def std(self):
         return np.sqrt(self.sample_variance())
+
+    def merge(self, other):
+        total_count = self.count + other.count
+        new_expected = (self.expect * self.count + other.expect * other.count) / total_count
+        delta = other.expect - self.expect
+        new_varSum = self.varSum + other.varSum + (self.count * other.count / total_count) * (delta ** 2)
+        self.count = total_count
+        self.expect = new_expected
+        self.varSum = new_varSum
+
+if __name__ == "__main__":
+    stat = RunningStat(1)
+    for i in range(100):
+        stat.record(i)
+    print(stat.half_window(.95))

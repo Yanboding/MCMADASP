@@ -127,8 +127,11 @@ class AdvanceSchedulingEnv:
             res.append([prob, (next_bookings, next_waitlist, new_future_first_appts), cost, done])
         return res
 
-    def reset(self, init_state, t):
+    def reset(self, init_state, t, new_arrivals=None):
+        if new_arrivals is not None and len(new_arrivals) != self.decision_epoch-t+1:
+            raise ValueError('Invalid sample path!')
         self.t = t
+        self.tau = 0
         bookings, waitlist, future_first_appts = init_state
         bookings = np.array(bookings)
         waitlist = np.array(waitlist)
@@ -136,14 +139,33 @@ class AdvanceSchedulingEnv:
         self.future_first_appts_copy = copy.deepcopy(future_first_appts)
         self.state = (bookings, waitlist, future_first_appts)
         # how to handle the first arrivals
-        self.new_arrivals = self.reset_arrivals(t)
+        if new_arrivals is None:
+            self.new_arrivals = self.reset_arrivals(t)
+        else:
+            self.new_arrivals = new_arrivals
         return self.interpret_state(self.state), {}
 
     def reset_arrivals(self, t=1):
         return self.arrival_generator.rvs(self.decision_epoch-t+1)
 
     def step(self, action):
-        pass
+        # t+tau
+        cost = self.cost_fn(self.state, action, self.t+self.tau)
+        next_bookings, next_waitlist, new_future_first_appts = self.post_state(self.state, action)
+        done = self.t + self.tau == self.decision_epoch
+        if (next_waitlist.sum() < 0) or (done and next_waitlist.sum() > 0):
+            print('time:', self.t, 'decision_epoch:', self.decision_epoch)
+            print(self.state)
+            print(action)
+            raise ValueError("Invalid action")
+        self.tau += 1
+        if self.t + self.tau > self.decision_epoch:
+            delta = np.zeros(self.num_types, dtype=int)
+        else:
+            delta = self.new_arrivals[self.tau]
+        next_waitlist += delta
+        self.state = (next_bookings, next_waitlist, new_future_first_appts)
+        return self.state, cost, done, {}
 
 if __name__ == "__main__":
     decision_epoch = 3
@@ -165,12 +187,8 @@ if __name__ == "__main__":
     new_arrival = np.array([5, 6])
     init_state = (bookings, new_arrival, future_schedule)
     t = 1
-
     env = AdvanceSchedulingEnv(**env_params)
-
-    action = np.array([[5,0],[0,6],[0,0]])
-    print(env.cost_fn(init_state, action, t))
-    state = (np.array([0]), np.array([0, 0]), np.array([[0, 6], [0, 0]]))
-    action = np.array([[0, 0], [0, 0]])
-    t = 2
-    print(env.cost_fn(state, action, t))
+    state, info = env.reset(init_state, t)
+    action = np.array([[3,2], [1,4],[0,0]])
+    next_state, cost, done, info = env.step(action)
+    print(next_state)

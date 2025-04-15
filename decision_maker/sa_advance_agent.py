@@ -4,6 +4,9 @@ import numpy as np
 import gurobipy as gp
 from gurobipy import GRB
 
+from utils import iter_to_tuple
+
+
 class SAAdvanceAgent:
 
     def __init__(self, env, discount_factor, sample_path_number=3000, V=None, Q=None):
@@ -21,6 +24,7 @@ class SAAdvanceAgent:
             self.Q = defaultdict(lambda: defaultdict(int))
         if V is None:
             self.V = {}
+        self.action_map = {}
 
     def solve(self, state, t, x=None, action=None):
         N = self.env.decision_epoch
@@ -339,7 +343,11 @@ class SAAdvanceAgent:
         return
 
     def policy(self, state, t):
+        state_tuple = iter_to_tuple(state)
+        if (state_tuple, t) in self.action_map:
+            return self.action_map[(state_tuple, t)]
         action, overtime, obj_value = self.solve(state, t)
+        self.action_map[(state_tuple, t)] = action
         return action
 
 if __name__ =="__main__":
