@@ -159,42 +159,55 @@ def period_to_go_experiment(env_params, agents, period_num, init_arrival, plot_l
                                x_val_col='decision_epoch')
         #opt_plot(df, 'period to go', plot_labels, 'test')
 
-def sample_size_experiments(env_params, agents, simple_size, init_state, value_function_data_path, runtime_data_path, value_plot_labels, runtime_plot_labels, value_image_path, runtime_image_path):
-    sa_value_function_df = defaultdict(list)
-    runtime_df = defaultdict(list)
-    Ms = [1] + [i for i in range(200, simple_size + 1, 200)]
-    sa_value_function_df['num_sample_path'] = Ms
-    runtime_df['num_sample_path'] = Ms
-    env = AdvanceSchedulingEnv(**env_params)
-    txt_labels = set()
-    approx_labels = set()
-    for agent_name, agent in agents.items():
-        txt_labels.add(agent_name + '_hindsight')
-        txt_labels.add(agent_name)
-        approx_labels.add(agent_name)
-        for M in Ms:
-            print('Sample Size:', M)
-            agent_instance = agent(env, discount_factor=env_params['discount_factor'], sample_path_number=M)
-
-            evaluator = PolicyEvaluator(env, agent_instance, env.discount_factor)
-            start = time.time()
-            policy_value, policy_value_cl, policy_value_ch = evaluator.simulation_evaluate(init_state, t=1, replication=300, confidence=0.95)
-            policy_evaluate_runtime = time.time() - start
-            sa_value_function_df[agent_name].append(policy_value[0])
-            sa_value_function_df[agent_name + '_lower'].append(policy_value_cl[0])
-            sa_value_function_df[agent_name + '_upper'].append(policy_value_ch[0])
-            print('Policy Value:', policy_value[0], 'Confidence interval:', (policy_value_cl[0], policy_value_ch[0]), 'Time:', policy_evaluate_runtime)
-
-            start = time.time()
-            solution_a, y_t_solution, hindsight_value = agent_instance.solve(init_state, 1)
-            runtime = time.time() - start
-            print('Hindsight Value:', hindsight_value, 'Time:', runtime)
-            sa_value_function_df[agent_name + '_hindsight'].append(hindsight_value)
-            runtime_df[agent_name].append(runtime)
-    sa_value_function_df = pd.DataFrame(sa_value_function_df)
-    runtime_df = pd.DataFrame(runtime_df)
-    sa_value_function_df.to_csv(value_function_data_path)
-    runtime_df.to_csv(runtime_data_path)
+def sample_size_experiments(env_params, agents, simple_size, init_state, value_function_data_path, runtime_data_path, value_plot_labels, runtime_plot_labels, value_image_path, runtime_image_path,shortcut=True):
+    if os.path.exists(value_function_data_path) and shortcut:
+        print(f"Found '{value_function_data_path}'. Reading CSV file...")
+        sa_value_function_df = pd.read_csv(value_function_data_path,index_col=0)
+        runtime_df = pd.read_csv(runtime_data_path,index_col=0)
+        txt_labels = set()
+        approx_labels = set()
+        for agent_name, agent in agents.items():
+            txt_labels.add(agent_name + '_hindsight')
+            txt_labels.add(agent_name)
+            approx_labels.add(agent_name)
+        print("File loaded successfully!")
+        print("Here are the first 5 rows:")
+        print(sa_value_function_df.head())
+        print(runtime_df.head())
+    else:
+        sa_value_function_df = defaultdict(list)
+        runtime_df = defaultdict(list)
+        Ms = [1] + [i for i in range(200, simple_size + 1, 200)]
+        sa_value_function_df['num_sample_path'] = Ms
+        runtime_df['num_sample_path'] = Ms
+        env = AdvanceSchedulingEnv(**env_params)
+        txt_labels = set()
+        approx_labels = set()
+        for agent_name, agent in agents.items():
+            txt_labels.add(agent_name + '_hindsight')
+            txt_labels.add(agent_name)
+            approx_labels.add(agent_name)
+            for M in Ms:
+                print('Sample Size:', M)
+                agent_instance = agent(env, discount_factor=env_params['discount_factor'], sample_path_number=M)
+                evaluator = PolicyEvaluator(env, agent_instance, env.discount_factor)
+                start = time.time()
+                policy_value, policy_value_cl, policy_value_ch = evaluator.simulation_evaluate(init_state, t=1, replication=300, confidence=0.95)
+                policy_evaluate_runtime = time.time() - start
+                sa_value_function_df[agent_name].append(policy_value[0])
+                sa_value_function_df[agent_name + '_lower'].append(policy_value_cl[0])
+                sa_value_function_df[agent_name + '_upper'].append(policy_value_ch[0])
+                print('Policy Value:', policy_value[0], 'Confidence interval:', (policy_value_cl[0], policy_value_ch[0]), 'Time:', policy_evaluate_runtime)
+                start = time.time()
+                solution_a, y_t_solution, hindsight_value = agent_instance.solve(init_state, 1)
+                runtime = time.time() - start
+                print('Hindsight Value:', hindsight_value, 'Time:', runtime)
+                sa_value_function_df[agent_name + '_hindsight'].append(hindsight_value)
+                runtime_df[agent_name].append(runtime)
+        sa_value_function_df = pd.DataFrame(sa_value_function_df)
+        runtime_df = pd.DataFrame(runtime_df)
+        sa_value_function_df.to_csv(value_function_data_path)
+        runtime_df.to_csv(runtime_data_path)
     approximate_value_plot(sa_value_function_df,
                            xlabel='Number of Sample Paths',
                            ylabel='Value function',
@@ -225,4 +238,4 @@ if __name__ == '__main__':
                             value_plot_labels={'SAAdvanceAgent':"Advance Hindsight Policy Value", 'SAAdvanceAgent_hindsight':"Advance Expected Hindsight Value"},
                             runtime_plot_labels={'SAAdvanceAgent': "Advance Hindsight Policy"},
                             value_image_path='figures/sa_advance_real_scale_sample_size_experiment_value_function',
-                            runtime_image_path='figures/sa_advance_real_scale_sample_size_experiment_runtime')
+                            runtime_image_path='figures/sa_advance_real_scale_sample_size_experiment_runtime',shortcut=True)

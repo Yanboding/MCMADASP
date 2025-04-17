@@ -38,7 +38,7 @@ class Config:
     @classmethod
     def from_real_scale(cls):
         decision_epoch = 20
-        class_number = 20
+        class_number = 2
         arrival_generator = MultiClassPoissonArrivalGenerator(10, 30, [1 / class_number] * class_number)
         env_params = {
             'treatment_pattern': [[1]*class_number],
