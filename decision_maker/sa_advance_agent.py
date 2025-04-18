@@ -56,17 +56,17 @@ class SAAdvanceAgent:
             #   j = 0..(N - t), i = 0..(I-1)
             #   must be nonnegative integers
             a_t = model.addVars(N-t+1, I, vtype=GRB.INTEGER, name="a_t")
-            if action != None:
+            if action is not None:
                 for j in range(N-t+1):
                     for i in range(I):
                         a_t[j, i].lb = action[j, i]
                         a_t[j, i].ub = action[j, i]
 
-            # a^{t+tau}_{j,i,ω}: # of new treatments allocated in period (t + tau + j) in scenario ω
+            # a^{t+tau}_{j,i,omega}: # of new treatments allocated in period (t + tau + j) in scenario omega
             #   tau = 1..(N - t)
             #   j = 0..(N - t - tau)
             #   i = 0..(I-1)
-            #   ω = 0..(M - 1)
+            #   omega = 0..(M - 1)
             a_future = {}
             for tau in range(1, N - t + 1):
                 a_t_tau_omega = model.addVars(self.sample_path_number, N - t - tau + 1, I, vtype=GRB.INTEGER, name="a_t_j_tau_omega")
@@ -75,13 +75,13 @@ class SAAdvanceAgent:
             # Overtime in period t
             y_t = model.addVar(lb=0, vtype=GRB.CONTINUOUS, name="y_t")
 
-            # Overtime in period (t + tau) under scenario ω
+            # Overtime in period (t + tau) under scenario omega
             y_future = model.addVars(self.sample_path_number, range(1, N - t + 1), lb=0, vtype=GRB.CONTINUOUS, name="y_future")
             b_bar_t = model.addVars(N-t+1, I, vtype=GRB.INTEGER, name="b_bar_t")
             for j in range(N-t+1):
                 for i in range(I):
                     model.addConstr(b_bar_t[j, i] == b[j, i] + a_t[j, i])
-            # New schedule in period (t+\tau) under scenario ω
+            # New schedule in period (t+\tau) under scenario omega
             b_bar_future = {}
             for tau in range(1, N - t + 1):
                 b_bar_t_tau_omega = model.addVars(self.sample_path_number, N - t - tau + 1, I, vtype=GRB.INTEGER,
@@ -99,8 +99,8 @@ class SAAdvanceAgent:
 
             # future_cost: (1/M)* sum_{omega} sum_{tau} gamma^tau [
             #                sum_{i,j} w_i * ( b^t_{\tau+j,i} + a^t_{\tau+j,i}
-            #                    + sum_{k=1}^tau a^{t+k}_{\tau+j-k, i, ω} )
-            #                + O * y^{t+tau}_ω
+            #                    + sum_{k=1}^tau a^{t+k}_{\tau+j-k, i, omega} )
+            #                + O * y^{t+tau}_omega
             #              ]
             # \bar{b}_{j,i, \omega}^{t+\tau} = gp.quicksum(b[tau+j, i] + a_t[tau+j, i]
             #             + gp.quicksum(a_future[k][omega, tau+j-k, i] for k in range(1, tau+1))
@@ -129,14 +129,14 @@ class SAAdvanceAgent:
                 )
 
             #
-            # (cons4)  sum_{j=0..N-t-τ} a^{t+τ}_{j,i,ω} = delta_i^{t+τ}
+            # (cons4)  sum_{j=0..N-t-tau} a^{t+tau}_{j,i,omega} = delta_i^{t+tau}
             #
-            # for τ = 1..(N-t), i=1..I, ω=1..M
-            # --> Each scenario must meet the same demand for category i in period t+τ
-            #     (You need to have delta_i^{t+τ} for each τ, presumably the same across scenarios;
+            # for tau = 1..(N-t), i=1..I, omega=1..M
+            # --> Each scenario must meet the same demand for category i in period t+tau
+            #     (You need to have delta_i^{t+tau} for each tau, presumably the same across scenarios;
             #      if each scenario has a *different* demand, adapt accordingly.)
             #
-            # Suppose you have a data structure delta_t_tau[tau][i] that gives delta_i^{t+τ}.
+            # Suppose you have a data structure delta_t_tau[tau][i] that gives delta_i^{t+tau}.
             #
             for tau in range(1, N - t + 1):
                 for i in range(I):
@@ -155,12 +155,12 @@ class SAAdvanceAgent:
             )
             #
             # (cons7) and (cons8):
-            #   for τ=1..N−t, ω=1..M:
-            #     y^{t+τ}_ω >= sum_{i=1}^I [ b^t_{\tau+0,i} + a^t_{\tau+0,i} + sum_{k=1}^τ a^{t+k}_{\tau+0−k,i,ω} ] * r_i  - C
-            #   and y^{t+τ}_ω >= 0 (again lb=0 handles the non-negativity).
+            #   for tau=1..N−t, omega=1..M:
+            #     y^{t+tau}_omega >= sum_{i=1}^I [ b^t_{\tau+0,i} + a^t_{\tau+0,i} + sum_{k=1}^tau a^{t+k}_{\tau+0−k,i,omega} ] * r_i  - C
+            #   and y^{t+tau}_omega >= 0 (again lb=0 handles the non-negativity).
             #
-            # Here we need the “0th” job in period t+τ, that is j=0 in the expression \bar{b}^{t+τ}_{0,i,ω}.
-            # Notice that j=0 => \bar{b}^{t+τ}_{0,i,ω} = b^t_{\tau,i} + a^t_{\tau,i} + sum_{k=1}^τ a^{t+k}_{\tau−k,i,ω}.
+            # Here we need the “0th” job in period t+tau, that is j=0 in the expression \bar{b}^{t+tau}_{0,i,omega}.
+            # Notice that j=0 => \bar{b}^{t+tau}_{0,i,omega} = b^t_{\tau,i} + a^t_{\tau,i} + sum_{k=1}^tau a^{t+k}_{\tau−k,i,omega}.
             #
             for tau in range(1, N - t + 1):
                 for omega in range(self.sample_path_number):
@@ -182,6 +182,174 @@ class SAAdvanceAgent:
             else:
                 print("No optimal solution found")
         return
+
+    def new_solve(self, state, t, x=None, action=None):
+        # ---------- shortcuts ----------
+        N = self.env.decision_epoch
+        I = self.env.num_types
+        H = N - t  # remaining horizon
+        M = self.sample_path_number
+        γ = self.discount_factor
+        w = np.asarray(self.env.holding_cost)
+        r = np.asarray(self.env.treatment_pattern)[0]  # (I,)
+        C = self.env.regular_capacity
+        O = self.env.overtime_cost
+
+        bookings, delta_t, b = state  # b shape = (H+1, I)
+        b = np.asarray(b, dtype=int)
+        delta = self.delta  # shape = (M, H, I)
+        delta_max = delta.max(axis=(0, 1))
+
+        # ---------- model ----------
+        with gp.Model("SA_Advance") as m:
+            m.setParam("OutputFlag", 0)
+            m.setParam("LogToConsole", 0)
+
+            # ---------- 1. today’s increments ----------
+            a_t = m.addVars(H + 1, I, vtype=GRB.INTEGER, name="a_t")
+            if action is not None:
+                for j in range(H + 1):
+                    for i in range(I):
+                        a_t[j, i].lb = a_t[j, i].ub = int(action[j, i])
+
+            # ---------- 2. triangular index sets ----------
+            idx_a_fut = [
+                (omega, tau, j, i)
+                for tau in range(1, H + 1)  # stage
+                for j in range(H - tau + 1)  # slot
+                for omega in range(M)  # scenario
+                for i in range(I)  # class
+            ]
+            a_fut = m.addVars(idx_a_fut, lb=0, vtype=GRB.INTEGER, name="a_fut")
+
+            idx_b_fut = [
+                (omega, tau, j, i)
+                for tau in range(1, H + 1)
+                for j in range(H - tau + 1)
+                for omega in range(M)
+                for i in range(I)
+            ]
+            b_fut = m.addVars(
+                idx_b_fut,
+                lb=0,
+                vtype=GRB.INTEGER,
+                name="b_fut",
+            )
+
+            # current cumulative schedule
+            b_now = m.addVars(
+                H + 1,
+                I,
+                lb=b,
+                ub=b + delta_max,
+                vtype=GRB.INTEGER,
+                name="b_now",
+            )
+
+            # overtime
+            y_now = m.addVar(lb=0, vtype=GRB.CONTINUOUS, name="y_now")
+            y_future = m.addVars(M, range(1, H + 1), lb=0, vtype=GRB.CONTINUOUS, name="y_fut")
+
+            # ---------- 3. definitions ----------
+            # today
+            m.addConstrs(
+                (b_now[j, i] == b[j, i] + a_t[j, i] for j in range(H + 1) for i in range(I)),
+                name="def_today",
+            )
+            # tau = 1
+            m.addConstrs(
+                (
+                    b_fut[omega, 1, j, i]
+                    == b_now[j + 1, i] + a_fut[omega, 1, j, i]
+                    for omega in range(M)
+                    for j in range(H)
+                    for i in range(I)
+                ),
+                name="link_tau1",
+            )
+            # tau ≥ 2 cascade
+            m.addConstrs(
+                (
+                    b_fut[omega, tau, j, i]
+                    == b_fut[omega, tau - 1, j + 1, i] + a_fut[omega, tau, j, i]
+                    for tau in range(2, H + 1)
+                    for j in range(H - tau + 1)
+                    for omega in range(M)
+                    for i in range(I)
+                ),
+                name="cascade",
+            )
+
+            # ---------- 4. demand constraints ----------
+            # today
+            m.addConstrs(
+                (
+                    gp.quicksum(a_t[j, i] for j in range(H + 1)) == delta_t[i]
+                    for i in range(I)
+                ),
+                name="demand_today",
+            )
+            # future
+            m.addConstrs(
+                (
+                    gp.quicksum(a_fut[omega, tau, j, i] for j in range(H - tau + 1)) == delta[omega, tau, i]
+                    for tau in range(1, H + 1)
+                    for omega in range(M)
+                    for i in range(I)
+                ),
+                name="demand_future",
+            )
+
+            # ---------- 5. capacity (overtime) ----------
+            m.addConstr(
+                y_now >= gp.quicksum(b_now[0, i] * r[i] for i in range(I)) - C,
+                name="cap_today",
+            )
+            m.addConstrs(
+                (
+                    y_future[omega, tau]
+                    >= gp.quicksum(b_fut[omega, tau, 0, i] * r[i] for i in range(I)) - C
+                    for tau in range(1, H + 1)
+                    for omega in range(M)
+                ),
+                name="cap_future",
+            )
+
+            # ---------- 6. objective ----------
+            imm_cost = (
+                    gp.quicksum(w[i] * gp.quicksum(b_now[j, i] for j in range(H + 1)) for i in range(I))
+                    + O * y_now
+            )
+            fut_cost = (
+                    1.0
+                    / M
+                    * gp.quicksum(
+                γ ** tau
+                * (
+                        gp.quicksum(
+                            w[i] * gp.quicksum(b_fut[omega, tau, j, i] for j in range(H - tau + 1))
+                            for i in range(I)
+                        )
+                        + O * y_future[omega, tau]
+                )
+                for tau in range(1, H + 1)
+                for omega in range(M)
+            )
+            )
+            m.setObjective(imm_cost + fut_cost, GRB.MINIMIZE)
+
+            # ---------- 7. solve ----------
+            m.setParam("Presolve", 2)
+            m.setParam("Threads", 0)
+            m.optimize()
+            # ---------- 8. return ----------
+            if m.Status == GRB.OPTIMAL:
+                a_now = np.zeros((H + 1, I), dtype=int)
+                for (j, i), v in m.getAttr("X", a_t).items():
+                    a_now[j, i] = int(round(v))
+                return a_now, y_now.X, m.ObjVal
+            else:
+                raise RuntimeError("Optimal solution not found")
 
     def exact_solve(self, state, t, x=None, action=None):
         N = self.env.decision_epoch
@@ -215,17 +383,17 @@ class SAAdvanceAgent:
             #   j = 0..(N - t), i = 0..(I-1)
             #   must be nonnegative integers
             a_t = model.addVars(N-t+1, I, vtype=GRB.INTEGER, name="a_t")
-            if action != None:
+            if action is not None:
                 for j in range(N-t+1):
                     for i in range(I):
                         a_t[j, i].lb = action[j, i]
                         a_t[j, i].ub = action[j, i]
 
-            # a^{t+tau}_{j,i,ω}: # of new treatments allocated in period (t + tau + j) in scenario ω
+            # a^{t+tau}_{j,i,omega}: # of new treatments allocated in period (t + tau + j) in scenario omega
             #   tau = 1..(N - t)
             #   j = 0..(N - t - tau)
             #   i = 0..(I-1)
-            #   ω = 0..(M - 1)
+            #   omega = 0..(M - 1)
             a_future = {}
             for tau in range(1, N - t + 1):
                 a_t_tau_omega = model.addVars(sample_path_number, N - t - tau + 1, I, vtype=GRB.INTEGER, name="a_t_j_tau_omega")
@@ -234,13 +402,13 @@ class SAAdvanceAgent:
             # Overtime in period t
             y_t = model.addVar(lb=0, vtype=GRB.CONTINUOUS, name="y_t")
 
-            # Overtime in period (t + tau) under scenario ω
+            # Overtime in period (t + tau) under scenario omega
             y_future = model.addVars(sample_path_number, range(1, N - t + 1), lb=0, vtype=GRB.CONTINUOUS, name="y_future")
             b_bar_t = model.addVars(N-t+1, I, vtype=GRB.INTEGER, name="b_bar_t")
             for j in range(N-t+1):
                 for i in range(I):
                     model.addConstr(b_bar_t[j, i] == b[j, i] + a_t[j, i])
-            # New schedule in period (t+\tau) under scenario ω
+            # New schedule in period (t+\tau) under scenario omega
             b_bar_future = {}
             for tau in range(1, N - t + 1):
                 b_bar_t_tau_omega = model.addVars(sample_path_number, N - t - tau + 1, I, vtype=GRB.INTEGER,
@@ -258,8 +426,8 @@ class SAAdvanceAgent:
 
             # future_cost: (1/M)* sum_{omega} sum_{tau} gamma^tau [
             #                sum_{i,j} w_i * ( b^t_{\tau+j,i} + a^t_{\tau+j,i}
-            #                    + sum_{k=1}^tau a^{t+k}_{\tau+j-k, i, ω} )
-            #                + O * y^{t+tau}_ω
+            #                    + sum_{k=1}^tau a^{t+k}_{\tau+j-k, i, omega} )
+            #                + O * y^{t+tau}_omega
             #              ]
             # \bar{b}_{j,i, \omega}^{t+\tau} = gp.quicksum(b[tau+j, i] + a_t[tau+j, i]
             #             + gp.quicksum(a_future[k][omega, tau+j-k, i] for k in range(1, tau+1))
@@ -288,14 +456,14 @@ class SAAdvanceAgent:
                 )
 
             #
-            # (cons4)  sum_{j=0..N-t-τ} a^{t+τ}_{j,i,ω} = delta_i^{t+τ}
+            # (cons4)  sum_{j=0..N-t-tau} a^{t+tau}_{j,i,omega} = delta_i^{t+tau}
             #
-            # for τ = 1..(N-t), i=1..I, ω=1..M
-            # --> Each scenario must meet the same demand for category i in period t+τ
-            #     (You need to have delta_i^{t+τ} for each τ, presumably the same across scenarios;
+            # for tau = 1..(N-t), i=1..I, omega=1..M
+            # --> Each scenario must meet the same demand for category i in period t+tau
+            #     (You need to have delta_i^{t+tau} for each tau, presumably the same across scenarios;
             #      if each scenario has a *different* demand, adapt accordingly.)
             #
-            # Suppose you have a data structure delta_t_tau[tau][i] that gives delta_i^{t+τ}.
+            # Suppose you have a data structure delta_t_tau[tau][i] that gives delta_i^{t+tau}.
             #
             for tau in range(1, N - t + 1):
                 for i in range(I):
@@ -314,12 +482,12 @@ class SAAdvanceAgent:
             )
             #
             # (cons7) and (cons8):
-            #   for τ=1..N−t, ω=1..M:
-            #     y^{t+τ}_ω >= sum_{i=1}^I [ b^t_{\tau+0,i} + a^t_{\tau+0,i} + sum_{k=1}^τ a^{t+k}_{\tau+0−k,i,ω} ] * r_i  - C
-            #   and y^{t+τ}_ω >= 0 (again lb=0 handles the non-negativity).
+            #   for tau=1..N−t, omega=1..M:
+            #     y^{t+tau}_omega >= sum_{i=1}^I [ b^t_{\tau+0,i} + a^t_{\tau+0,i} + sum_{k=1}^tau a^{t+k}_{\tau+0−k,i,omega} ] * r_i  - C
+            #   and y^{t+tau}_omega >= 0 (again lb=0 handles the non-negativity).
             #
-            # Here we need the “0th” job in period t+τ, that is j=0 in the expression \bar{b}^{t+τ}_{0,i,ω}.
-            # Notice that j=0 => \bar{b}^{t+τ}_{0,i,ω} = b^t_{\tau,i} + a^t_{\tau,i} + sum_{k=1}^τ a^{t+k}_{\tau−k,i,ω}.
+            # Here we need the “0th” job in period t+tau, that is j=0 in the expression \bar{b}^{t+tau}_{0,i,omega}.
+            # Notice that j=0 => \bar{b}^{t+tau}_{0,i,omega} = b^t_{\tau,i} + a^t_{\tau,i} + sum_{k=1}^tau a^{t+k}_{\tau−k,i,omega}.
             #
             for tau in range(1, N - t + 1):
                 for omega in range(sample_path_number):
@@ -337,6 +505,7 @@ class SAAdvanceAgent:
                     solution_a[t, i] = value
                 solution_a = solution_a.astype(int)
                 obj_value = model.objVal
+                print(solution_a)
                 return solution_a, y_t_solution, obj_value
             else:
                 print("No optimal solution found")
@@ -351,33 +520,26 @@ class SAAdvanceAgent:
         return action
 
 if __name__ =="__main__":
+    from experiments.config import Config
     from environment import AdvanceSchedulingEnv, MultiClassPoissonArrivalGenerator
     from environment.utility import get_system_dynamic
+    import time
 
-    decision_epoch = 4
-    class_number = 2
-    bookings = np.array([0])
-    future_schedule = np.array([[0]*class_number for i in range(decision_epoch)])
-    new_arrival = np.array([5, 6])
-    state = (bookings, new_arrival, future_schedule)
-    arrival_generator = MultiClassPoissonArrivalGenerator(3, 4, [1 / class_number] * class_number)
-    env_params = {
-        'treatment_pattern': [[2, 1]],
-        'decision_epoch': decision_epoch,
-        'arrival_generator': arrival_generator,
-        'holding_cost': [10, 5],
-        'overtime_cost': 40,
-        'duration': 1,
-        'regular_capacity': 5,
-        'discount_factor': 0.99
-    }
+    config = Config.from_real_scale()
+    env_params = config.env_params
+    state = config.init_state
     # opt: 200.9459842557252
     env = AdvanceSchedulingEnv(**env_params)
-    agent = SAAdvanceAgent(env, discount_factor=env_params['discount_factor'], sample_path_number=3000)
+    agent = SAAdvanceAgent(env, discount_factor=env_params['discount_factor'], sample_path_number=1000)
     print(state)
+    start = time.time()
+    solution_a, y_t_solution, new_obj_value = agent.new_solve(state, 1, 0)
+    print(time.time() - start)
+    start = time.time()
     solution_a, y_t_solution, approx_obj_value = agent.solve(state, 1, 0)
-    solution_a, y_t_solution, exact_obj_value = agent.exact_solve(state, 1, 0)
-    print(approx_obj_value, exact_obj_value)
+    print(time.time() - start)
+    print(approx_obj_value, new_obj_value)
+    #solution_a, y_t_solution, new_obj_value = agent.new_solve(state, 1, 0, action=np.array([[4,3], [2, 1], [0, 2], [0, 0]]))
     # 367.5728794333911
     # 482.3281714999563
     # 484.6393015258053

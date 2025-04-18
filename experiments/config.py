@@ -14,9 +14,9 @@ class Config:
 
     @classmethod
     def from_default(cls):
-        decision_epoch = 3
+        decision_epoch = 4
         class_number = 2
-        arrival_generator = MultiClassPoissonArrivalGenerator(3, 4, [1 / class_number] * class_number)
+        arrival_generator = MultiClassPoissonArrivalGenerator(3, 4, [1 / class_number] * class_number, is_precompute_state=True)
         env_params = {
             'treatment_pattern': [[2, 1]],
             'decision_epoch': decision_epoch,
@@ -25,7 +25,7 @@ class Config:
             'overtime_cost': 40,
             'duration': 1,
             'regular_capacity': 5,
-            'discount_factor': 0.99,
+            'discount_factor': 1,
             'problem_type': 'advance'
         }
         init_arrival = np.array([6, 6])
@@ -38,8 +38,8 @@ class Config:
     @classmethod
     def from_real_scale(cls):
         decision_epoch = 20
-        class_number = 2
-        arrival_generator = MultiClassPoissonArrivalGenerator(10, 30, [1 / class_number] * class_number)
+        class_number = 20
+        arrival_generator = MultiClassPoissonArrivalGenerator(10, 30, [1 / class_number] * class_number, is_precompute_state=False)
         env_params = {
             'treatment_pattern': [[1]*class_number],
             'decision_epoch': decision_epoch,
