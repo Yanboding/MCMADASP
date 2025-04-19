@@ -178,3 +178,10 @@ experiments/figures
 experiments/*.csv
 experiments/*.png
 .idea/
+/*.csv
+MISC/
+OUTPUT/
+STATUSES/
+TMP
+*.mps
+gurobi.env

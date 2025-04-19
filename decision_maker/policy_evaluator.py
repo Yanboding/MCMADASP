@@ -2,7 +2,7 @@ import os
 import time
 from collections import defaultdict
 from pprint import pprint
-from joblib import Parallel, delayed
+#from joblib import Parallel, delayed
 import numpy as np
 
 from decision_maker import OptimalAgent, SAAdvanceAgent
@@ -49,7 +49,9 @@ class PolicyEvaluator:
         s, info = self.env.reset(state, t, sample_path)
         for tau in range(len(sample_path)):
             states.append(s)
+            print('state:', s)
             a = self.agent.policy(s, t + tau)
+            print('action:',a)
             next_state, reward, done, info = self.env.step(a)
             rewards.append(reward)
             s = next_state
@@ -67,7 +69,8 @@ class PolicyEvaluator:
                 s = states[tau]
                 sample_average_V[(iter_to_tuple(s), t + tau)].record(G)
         return sample_average_V
-
+    
+    '''
     def simulation_evaluate(self, state, t, replication, confidence):
         num_cpus = os.cpu_count()
         sample_paths = [self.env.reset_arrivals(t=t) for _ in range(replication)]
@@ -80,6 +83,7 @@ class PolicyEvaluator:
         mean = self.sample_average_V[(state_tuple, t)].mean()
         half_window = self.sample_average_V[(state_tuple, t)].half_window(confidence)
         return mean, mean-half_window, mean+half_window
+    '''
 
 if __name__ == '__main__':
     decision_epoch = 20
