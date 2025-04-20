@@ -1,6 +1,8 @@
 #!/bin/bash
-#SBATCH -t 0-00:30
-#SBATCH --mem=4G
+#SBATCH -t 24:00:00
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=15
+#SBATCH --mem=60G
 #  You have to replace Your_account_name below with the name of your account:
 #SBATCH -A def-sarhangi
 

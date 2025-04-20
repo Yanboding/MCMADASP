@@ -49,9 +49,7 @@ class PolicyEvaluator:
         s, info = self.env.reset(state, t, sample_path)
         for tau in range(len(sample_path)):
             states.append(s)
-            print('state:', s)
             a = self.agent.policy(s, t + tau)
-            print('action:',a)
             next_state, reward, done, info = self.env.step(a)
             rewards.append(reward)
             s = next_state

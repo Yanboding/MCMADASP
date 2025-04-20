@@ -9,7 +9,7 @@ if __name__ == '__main__':
     t = 1
     env = AdvanceSchedulingEnv(**env_params)
     replication = 1000
-    num_sample_path = 600
+    num_sample_path = 1000
     with open('table.dat', 'w') as f:
         for _ in range(replication):
             sample_path = env.reset_arrivals(t=t)

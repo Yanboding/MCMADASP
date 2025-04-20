@@ -1,0 +1,3 @@
+gurobi_cl 1> /dev/null && echo Success || echo Fail 
+Want to see Success
+virtualenv --no-download  ~/env_gurobi
