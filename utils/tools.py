@@ -23,6 +23,17 @@ def iter_to_tuple(lst):
         return tuple(iter_to_tuple(sub) for sub in lst)
     return lst
 
+def iter_to_list(obj):
+    """Recursively convert tuples back to lists (inverse of iter_to_tuple)."""
+    if isinstance(obj, (str, bytes)):
+        return obj
+    if isinstance(obj, tuple):
+        return [iter_to_list(sub) for sub in obj]
+    # Keep other iterables (e.g. set, dict) unchanged unless you want to handle them too
+    if isinstance(obj, Iterable):
+        return type(obj)(iter_to_list(sub) for sub in obj)
+    return obj
+
 def convert_tuple_keys_to_str(d):
     """ Recursively convert tuple keys to strings. """
     if isinstance(d, dict):

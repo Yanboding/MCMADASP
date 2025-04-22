@@ -41,7 +41,8 @@ class SAAdvanceAgent:
         bookings, delta_t, b = state  # b shape = (H+1, I)
         b = np.asarray(b, dtype=int)
         delta = self.delta  # shape = (M, H, I)
-        delta_max = delta.max(axis=(0, 1))
+        delta_max = delta_t.max()
+        decision_variable_type = GRB.INTEGER
 
         # ---------- model ----------
         with gp.Env(empty=True) as env:
@@ -51,7 +52,7 @@ class SAAdvanceAgent:
                 m.setParam("OutputFlag", 0)
                 m.setParam("LogToConsole", 0)
                 # ---------- 1. today’s increments ----------
-                a_t = m.addVars(H + 1, I, vtype=GRB.CONTINUOUS, name="a_t")
+                a_t = m.addVars(H + 1, I, vtype=decision_variable_type, name="a_t")
                 if action is not None:
                     for j in range(H + 1):
                         for i in range(I):
@@ -65,7 +66,7 @@ class SAAdvanceAgent:
                     for omega in range(M)  # scenario
                     for i in range(I)  # class
                 ]
-                a_fut = m.addVars(idx_a_fut, lb=0, vtype=GRB.CONTINUOUS, name="a_fut")
+                a_fut = m.addVars(idx_a_fut, lb=0, vtype=decision_variable_type, name="a_fut")
                 idx_b_fut = [
                     (omega, tau, j, i)
                     for tau in range(1, H + 1)
@@ -76,7 +77,7 @@ class SAAdvanceAgent:
                 b_fut = m.addVars(
                     idx_b_fut,
                     lb=0,
-                    vtype=GRB.CONTINUOUS,
+                    vtype=decision_variable_type,
                     name="b_fut",
                 )
 
@@ -86,7 +87,7 @@ class SAAdvanceAgent:
                     I,
                     lb=b,
                     ub=b + delta_max,
-                    vtype=GRB.CONTINUOUS,
+                    vtype=decision_variable_type,
                     name="b_now",
                 )
 

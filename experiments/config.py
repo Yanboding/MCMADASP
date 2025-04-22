@@ -14,7 +14,7 @@ class Config:
 
     @classmethod
     def from_default(cls):
-        decision_epoch = 4
+        decision_epoch = 1
         class_number = 2
         arrival_generator = MultiClassPoissonArrivalGenerator(3, 4, [1 / class_number] * class_number, is_precompute_state=True)
         env_params = {
