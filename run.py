@@ -16,8 +16,9 @@ def experiment(sample_path, sample_path_numbers, command_id):
     print(init_state)
     t = 1
     env = AdvanceSchedulingEnv(**env_params)
+    agent_instance = SAAdvanceAgent(env, discount_factor=env_params['discount_factor'])
     for sample_path_number in sample_path_numbers:
-        agent_instance = SAAdvanceAgent(env, discount_factor=env_params['discount_factor'], sample_path_number=sample_path_number)
+        agent_instance.set_sample_paths(sample_path_number)
         evaluator = PolicyEvaluator(env, agent_instance, env.discount_factor)
         action, overtime, obj_value = agent_instance.solve(init_state, t)
         sample_average_V = evaluator.simulation_evaluate_helper(init_state, t=t, sample_paths=[np.array(sample_path)])
