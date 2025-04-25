@@ -44,7 +44,7 @@ class SAAdvanceAgent:
                 grb_env.start()                 # tries to grab ONE token
                 print('Get one token...')
                 return grb_env                  # success
-            except GurobiError as e:
+            except gp.GurobiError as e:
                 if "All tokens currently in use" in str(e):
                     print('Waiting...')
                     time.sleep(wait)            # back‑off and try again
