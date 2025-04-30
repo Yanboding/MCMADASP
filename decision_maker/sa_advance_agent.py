@@ -59,14 +59,14 @@ class SAAdvanceAgent:
         M = self.sample_path_number
         gamma = self.discount_factor
         w = np.asarray(self.env.holding_cost)
-        r = np.asarray(self.env.treatment_pattern)[0]  # (I,)
+        r = np.asarray(self.env.treatment_pattern)  # (l, I)
         C = self.env.regular_capacity
         O = self.env.overtime_cost
+        l = self.env.num_sessions
 
-        bookings, delta_t, b = state  # b shape = (H+1, I)
+        z, delta_t, b = state  # b shape = (H+1, I)
         b = np.asarray(b, dtype=int)
         delta = self.delta  # shape = (M, H, I)
-        delta_max = delta_t.max()
         decision_variable_type = GRB.INTEGER
         # ---------- model ----------
         with gp.Model("SA_Advance", env=self.grb_env) as m:
@@ -101,20 +101,26 @@ class SAAdvanceAgent:
                 vtype=decision_variable_type,
                 name="b_fut",
             )
-
             # current cumulative schedule
             b_now = m.addVars(
                 H + 1,
                 I,
-                lb=b,
-                ub=b + delta_max,
+                lb=0,
                 vtype=decision_variable_type,
                 name="b_now",
             )
-
+            # N-t+l-1 = H + l-1
             # overtime
             y_now = m.addVar(lb=0, vtype=GRB.CONTINUOUS, name="y_now")
-            y_future = m.addVars(M, range(1, H + 1), lb=0, vtype=GRB.CONTINUOUS, name="y_fut")
+            y_future = m.addVars(M, range(1, H + l), lb=0, vtype=GRB.CONTINUOUS, name="y_fut")
+            #print('N:', N, 't:', t)
+            idx_z_fut = [
+                (omega, tau, j)
+                for tau in range(H + 1)
+                for j in range(l)
+                for omega in range(M)
+            ]
+            z_future = m.addVars(idx_z_fut, lb=0, vtype=GRB.CONTINUOUS, name="z_fut")
 
             # ---------- 3. definitions ----------
             # today
@@ -165,20 +171,46 @@ class SAAdvanceAgent:
                 ),
                 name="demand_future",
             )
-
+            #  booked appointment slots at the end of today
+            m.addConstrs(
+                (z_future[omega, 0, j] == z[j] + gp.quicksum(b_now[0, i] * r[j, i] for i in range(I))
+                 for j in range(l)
+                 for omega in range(M)),
+                name="first_booked_slot"
+            )
+            m.addConstrs(
+                (z_future[omega, tau, j] == z_future[omega, tau-1, j + 1] + gp.quicksum(b_fut[omega, tau, 0, i] * r[j, i] for i in range(I))
+                    for tau in range(1, H+1)
+                    for j in range(l - 1)
+                    for omega in range(M)),
+                name="booked_slot_future"
+            )
+            m.addConstrs(
+                (z_future[omega, tau, l-1] == gp.quicksum(b_fut[omega, tau, 0, i] * r[l-1, i] for i in range(I))
+                    for tau in range(1, H+1)
+                    for omega in range(M)),
+                name="booked_slot_last_day"
+            )
             # ---------- 5. capacity (overtime) ----------
             m.addConstr(
-                y_now >= gp.quicksum(b_now[0, i] * r[i] for i in range(I)) - C,
+                y_now >= z[0] + gp.quicksum(b_now[0, i] * r[0, i] for i in range(I)) - C,
                 name="cap_today",
             )
             m.addConstrs(
                 (
-                    y_future[omega, tau]
-                    >= gp.quicksum(b_fut[omega, tau, 0, i] * r[i] for i in range(I)) - C
+                    y_future[omega, tau] >= z_future[omega, tau, 0] - C
                     for tau in range(1, H + 1)
                     for omega in range(M)
                 ),
                 name="cap_future",
+            )
+            m.addConstrs(
+                (
+                    y_future[omega, H + tau] >= z_future[omega, H, tau] - C
+                    for tau in range(1, l)
+                    for omega in range(M)
+                ),
+                name="cap_future_last",
             )
 
             # ---------- 6. objective ----------
@@ -230,16 +262,17 @@ if __name__ =="__main__":
     from environment import AdvanceSchedulingEnv, MultiClassPoissonArrivalGenerator
     from environment.utility import get_system_dynamic
     import time
-
-    config = Config.from_real_scale()
+    # 54946.988268116984
+    config = Config.from_multiappt_default_case()
     env_params = config.env_params
     state = config.init_state
     # opt: 200.9459842557252
     env = AdvanceSchedulingEnv(**env_params)
-    agent = SAAdvanceAgent(env, discount_factor=env_params['discount_factor'], sample_path_number=1000)
+    agent = SAAdvanceAgent(env, discount_factor=env_params['discount_factor'])
+    agent.set_sample_paths(1)
     print(state)
     start = time.time()
     solution_a, y_t_solution, approx_obj_value = agent.solve(state, 1, 0)
     print(time.time() - start)
+    print(solution_a)
     print(approx_obj_value)
-
