@@ -88,6 +88,14 @@ class SAAdvanceAgent:
                 for i in range(I)  # class
             ]
             a_fut = m.addVars(idx_a_fut, lb=0, vtype=decision_variable_type, name="a_fut")
+            # current cumulative schedule
+            b_bar_t = m.addVars(
+                H + 1,
+                I,
+                lb=0,
+                vtype=decision_variable_type,
+                name="b_now",
+            )
             idx_b_fut = [
                 (omega, tau, j, i)
                 for tau in range(1, H + 1)
@@ -95,73 +103,54 @@ class SAAdvanceAgent:
                 for omega in range(M)
                 for i in range(I)
             ]
-            b_fut = m.addVars(
+            b_bar_fut = m.addVars(
                 idx_b_fut,
                 lb=0,
                 vtype=decision_variable_type,
                 name="b_fut",
             )
-            # current cumulative schedule
-            b_now = m.addVars(
-                H + 1,
-                I,
-                lb=0,
-                vtype=decision_variable_type,
-                name="b_now",
-            )
             # N-t+l-1 = H + l-1
-            # overtime
-            y_now = m.addVar(lb=0, vtype=GRB.CONTINUOUS, name="y_now")
-            y_future = m.addVars(M, range(1, H + l), lb=0, vtype=GRB.CONTINUOUS, name="y_fut")
-            #print('N:', N, 't:', t)
+            z_bar_t  = m.addVars(range(l), vtype=GRB.CONTINUOUS, name='z_t')
             idx_z_fut = [
                 (omega, tau, j)
-                for tau in range(H + 1)
+                for tau in range(1, H + 1)
                 for j in range(l)
                 for omega in range(M)
             ]
-            z_future = m.addVars(idx_z_fut, lb=0, vtype=GRB.CONTINUOUS, name="z_fut")
+            z_bar_fut = m.addVars(idx_z_fut, lb=0, vtype=GRB.CONTINUOUS, name="z_fut")
+
+            # overtime
+            y = m.addVars(M, H + l, lb=0, vtype=GRB.CONTINUOUS, name="y")
 
             # ---------- 3. definitions ----------
             # today
             m.addConstrs(
-                (b_now[j, i] == b[j, i] + a_t[j, i] for j in range(H + 1) for i in range(I)),
-                name="def_today",
+                (b_bar_t[j, i] == b[j, i] + a_t[j, i] for j in range(H + 1) for i in range(I)),
+                name="C1_schedule_today",
             )
-            # tau = 1
+            # tau ≥ 1 cascade
             m.addConstrs(
                 (
-                    b_fut[omega, 1, j, i]
-                    == b_now[j + 1, i] + a_fut[omega, 1, j, i]
-                    for omega in range(M)
-                    for j in range(H)
-                    for i in range(I)
-                ),
-                name="link_tau1",
-            )
-            # tau ≥ 2 cascade
-            m.addConstrs(
-                (
-                    b_fut[omega, tau, j, i]
-                    == b_fut[omega, tau - 1, j + 1, i] + a_fut[omega, tau, j, i]
-                    for tau in range(2, H + 1)
-                    for j in range(H - tau + 1)
+                    b_bar_fut[omega, tau, j, i]
+                    == (b_bar_t[j+1, i] if tau == 1 else b_bar_fut[omega, tau - 1, j + 1, i]) + a_fut[omega, tau, j, i]
+                    for tau in range(1, H + 1)
+                    for j in range(H + 1 - tau)
                     for omega in range(M)
                     for i in range(I)
                 ),
-                name="cascade",
+                name="C2_schedule_future",
             )
 
             # ---------- 4. demand constraints ----------
-            # today
+            # demand for today
             m.addConstrs(
                 (
                     gp.quicksum(a_t[j, i] for j in range(H + 1)) == delta_t[i]
                     for i in range(I)
                 ),
-                name="demand_today",
+                name="C3_demand_today",
             )
-            # future
+            # demand for future
             m.addConstrs(
                 (
                     gp.quicksum(a_fut[omega, tau, j, i] for j in range(H - tau + 1)) == delta[omega, tau, i]
@@ -169,72 +158,59 @@ class SAAdvanceAgent:
                     for omega in range(M)
                     for i in range(I)
                 ),
-                name="demand_future",
+                name="C4_demand_future",
             )
-            #  booked appointment slots at the end of today
+            # booked appointment slots at the end of today
             m.addConstrs(
-                (z_future[omega, 0, j] == z[j] + gp.quicksum(b_now[0, i] * r[j, i] for i in range(I))
-                 for j in range(l)
-                 for omega in range(M)),
-                name="first_booked_slot"
+                (
+                    z_bar_t[j] == z[j] + gp.quicksum(b_bar_t[0,i] * r[j, i] for i in range(I)) 
+                    for j in range(l)
+                ),
+                name="C5_booked_slot_today"
             )
+            # booked appointment slots at the end of t+tau
             m.addConstrs(
-                (z_future[omega, tau, j] == z_future[omega, tau-1, j + 1] + gp.quicksum(b_fut[omega, tau, 0, i] * r[j, i] for i in range(I))
+                (
+                    z_bar_fut[omega, tau, j] == (z_bar_t[j+1] if tau==1 else z_bar_fut[omega, tau-1, j + 1]) + gp.quicksum(b_bar_fut[omega, tau, 0, i] * r[j, i] for i in range(I))
                     for tau in range(1, H+1)
                     for j in range(l - 1)
-                    for omega in range(M)),
-                name="booked_slot_future"
-            )
-            m.addConstrs(
-                (z_future[omega, tau, l-1] == gp.quicksum(b_fut[omega, tau, 0, i] * r[l-1, i] for i in range(I))
-                    for tau in range(1, H+1)
-                    for omega in range(M)),
-                name="booked_slot_last_day"
-            )
-            # ---------- 5. capacity (overtime) ----------
-            m.addConstr(
-                y_now >= z[0] + gp.quicksum(b_now[0, i] * r[0, i] for i in range(I)) - C,
-                name="cap_today",
-            )
-            m.addConstrs(
-                (
-                    y_future[omega, tau] >= z_future[omega, tau, 0] - C
-                    for tau in range(1, H + 1)
                     for omega in range(M)
                 ),
-                name="cap_future",
+                name="C6_booked_slot_future"
+            )
+            m.addConstrs(
+                (z_bar_fut[omega, tau, l-1] == gp.quicksum(b_bar_fut[omega, tau, 0, i] * r[l-1, i] for i in range(I))
+                    for tau in range(1, H+1)
+                    for omega in range(M)),
+                name="C7_booked_slot_future_last_day"
+            )
+            # ---------- 5. capacity (overtime) ----------
+            m.addConstrs(
+                (
+                    y[omega, tau] >= (z_bar_t[0] if tau == 0 else z_bar_fut[omega, tau, 0]) - C
+                    for tau in range(H + 1)
+                    for omega in range(M)
+                ),
+                name="C8_overtime_main",
             )
             m.addConstrs(
                 (
-                    y_future[omega, H + tau] >= z_future[omega, H, tau] - C
+                    y[omega, H + tau] >= (z_bar_t[tau] if H == 0 else z_bar_fut[omega, H, tau]) - C
                     for tau in range(1, l)
                     for omega in range(M)
                 ),
-                name="cap_future_last",
+                name="C8_overtime_tail",
             )
 
             # ---------- 6. objective ----------
-            imm_cost = (
-                    gp.quicksum(w[i] * gp.quicksum(b_now[j, i] for j in range(H + 1)) for i in range(I))
-                    + O * y_now
-            )
-            fut_cost = (
-                    1.0
-                    / M
-                    * gp.quicksum(
-                gamma ** tau
-                * (
-                        gp.quicksum(
-                            w[i] * gp.quicksum(b_fut[omega, tau, j, i] for j in range(H - tau + 1))
-                            for i in range(I)
-                        )
-                        + O * y_future[omega, tau]
-                )
-                for tau in range(1, H + 1)
-                for omega in range(M)
-            )
-            )
-            m.setObjective(imm_cost + fut_cost, GRB.MINIMIZE)
+            imm_cost = gp.quicksum(w[i] * gp.quicksum(b_bar_t[j, i] for j in range(H + 1)) for i in range(I)) + O * y[0,0]
+            fut_cost = gp.quicksum(gamma ** tau * gp.quicksum(
+                            w[i] * gp.quicksum(b_bar_fut[omega, tau, j, i] for j in range(H - tau + 1))
+                            for i in range(I)) + O * y[omega, tau]
+                            for tau in range(1, H + 1)
+                            for omega in range(M))/M
+            tail_cost = gp.quicksum(gp.quicksum(gamma ** (H+tau) * O * y[omega, H+tau] for tau in range(1, l)) for omega in range(M))/M
+            m.setObjective(imm_cost + fut_cost + tail_cost, GRB.MINIMIZE)
 
             # ---------- 7. solve ----------
             m.setParam("Presolve", 2)
@@ -245,7 +221,7 @@ class SAAdvanceAgent:
                 a_now = np.zeros((H + 1, I), dtype=int)
                 for (j, i), v in m.getAttr("X", a_t).items():
                     a_now[j, i] = int(round(v))
-                return a_now, y_now.X, m.ObjVal
+                return a_now, y[0,0].X, m.ObjVal
             else:
                 raise RuntimeError("Optimal solution not found")
 
