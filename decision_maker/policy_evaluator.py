@@ -84,34 +84,21 @@ class PolicyEvaluator:
     '''
 
 if __name__ == '__main__':
-    decision_epoch = 20
-    class_number = 2
-    arrival_generator = MultiClassPoissonArrivalGenerator(3, 1, [1 / class_number] * class_number)
-
-    env_params = {
-        'treatment_pattern': [[2, 1]],
-        'decision_epoch': decision_epoch,
-        'arrival_generator': arrival_generator,
-        'holding_cost': [10, 5],
-        'overtime_cost': 40,
-        'duration': 1,
-        'regular_capacity': 5,
-        'discount_factor': 1,
-        'problem_type': 'advance'
-    }
-    bookings = np.array([0])
-    future_schedule = np.array([[0] * class_number for i in range(decision_epoch)])
-    new_arrival = np.array([3, 3])
-    init_state = (bookings, new_arrival, future_schedule)
+    from experiments import Config
+    config = Config.from_multiappt_default_case()
+    env_params = config.env_params
+    init_state = config.init_state
     t = 1
     env = AdvanceSchedulingEnv(**env_params)
-    sa_advance_agent = SAAdvanceAgent(env=env, discount_factor=env_params['discount_factor'], sample_path_number=50)
+    sa_advance_agent = SAAdvanceAgent(env=env, discount_factor=env_params['discount_factor'])
+    sa_advance_agent.set_sample_paths(1000)
     #print("Action:", sa_advance_agent.policy(init_state, t))
     policy_evaluator = PolicyEvaluator(env, sa_advance_agent, discount_factor=env_params['discount_factor'])
     start = time.time()
-    mean, cl, ch = policy_evaluator.simulation_evaluate(init_state, t, 8, confidence=0.95)
-    print(mean, (cl, ch))
+    mean= policy_evaluator.evaluate(init_state, t)
+    print(mean)
     print(time.time() - start)
-    #print(policy_evaluator.evaluate(init_state, t))
+    print(sa_advance_agent.solve(init_state, t))
+    print(sa_advance_agent.solve_single_appointment(init_state, t))
 
 

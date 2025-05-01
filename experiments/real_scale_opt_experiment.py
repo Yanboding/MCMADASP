@@ -189,7 +189,8 @@ def sample_size_experiments(env_params, agents, simple_size, init_state, value_f
             approx_labels.add(agent_name)
             for M in Ms:
                 print('Sample Size:', M)
-                agent_instance = agent(env, discount_factor=env_params['discount_factor'], sample_path_number=M)
+                agent_instance = agent(env, discount_factor=env_params['discount_factor'])
+                agent_instance.set_sample_paths(M)
                 evaluator = PolicyEvaluator(env, agent_instance, env.discount_factor)
                 start = time.time()
                 policy_value, policy_value_cl, policy_value_ch = evaluator.simulation_evaluate(init_state, t=1, replication=300, confidence=0.95)
@@ -228,11 +229,11 @@ def sample_size_experiments(env_params, agents, simple_size, init_state, value_f
 
 if __name__ == '__main__':
     from environment import AdvanceSchedulingEnv
-    config = Config.from_real_scale()
+    config = Config.from_multiappt_default_case()
     agents = {
         'SAAdvanceAgent': SAAdvanceAgent
     }
-    sample_size_experiments(config.env_params, agents, 2000, init_state=config.init_state,
+    sample_size_experiments(config.env_params, agents, 200, init_state=config.init_state,
                             value_function_data_path='data/sa_advance_real_scale_sample_size_experiment_value_function.csv',
                             runtime_data_path='data/sa_advance_real_scale_sample_size_experiment_runtime.csv',
                             value_plot_labels={'SAAdvanceAgent':"Advance Hindsight Policy Value", 'SAAdvanceAgent_hindsight':"Advance Expected Hindsight Value"},

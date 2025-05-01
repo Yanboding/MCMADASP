@@ -14,7 +14,7 @@ def build_request_df(case_type):
     t = 1
     env = AdvanceSchedulingEnv(**env_params)
     replication = 1000
-    num_sample_path = 600
+    num_sample_path = 1000
     df = []
     for command_id in range(replication):
         sample_path = env.reset_arrivals(t=t)
