@@ -11,20 +11,19 @@ from environment import AdvanceSchedulingEnv  # Replace 'some_module' with the a
 from decision_maker import SAAdvanceAgent, PolicyEvaluator
 
 def experiment(sample_path, sample_path_numbers, command_id, output_file='real_scale_policy_value.csv', case_type='ejor'):
-    config = Config.from_default()
-    if case_type == 'real_scale':
-        config = Config.from_real_scale()
-    elif case_type == 'ejor':
-        config = Config.from_EJOR_case()
-        print('ejor')
-    env_params = config.env_params
-    bookings, _, future_schedule = config.init_state
-    init_state = (bookings, np.array(sample_path[0]), future_schedule)
-    print(init_state)
-    t = 1
-    env = AdvanceSchedulingEnv(**env_params)
-    agent_instance = SAAdvanceAgent(env, discount_factor=env_params['discount_factor'])
     for sample_path_number in sample_path_numbers:
+        print('sample_path_number:', sample_path_number)
+        config = None
+        if case_type == 'real_scale':
+            config = Config.from_real_scale()
+        elif case_type == 'ejor':
+            config = Config.from_EJOR_case()
+        env_params = config.env_params
+        bookings, _, future_schedule = config.init_state
+        init_state = (bookings, np.array(sample_path[0]), future_schedule)
+        t = 1
+        env = AdvanceSchedulingEnv(**env_params)
+        agent_instance = SAAdvanceAgent(env, discount_factor=env_params['discount_factor'])
         agent_instance.set_sample_paths(sample_path_number)
         evaluator = PolicyEvaluator(env, agent_instance, env.discount_factor)
         start = time.time()
