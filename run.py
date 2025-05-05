@@ -18,6 +18,8 @@ def experiment(sample_path, sample_path_numbers, command_id, output_file='real_s
             config = Config.from_real_scale()
         elif case_type == 'ejor':
             config = Config.from_EJOR_case()
+        elif case_type == 'adjust_ejor':
+            config = Config.from_adjust_EJOR_case()
         env_params = config.env_params
         bookings, _, future_schedule = config.init_state
         init_state = (bookings, np.array(sample_path[0]), future_schedule)

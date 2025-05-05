@@ -10,6 +10,8 @@ def build_request_df(case_type):
         config = Config.from_real_scale()
     elif case_type == 'ejor':
         config = Config.from_EJOR_case()
+    elif case_type == 'adjust_ejor':
+        config = Config.from_adjust_EJOR_case()
     env_params = config.env_params
     t = 1
     env = AdvanceSchedulingEnv(**env_params)
@@ -59,4 +61,7 @@ def generate_params(request_path, result_path, dat_file='table.dat', case_type='
 
 
 if __name__ == '__main__':
-    generate_params('ejor_request.csv', 'ejor_policy_value.csv')
+    generate_params(request_path='adjust_ejor_request.csv',
+                    result_path='adjust_ejor_policy_value.csv',
+                    dat_file='table.dat',
+                    case_type='adjust_ejor')

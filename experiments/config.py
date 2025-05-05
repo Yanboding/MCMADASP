@@ -138,7 +138,6 @@ class Config:
         type_probs = np.array(
             [0.19, 0.11, 0.11, 1.43, 0.59, 0.45, 1.42, 1.36, 0.57, 0.38, 0.18, 0.18, 0.29, 0.21, 0.3, 0.29, 0.15,
              0.04]) / total_arrival_rate_mean
-        print(type_probs * 100)
         arrival_generator = MultiClassPoissonArrivalGenerator(total_arrival_rate_mean, 25, type_probs,
                                                               is_precompute_state=False)
 
@@ -182,5 +181,5 @@ class Config:
         return cls(decision_epoch, class_number, arrival_generator, env_params, init_arrival, init_state)
 
 if __name__ =="__main__":
-    Config.from_EJOR_case()
+    Config.from_adjust_EJOR_case()
 
