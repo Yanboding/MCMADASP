@@ -16,13 +16,13 @@ class Config:
     @classmethod
     def from_default(cls):
         decision_epoch = 10
-        class_number = 7
+        class_number = 2
         arrival_generator = MultiClassPoissonArrivalGenerator(3, 4, [1 / class_number] * class_number, is_precompute_state=True)
         env_params = {
             'treatment_pattern': [[i for i in reversed(range(1, class_number+1))]],
             'decision_epoch': decision_epoch,
             'arrival_generator': arrival_generator,
-            'holding_cost': [10 - i * 5 / (class_number - 1) for i in range(class_number)],
+            'holding_cost': [10 - i * 5 / max((class_number - 1),1) for i in range(class_number)],
             'overtime_cost': 40,
             'duration': 1,
             'regular_capacity': 5,
@@ -61,7 +61,7 @@ class Config:
 
     @classmethod
     def from_multiappt_default_case(cls):
-        decision_epoch = 4
+        decision_epoch = 30
         class_number = 2
         arrival_generator = MultiClassPoissonArrivalGenerator(3, 4, [1 / class_number] * class_number,
                                                               is_precompute_state=True)
@@ -70,7 +70,7 @@ class Config:
             'decision_epoch': decision_epoch,
             'arrival_generator': arrival_generator,
             'holding_cost': [10 - i * 5 / max((class_number - 1), 1) for i in range(class_number)],
-            'overtime_cost': 10,
+            'overtime_cost': 40,
             'duration': 1,
             'regular_capacity': 5,
             'discount_factor': 1,

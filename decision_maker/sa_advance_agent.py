@@ -223,9 +223,6 @@ class SAAdvanceAgent:
             m.setParam("Presolve", 2)
             m.setParam("Threads", 0)
             m.optimize()
-            #print('imm_cost:', imm_cost.getValue())
-            #print('fut_cost:', fut_cost.getValue())
-            #print('tail_cost:', tail_cost.getValue())
             # ---------- 8. return ----------
             if m.Status == GRB.OPTIMAL:
                 a_now = np.zeros((H + 1, I), dtype=int)
@@ -420,11 +417,24 @@ if __name__ =="__main__":
     state = config.init_state
     # opt: 200.9459842557252
     env = AdvanceSchedulingEnv(**env_params)
+    '''
     agent = SAAdvanceAgent(env, discount_factor=env_params['discount_factor'])
-    agent.set_sample_paths(1)
+    agent.set_sample_paths(100)
     print(state)
     start = time.time()
     solution_a, y_t_solution, approx_obj_value = agent.solve(state, 1, 0)
     print(time.time() - start)
     print(solution_a)
+    print(approx_obj_value)
+    '''
+
+    myopic_agent = SAAdvanceAgent(env, discount_factor=0)
+    myopic_agent.set_sample_paths(100)
+    print("Myopic:", myopic_agent.discount_factor)
+    print(state)
+    start = time.time()
+    solution_a, y_t_solution, approx_obj_value = myopic_agent.solve(state, 1, 0)
+    print(time.time() - start)
+    print(solution_a)
+    print(y_t_solution)
     print(approx_obj_value)

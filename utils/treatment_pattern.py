@@ -83,6 +83,11 @@ def wait_time(l):
         total_days += interval_days
     return total_cost/total_days
 
+def wait_time_cost(t, i):
+    wait_time_lookup = {
+        0: [(0,1,0),(1,5,100),(5,20,150)],
+        1: [(0,1,0),(1,5,100),(5,20,150)]
+    }
 
 if __name__ == '__main__':
     l1_3 = [(0,1,0),(1,5,100),(5,20,150)]

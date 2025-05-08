@@ -33,15 +33,22 @@ def experiment(sample_path, sample_path_numbers, command_id, output_file='real_s
         end = time.time() - start
         sample_average_V = evaluator.simulation_evaluate_helper(init_state, t=t, sample_paths=[np.array(sample_path)])
         value = sample_average_V[(iter_to_tuple(init_state), t)].expect[0]
+        res = {}
+        res['value'] = value
+        res['sample_path_number'] = sample_path_number
+        res['hindsight_value'] = obj_value
+        res['run_time'] = end
+        res['command_id'] = command_id
+        for type_i, running_stat in env.wait_time_by_type.items():
+            res['expect_'+str(type_i)] = running_stat.expect[0]
+            res['varSum_' + str(type_i)] = running_stat.varSum[0]
+            res['count_' + str(type_i)] = running_stat.count
+        for day in range(len(env.overtime)):
+            res['slot_number_'+str(day)] = env.overtime[day]
         df = pd.DataFrame(
-            {
-                'value': [value],
-                'sample_path_number': [sample_path_number],
-                'hindsight_value': [obj_value],
-                'run_time': [end],
-                'command_id': [command_id]
-            }
+            [res]
         )
+        print(df.columns.tolist())
         data_path = os.path.join('.', output_file)
         df.to_csv(data_path, mode='a', index=False, header=False)
 
