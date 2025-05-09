@@ -57,6 +57,30 @@ def approximate_value_plot(df, xlabel, ylabel, approx_labels, text_labels, plot_
     plt.savefig(save_file)
     plt.show()
 
+def approximate_value_plot_from_running_stats(running_stats, x_vals, xlabel, ylabel, plot_labels, save_file):
+    fig, ax = plt.subplots(1, 1, figsize=(20, 10))
+    for column_name, label in plot_labels.items():
+        means = running_stats[column_name].mean()
+        half_window = running_stats[column_name].half_window(0.95)
+        ax.plot(x_vals, means, label=label, marker='o')
+        ax.fill_between(x_vals, means-half_window, means+half_window, alpha=0.2)
+        for l, txt in enumerate(means):
+            ax.text(x_vals[l], means[l], str(round(txt, 3)), ha='center', va='bottom', fontsize=20)
+    set_fontsize(ax, 20)
+    # To handle multiple lines with the same label, we need to manually create a custom legend
+    handles, labels = ax.get_legend_handles_labels()
+    unique_labels = sorted(list(set(labels)))
+    unique_handles = [handles[labels.index(label)] for label in unique_labels]
+    ax.set_xticks(x_vals)
+    ax.set_xticklabels(x_vals, rotation=0, fontsize=20)
+    ax.set_xlabel(xlabel, fontsize=20)
+    ax.set_ylabel(ylabel, fontsize=20)
+    # Create legend
+    ax.legend(unique_handles, unique_labels, fontsize=20)
+    fig.tight_layout()
+    plt.savefig(save_file)
+    plt.show()
+
 if __name__ == "__main__":
     df = pd.DataFrame({
         'decision_epoch': [1, 2, 3],

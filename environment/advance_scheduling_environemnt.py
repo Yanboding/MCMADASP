@@ -4,7 +4,7 @@ from pprint import pprint
 
 import numpy as np
 from utils import numpy_shift, RunningStat
-from .utility import get_valid_advance_actions, get_valid_allocation_actions
+from utility import get_valid_advance_actions, get_valid_allocation_actions
 
 
 class AdvanceSchedulingEnv:
@@ -161,22 +161,24 @@ class AdvanceSchedulingEnv:
             res.append([prob, state, cost, done])
         return res
 
-    def reset(self, init_state, t, new_arrivals=None):
+    def reset(self, init_state, t, new_arrivals=None, percentage_occupied=0):
         if new_arrivals is not None and len(new_arrivals) != self.decision_epoch-t+1:
             raise ValueError('Invalid sample path!')
         self.t = t
         self.tau = 0
+        # how to handle the first arrivals
+        if new_arrivals is None:
+            self.new_arrivals = self.reset_arrivals(t)
+        else:
+            self.new_arrivals = new_arrivals
+        if init_state == None:
+            init_state = self.reset_initial_state(t, percentage_occupied)
         bookings, waitlist, future_first_appts = init_state
         bookings = np.array(bookings)
         waitlist = np.array(waitlist)
         future_first_appts = np.array(future_first_appts)
         self.future_first_appts_copy = copy.deepcopy(future_first_appts)
         self.state = (bookings, waitlist, future_first_appts)
-        # how to handle the first arrivals
-        if new_arrivals is None:
-            self.new_arrivals = self.reset_arrivals(t)
-        else:
-            self.new_arrivals = new_arrivals
 
         # measure of performance
         self.wait_time_by_type = {j: RunningStat((1,)) for j in range(self.num_types)}
@@ -185,6 +187,32 @@ class AdvanceSchedulingEnv:
 
     def reset_arrivals(self, t=1):
         return self.arrival_generator.rvs(self.decision_epoch-t+1)
+
+    def reset_initial_state(self, t, percentage_occupied):
+        # find out the average appointment slot required in first period
+        average_pattern = self.arrival_generator.type_probs @ self.treatment_pattern.T
+        min_capacity_occupied = self.regular_capacity * percentage_occupied
+        # initialize the current booking slots with all zeros
+        booking_horizon = self.decision_epoch-t
+        booked_slots = np.zeros(booking_horizon+self.num_sessions-1)
+        init_bookings = np.array([int(min_capacity_occupied)]*self.num_sessions)
+        init_future_schedule = np.zeros((booking_horizon+1, self.num_types))
+        booked_slots[:self.num_sessions] += init_bookings
+        # initialize the bookings z to be regular_capacity * min_percentage_occupied
+        # for each period j:
+        #    if the percentage of the occupancy is less than the min_percentage_occupied
+        #        do the calculation of number of treatment I should allocate in period j
+        #        the remaining number of slots/ average appointment slot
+        #        sample new arrivals from each type
+        #        update the current booking slots
+        for j in range(booking_horizon):
+            if booked_slots[j] < min_capacity_occupied:
+                remaining_slot_num = max(min_capacity_occupied - booked_slots[j], 0)
+                new_arrival = np.round(remaining_slot_num/average_pattern[0])
+                init_future_schedule[j] = self.arrival_generator.arrival_type_rvs(new_arrival)[0]
+                booked_slots[j:j+self.num_sessions] += init_future_schedule[j] @ self.treatment_pattern.T
+        init_waitlist = self.new_arrivals[0]
+        return (init_bookings, init_waitlist, init_future_schedule)
 
     def step(self, action):
         # t+tau
@@ -219,37 +247,9 @@ if __name__ == "__main__":
     from waiting_cost import wait_time_penalty
     from experiments import Config
     import matplotlib.pyplot as plt
-    config = Config.from_multiappt_default_case()
+    config = Config.from_adjust_EJOR_case()
     env_params = config.env_params
     bookings, init_arrival, future_schedule = config.init_state
     env = AdvanceSchedulingEnv(**env_params)
-    sample_path = env.reset_arrivals(1)
-    print(sample_path)
-    init_state = (bookings, sample_path[0], future_schedule)
-    state, info = env.reset(init_state, 1, sample_path)
-    for tau in range(len(sample_path)):
-        print('tau:',tau)
-        action = copy.deepcopy(sample_path[tau:])
-        action[1:] = 0
-        action = action[::-1]
-        state, cost, done, info = env.step(action)
-        stats = info['wait_time_by_type']
-        # Extract data for plotting
-        types = np.arange(config.class_number)
-        means = [stats[j].mean() for j in types]
-        ci_half = [stats[j].half_window(0.95) for j in types]
-        print(means)
-
-    # ------------------------------------------------------------------
-    # Plot (one chart, default style)
-    plt.figure(figsize=(6, 4))
-    plt.errorbar(types, means, yerr=ci_half, fmt='o', capsize=5, linewidth=1.5)
-    for x, y in zip(types, means):
-        plt.text(x, y + 0.05, f"{y:.2f}", ha='center', va='bottom', fontsize=9)
-    plt.xticks(types)
-    plt.xlabel("Treatment type")
-    plt.ylabel("Waiting time (days)")
-    plt.title("Mean waiting time with 95% CI (demo data)")
-    plt.grid(alpha=0.3)
-    plt.tight_layout()
-    plt.show()
+    state, info = env.reset(None, 1, percentage_occupied=0.2)
+    print(state)

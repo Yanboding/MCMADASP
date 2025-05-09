@@ -21,6 +21,7 @@ class MultiClassPoissonArrivalGenerator:
         self.truncate_poisson_pmf = np.array([total_poisson.pmf(i) for i in range(maximum_arrival + 1)])/normalizer
 
         # Precompute all states + probabilities for get_system_dynamic.
+        self._arrivals_with_probs = None
         if is_precompute_state:
             self._arrivals_with_probs = self._precompute_all_states()
 
@@ -31,6 +32,10 @@ class MultiClassPoissonArrivalGenerator:
         arrivals = np.array([
             self.rng1.multinomial(N, self.type_probs) for N in N_values
         ])
+        return arrivals
+
+    def arrival_type_rvs(self, arrival_num, size=1):
+        arrivals = self.rng1.multinomial(arrival_num, self.type_probs,size=size)
         return arrivals
 
     def _precompute_all_states(self):
@@ -61,6 +66,8 @@ class MultiClassPoissonArrivalGenerator:
         """
         Return the precomputed list of (prob, arrival_vector).
         """
+        if self._arrivals_with_probs == None:
+            self._arrivals_with_probs = self._precompute_all_states()
         return self._arrivals_with_probs
 
     def get_sample_paths_with_prob(self, period_num):
@@ -72,6 +79,8 @@ class MultiClassPoissonArrivalGenerator:
                 A list of tuples: [(path_probability, [arrival_vector_t0, arrival_vector_t1, ...]), ...].
             """
         # Pre-fetched single-period states: each entry is (prob, arrival_vector).
+        if self._arrivals_with_probs == None:
+            self._arrivals_with_probs = self._precompute_all_states()
         single_period_states = self._arrivals_with_probs
 
         # Cartesian product to get all paths of length `period_num`.

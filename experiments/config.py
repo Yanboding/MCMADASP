@@ -66,7 +66,7 @@ class Config:
         arrival_generator = MultiClassPoissonArrivalGenerator(3, 4, [1 / class_number] * class_number,
                                                               is_precompute_state=True)
         env_params = {
-            'treatment_pattern': [[2,1],[1,1]],
+            'treatment_pattern': [[2,1],[1,0]],
             'decision_epoch': decision_epoch,
             'arrival_generator': arrival_generator,
             'holding_cost': [10 - i * 5 / max((class_number - 1), 1) for i in range(class_number)],
@@ -88,7 +88,6 @@ class Config:
         decision_epoch = 20
         total_arrival_rate_mean = 8.25
         type_probs = np.array([0.19, 0.11,0.11,1.43,0.59,0.45,1.42,1.36,0.57,0.38,0.18,0.18,0.29,0.21,0.3,0.29,0.15,0.04])/total_arrival_rate_mean
-        print(type_probs*100)
         arrival_generator = MultiClassPoissonArrivalGenerator(total_arrival_rate_mean, 25, type_probs,
                                                               is_precompute_state=False)
 
@@ -133,7 +132,7 @@ class Config:
 
     @classmethod
     def from_adjust_EJOR_case(cls):
-        decision_epoch = 20
+        decision_epoch = 100
         total_arrival_rate_mean = 8.25
         type_probs = np.array(
             [0.19, 0.11, 0.11, 1.43, 0.59, 0.45, 1.42, 1.36, 0.57, 0.38, 0.18, 0.18, 0.29, 0.21, 0.3, 0.29, 0.15,
