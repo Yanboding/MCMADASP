@@ -5,6 +5,9 @@ import numpy as np
 import gurobipy as gp
 from gurobipy import GRB
 
+from utils import iter_to_tuple
+
+
 class SAAdvanceFastAgent:
     TOKEN_WAIT = 15
 
@@ -89,10 +92,6 @@ class SAAdvanceFastAgent:
                 name="C1_demand_today",
             )
             # booked appointment slots at the end of today
-            for j in range(H+l):
-                for i in range(I):
-                    for k in range(min(l-1,j)+1):
-                        print("period:", min(j-k, H), "k:", k, a_t[min(j-k, H), i])
             m.addConstrs(
                 (
                     z_bar_t[j] == z[j] + gp.quicksum(gp.quicksum(a_t[min(j-k, H), i] * r[k, i] for k in range(min(l-1, j)+1)) for i in range(I))
@@ -128,6 +127,13 @@ class SAAdvanceFastAgent:
                 return a_now, m.getAttr("X", y_t), m.ObjVal
             else:
                 raise RuntimeError("Optimal solution not found")
+    def policy(self, state, t):
+        state_tuple = iter_to_tuple(state)
+        if (state_tuple, t) in self.action_map:
+            return self.action_map[(state_tuple, t)]
+        action, overtime, obj_value = self.solve(state, t)
+        self.action_map[(state_tuple, t)] = action
+        return action
 
 def convet_state_to_booked_slots(bookings, future_schedule, treatment_patterns):
     appointment_slots = future_schedule @ treatment_patterns.T

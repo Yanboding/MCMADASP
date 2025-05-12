@@ -132,7 +132,7 @@ class Config:
 
     @classmethod
     def from_adjust_EJOR_case(cls):
-        decision_epoch = 100
+        decision_epoch = 30
         total_arrival_rate_mean = 8.25
         type_probs = np.array(
             [0.19, 0.11, 0.11, 1.43, 0.59, 0.45, 1.42, 1.36, 0.57, 0.38, 0.18, 0.18, 0.29, 0.21, 0.3, 0.29, 0.15,
@@ -178,6 +178,17 @@ class Config:
         future_schedule = np.array([[0] * num_types for _ in range(env_params['decision_epoch'])])
         init_state = (bookings, init_arrival, future_schedule)
         return cls(decision_epoch, class_number, arrival_generator, env_params, init_arrival, init_state)
+
+def get_config_by_type(case_type):
+    if case_type == "default":
+        config = Config.from_default()
+    if case_type == 'real_scale':
+        config = Config.from_real_scale()
+    elif case_type == 'ejor':
+        config = Config.from_EJOR_case()
+    elif case_type == 'adjust_ejor':
+        config = Config.from_adjust_EJOR_case()
+    return config
 
 if __name__ =="__main__":
     Config.from_adjust_EJOR_case()

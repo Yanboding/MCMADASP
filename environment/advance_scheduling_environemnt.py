@@ -4,7 +4,7 @@ from pprint import pprint
 
 import numpy as np
 from utils import numpy_shift, RunningStat
-from utility import get_valid_advance_actions, get_valid_allocation_actions
+from .utility import get_valid_advance_actions, get_valid_allocation_actions
 
 
 class AdvanceSchedulingEnv:
@@ -161,7 +161,7 @@ class AdvanceSchedulingEnv:
             res.append([prob, state, cost, done])
         return res
 
-    def reset(self, init_state, t, new_arrivals=None, percentage_occupied=0):
+    def reset(self, init_state=None, t=1, new_arrivals=None, percentage_occupied=0):
         if new_arrivals is not None and len(new_arrivals) != self.decision_epoch-t+1:
             raise ValueError('Invalid sample path!')
         self.t = t
@@ -227,13 +227,11 @@ class AdvanceSchedulingEnv:
         # record performance metric
         # implement info: include the type-dependent waiting times and overtime use
         wait_times = np.arange(action.shape[0])
-        print('action')
-        print(action)
         for i in range(action.shape[1]):
             self.wait_time_by_type[i].record_batch(wait_times, action[:, i])
-        self.overtime[self.tau] = post_action_bookings[0]
+        self.overtime[self.tau] = np.maximum(post_action_bookings[0]-self.regular_capacity, 0)
         if done:
-            self.overtime[self.tau:] = post_action_bookings
+            self.overtime[self.tau:] = np.maximum(post_action_bookings-self.regular_capacity, 0)
         # update state
         self.tau += 1
         if self.t + self.tau > self.decision_epoch:
