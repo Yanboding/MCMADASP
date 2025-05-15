@@ -1,4 +1,5 @@
 import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
 from .utility import set_fontsize
 def error_bar_plot(stats_by_sample_path, x_vals, xlabel, ylabel, plot_labels, save_file):
@@ -17,5 +18,34 @@ def error_bar_plot(stats_by_sample_path, x_vals, xlabel, ylabel, plot_labels, sa
     ax.set_ylabel(ylabel)
     set_fontsize(ax, 20)
     fig.tight_layout()
+    plt.savefig(save_file)
+    plt.show()
+
+def error_bar_plot_from_running_stats_dict(running_stats_dict, x_vals, xlabel, ylabel, plot_labels, save_file):
+    fig, ax = plt.subplots(1, 1, figsize=(20, 10))
+    for label, running_stats_by_x_val in running_stats_dict.items():
+        means = []
+        half_window = []
+        for x_val, running_stats in running_stats_by_x_val.items():
+            means.append(running_stats.expect[0])
+            half_window.append(running_stats.half_window(0.95)[0])
+        means = np.array(means)
+        half_window = np.array(half_window)
+        # ------------------------------------------------------------------
+        # Plot (one chart, default style)
+        ax.errorbar(x_vals, means, yerr=half_window, label=plot_labels[label], fmt='o', capsize=5, linewidth=1.5)
+        for x, y in zip(x_vals, means):
+            plt.text(x, y, f"{y:.2f}", ha='center', va='bottom', fontsize=20)
+    handles, labels = ax.get_legend_handles_labels()
+    unique_labels = sorted(list(set(labels)))
+    unique_handles = [handles[labels.index(label)] for label in unique_labels]
+    ax.set_xticks(x_vals)
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel(ylabel)
+    set_fontsize(ax, 20)
+    # Create legend
+    ax.legend(unique_handles, unique_labels, fontsize=20)
+    fig.tight_layout()
+    print(save_file)
     plt.savefig(save_file)
     plt.show()

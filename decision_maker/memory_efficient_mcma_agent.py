@@ -76,7 +76,6 @@ class SAAdvanceFastAgent:
                     for i in range(I):
                         a_t[j, i].lb = a_t[j, i].ub = int(action[j, i])
             # N-t+l-1 = H + l-1
-
             z_bar_t = m.addVars(H + l, vtype=GRB.CONTINUOUS, name='z_t')
 
             # overtime
@@ -153,11 +152,12 @@ def convet_state_to_booked_slots(bookings, future_schedule, treatment_patterns):
 if __name__ == "__main__":
     from experiments import Config
     from environment import AdvanceSchedulingEnv
-    config = Config.from_adjust_EJOR_case()
+    config = Config.from_multiappt_default_case()
     env_params = config.env_params
     env = AdvanceSchedulingEnv(**env_params)
+    init_state, info = env.reset(percentage_occupied=0.8)
+    print(init_state)
     agent = SAAdvanceFastAgent(env, discount_factor=env_params['discount_factor'])
-    init_state = config.init_state
     action, overtime, obj_value = agent.solve(init_state, 1)
     print(action)
     print(overtime)

@@ -1,4 +1,5 @@
 import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
 
 
@@ -75,6 +76,68 @@ def approximate_value_plot_from_running_stats(running_stats, x_vals, xlabel, yla
     ax.set_xticklabels(x_vals, rotation=0, fontsize=20)
     ax.set_xlabel(xlabel, fontsize=20)
     ax.set_ylabel(ylabel, fontsize=20)
+    # Create legend
+    ax.legend(unique_handles, unique_labels, fontsize=20)
+    fig.tight_layout()
+    plt.title("Sports Watch Data", fontdict=20)
+    plt.savefig(save_file)
+    plt.show()
+'''
+{
+label: {
+x_val: RunningStats
+}
+}
+'''
+def approximate_value_plot_from_running_stats_dict(running_stats_dict, x_vals, xlabel, ylabel, plot_labels, title, save_file):
+    fig, ax = plt.subplots(1, 1, figsize=(20, 10))
+    for label, running_stats_by_x_val in running_stats_dict.items():
+        means = []
+        half_window = []
+        for x_val, running_stats in running_stats_by_x_val.items():
+            means.append(running_stats.expect)
+            half_window.append(running_stats.half_window(0.95))
+        means = np.array(means).reshape(-1)
+        half_window = np.array(half_window).reshape(-1)
+        ax.plot(x_vals, means, label=plot_labels[label], marker='o')
+        ax.fill_between(x_vals, means-half_window, means+half_window, alpha=0.2)
+        for l, txt in enumerate(means):
+            ax.text(x_vals[l], means[l], str(round(txt, 3)), ha='center', va='bottom', fontsize=20)
+    set_fontsize(ax, 20)
+    # To handle multiple lines with the same label, we need to manually create a custom legend
+    handles, labels = ax.get_legend_handles_labels()
+    unique_labels = sorted(list(set(labels)))
+    unique_handles = [handles[labels.index(label)] for label in unique_labels]
+    ax.set_xticks(x_vals)
+    ax.set_xticklabels(x_vals, rotation=0, fontsize=20)
+    ax.set_xlabel(xlabel, fontsize=20)
+    ax.set_ylabel(ylabel, fontsize=20)
+    ax.set_title(title, fontsize=20)
+    # Create legend
+    ax.legend(unique_handles, unique_labels, fontsize=20)
+    fig.tight_layout()
+    plt.savefig(save_file)
+    plt.show()
+
+def approximate_value_plot_from_multid_running_stats(running_stats_dict, x_vals, xlabel, ylabel, plot_labels, title, save_file):
+    fig, ax = plt.subplots(1, 1, figsize=(20, 10))
+    for label, running_stats in running_stats_dict.items():
+        means = running_stats.expect
+        half_window = running_stats.half_window(0.95)
+        ax.plot(x_vals, means, label=plot_labels[label], marker='o')
+        ax.fill_between(x_vals, means-half_window, means+half_window, alpha=0.2)
+        for l, txt in enumerate(means):
+            ax.text(x_vals[l], means[l], str(round(txt, 3)), ha='center', va='bottom', fontsize=20)
+    set_fontsize(ax, 20)
+    # To handle multiple lines with the same label, we need to manually create a custom legend
+    handles, labels = ax.get_legend_handles_labels()
+    unique_labels = sorted(list(set(labels)))
+    unique_handles = [handles[labels.index(label)] for label in unique_labels]
+    ax.set_xticks(x_vals)
+    ax.set_xticklabels(x_vals, rotation=0, fontsize=20)
+    ax.set_xlabel(xlabel, fontsize=20)
+    ax.set_ylabel(ylabel, fontsize=20)
+    ax.set_title(title, fontsize=20)
     # Create legend
     ax.legend(unique_handles, unique_labels, fontsize=20)
     fig.tight_layout()

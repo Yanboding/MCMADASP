@@ -119,7 +119,7 @@ def experiment_revise(command_id, sample_path, sample_path_numbers, replication,
         for _ in range(replication):
             hindsight_lower_bound_agent.set_sample_paths(M)
             start = time.time()
-            action, overtime, obj_value = agent_instance.solve(state, t)
+            action, overtime, obj_value = hindsight_lower_bound_agent.solve(state, t)
             end = time.time() - start
             hindsight_lower_bound_stat.record(obj_value)
             hindsight_approx_runtime_stat.record(end)
