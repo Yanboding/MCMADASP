@@ -61,7 +61,7 @@ class Config:
 
     @classmethod
     def from_multiappt_default_case(cls):
-        decision_epoch = 30
+        decision_epoch = 4
         class_number = 2
         arrival_generator = MultiClassPoissonArrivalGenerator(3, 4, [1 / class_number] * class_number,
                                                               is_precompute_state=True)
@@ -73,7 +73,7 @@ class Config:
             'overtime_cost': 40,
             'duration': 1,
             'regular_capacity': 5,
-            'discount_factor': 1,
+            'discount_factor': 0.99,
             'problem_type': 'advance'
         }
         init_arrival = np.array([6] * class_number)
@@ -85,7 +85,7 @@ class Config:
 
     @classmethod
     def from_EJOR_case(cls):
-        decision_epoch = 20
+        decision_epoch = 25
         total_arrival_rate_mean = 8.25
         type_probs = np.array([0.19, 0.11,0.11,1.43,0.59,0.45,1.42,1.36,0.57,0.38,0.18,0.18,0.29,0.21,0.3,0.29,0.15,0.04])/total_arrival_rate_mean
         arrival_generator = MultiClassPoissonArrivalGenerator(total_arrival_rate_mean, 25, type_probs,
@@ -132,14 +132,11 @@ class Config:
 
     @classmethod
     def from_adjust_EJOR_case(cls):
-        decision_epoch = 30
-        total_arrival_rate_mean = 8.25
-        type_probs = np.array(
+        decision_epoch = 20
+        class_number = 18
+        arrival_rates = np.array(
             [0.19, 0.11, 0.11, 1.43, 0.59, 0.45, 1.42, 1.36, 0.57, 0.38, 0.18, 0.18, 0.29, 0.21, 0.3, 0.29, 0.15,
-             0.04]) / total_arrival_rate_mean
-        arrival_generator = MultiClassPoissonArrivalGenerator(total_arrival_rate_mean, 25, type_probs,
-                                                              is_precompute_state=False)
-
+             0.04])[:class_number]
         patterns = ['1* 2 + 4 * 1',
                     '1*2',
                     '1*2+3*1',
@@ -157,10 +154,14 @@ class Config:
                     '1 * 2 + 32 * 1',
                     '1 * 2 + 36 * 1',
                     '1 * 2 + 21 * 1 + 1 * 2 + 14 * 1',
-                    '1 * 2 + 32 * 1']
+                    '1 * 2 + 32 * 1'][:class_number]
         treatment_pattern = str2treatment_patterns(patterns)
-        class_number = len(patterns)
         holding_cost = [132.5] * 3 + [100] * 3 + [66.25] * 6 + [27.5] * 2 + [20] * 3 + [25] * 1
+        holding_cost = holding_cost[:class_number]
+        total_arrival_rate_mean = np.sum(arrival_rates)
+        type_probs = arrival_rates / total_arrival_rate_mean
+        arrival_generator = MultiClassPoissonArrivalGenerator(total_arrival_rate_mean, 25, type_probs,
+                                                              is_precompute_state=False)
         env_params = {
             'treatment_pattern': treatment_pattern,
             'decision_epoch': decision_epoch,

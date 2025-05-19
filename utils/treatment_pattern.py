@@ -75,27 +75,25 @@ def str2treatment_patterns(treatment_pattern_strs):
     return concat_ragged(treatment_patterns)
 
 def wait_time(l):
-    total_cost = 0
-    total_days = 0
-    for s, e, c in l:
-        interval_days = e-s
-        total_cost += interval_days*c
-        total_days += interval_days
-    return total_cost/total_days
-
-def wait_time_cost(t, i):
-    wait_time_lookup = {
-        0: [(0,1,0),(1,5,100),(5,20,150)],
-        1: [(0,1,0),(1,5,100),(5,20,150)]
-    }
+    '''
+    [0,0,100,100,100, 100, 100,150]
+    []
+    '''
+    cumulative_cost_by_day = []
+    for start, end, cost in l:
+        cumulative_cost_by_day += [cost]*(end - start)
+    print(cumulative_cost_by_day)
+    cumulative_cost_by_day = np.array(cumulative_cost_by_day)
+    cost_by_day = np.diff(cumulative_cost_by_day)
+    return sum(cost_by_day)/len(cost_by_day)
 
 if __name__ == '__main__':
-    l1_3 = [(0,1,0),(1,5,100),(5,20,150)]
-    l4_6 = [(0, 10, 0), (10, 20, 55)]
-    l7_12 = [(0, 5, 0), (5, 10, 65), (10, 20, 100)]
-    l13_14 = [(0, 5, 0), (5, 10, 80), (10, 22, 150)]
-    l15_17 = [(0, 10, 0), (10, 20, 40)]
-    l18 = [(0, 10, 0), (10, 20, 50)]
+    l1_3 = [(0,1,0),(1,5,100),(5,100,150)]
+    l4_6 = [(0, 10, 0), (10, 20, 50), (20,40,100), (40, 100, 150)]
+    l7_12 = [(0, 5, 0), (5, 10, 65), (10, 40, 100), (40, 100, 150)]
+    l13_14 = [(0, 5, 0), (5, 10, 80), (10, 100, 150)]
+    l15_17 = [(0, 10, 0), (10, 20, 40), (20, 30, 80), (30, 40, 100), (40, 100, 150)]
+    l18 = [(0, 10, 0), (10, 20, 50), (20, 30, 90), (30, 40, 100), (40, 100, 150)]
 
     print('l1_3:', wait_time(l1_3))
     print('l4_6:', wait_time(l4_6))
@@ -103,3 +101,4 @@ if __name__ == '__main__':
     print('l13_14:', wait_time(l13_14))
     print('l15_17:', wait_time(l15_17))
     print('l18:', wait_time(l18))
+    print([(i,j) for i in range(10) for j in range(3)])

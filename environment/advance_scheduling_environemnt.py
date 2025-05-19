@@ -193,7 +193,7 @@ class AdvanceSchedulingEnv:
         average_pattern = self.arrival_generator.type_probs @ self.treatment_pattern.T
         min_capacity_occupied = self.regular_capacity * percentage_occupied
         # initialize the current booking slots with all zeros
-        booking_horizon = self.decision_epoch-t
+        booking_horizon = self.decision_epoch-t+1
         booked_slots = np.zeros(booking_horizon+self.num_sessions-1)
         init_bookings = np.array([int(min_capacity_occupied)]*self.num_sessions)
         init_future_schedule = np.zeros((booking_horizon+1, self.num_types))

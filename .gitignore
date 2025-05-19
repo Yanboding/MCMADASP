@@ -185,3 +185,4 @@ STATUSES/
 TMP
 *.mps
 gurobi.env
+*.txt
