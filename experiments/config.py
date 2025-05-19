@@ -132,7 +132,7 @@ class Config:
 
     @classmethod
     def from_adjust_EJOR_case(cls):
-        decision_epoch = 20
+        decision_epoch = 3
         class_number = 18
         arrival_rates = np.array(
             [0.19, 0.11, 0.11, 1.43, 0.59, 0.45, 1.42, 1.36, 0.57, 0.38, 0.18, 0.18, 0.29, 0.21, 0.3, 0.29, 0.15,

@@ -267,9 +267,7 @@ class SAAdvanceAgent:
 
         bookings, delta_t, future_schedule = state  # b shape = (H+1, I)
         delta = self.delta  # shape = (M, H, I)
-        start = time.time()
         z = convet_state_to_booked_slots(bookings, future_schedule, self.env.treatment_pattern)
-        print('convert:', time.time() - start)
         decision_variable_type = GRB.INTEGER
         # ---------- model ----------
         with (gp.Model("SA_Advance", env=self.grb_env) as m):

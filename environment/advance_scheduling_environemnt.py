@@ -179,7 +179,6 @@ class AdvanceSchedulingEnv:
         future_first_appts = np.array(future_first_appts)
         self.future_first_appts_copy = copy.deepcopy(future_first_appts)
         self.state = (bookings, waitlist, future_first_appts)
-
         # measure of performance
         self.wait_time_by_type = {j: RunningStat((1,)) for j in range(self.num_types)}
         self.overtime = np.array([0]*(self.decision_epoch+self.num_sessions - t))
@@ -196,7 +195,7 @@ class AdvanceSchedulingEnv:
         booking_horizon = self.decision_epoch-t+1
         booked_slots = np.zeros(booking_horizon+self.num_sessions-1)
         init_bookings = np.array([int(min_capacity_occupied)]*self.num_sessions)
-        init_future_schedule = np.zeros((booking_horizon+1, self.num_types))
+        init_future_schedule = np.zeros((booking_horizon, self.num_types))
         booked_slots[:self.num_sessions] += init_bookings
         # initialize the bookings z to be regular_capacity * min_percentage_occupied
         # for each period j:
