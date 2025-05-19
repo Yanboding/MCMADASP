@@ -252,7 +252,7 @@ class SAAdvanceAgent:
             else:
                 raise RuntimeError("Optimal solution not found")
 
-    def solve(self, state, t, x=None, action=None):
+    def solve(self, state, t, x=None, action=None, future_decision_var_type=GRB.CONTINUOUS):
         # ---------- shortcuts ----------
         N = self.env.decision_epoch
         I = self.env.num_types
@@ -268,14 +268,13 @@ class SAAdvanceAgent:
         bookings, delta_t, future_schedule = state  # b shape = (H+1, I)
         delta = self.delta  # shape = (M, H, I)
         z = convet_state_to_booked_slots(bookings, future_schedule, self.env.treatment_pattern)
-        decision_variable_type = GRB.INTEGER
         # ---------- model ----------
         with (gp.Model("SA_Advance", env=self.grb_env) as m):
-            m.setParam("OutputFlag", 0)
-            m.setParam("LogToConsole", 0)
+            #m.setParam("OutputFlag", 0)
+            #m.setParam("LogToConsole", 0)
             m.setParam("MIPFocus", 1)
             # ---------- 1. today’s increments ----------
-            a_t = m.addVars(H + 1, I, vtype=decision_variable_type, name="a_t")
+            a_t = m.addVars(H + 1, I, vtype=GRB.INTEGER, name="a_t")
             if action is not None:
                 for j in range(H + 1):
                     for i in range(I):
@@ -289,7 +288,7 @@ class SAAdvanceAgent:
                 for omega in range(M)  # scenario
                 for i in range(I)  # class
             ]
-            a_fut = m.addVars(idx_a_fut, lb=0, vtype=decision_variable_type, name="a_fut")
+            a_fut = m.addVars(idx_a_fut, lb=0, vtype=future_decision_var_type, name="a_fut")
             # N-t+l-1 = H + l-1
             z_bar_t  = m.addVars(H + l, vtype=GRB.CONTINUOUS, name='z_t')
             idx_z_fut = [
@@ -313,14 +312,7 @@ class SAAdvanceAgent:
                                    for i in range(I))
             imm_overtime_cost = O * y[0, 0]
             imm_cost = imm_wait_cost + imm_overtime_cost
-            '''
-            fut_cost = gp.quicksum(gp.quicksum(gp.quicksum(gamma**k * w[i] for k in range(j+1)) * a_fut[omega, tau, j, i]
-                                               for tau in range(1, H + 1)
-                                               for j in range(H + 1 - tau)
-                                               for i in range(I)) +
-                                   gp.quicksum(gamma ** tau * O * y[omega, tau] for tau in range(1, H + l))
-                                   for omega in range(M))/M
-            '''
+
             fut_wait_cost = gp.quicksum(gp.quicksum(gamma**(k+tau) * w[i] for k in range(j+1)) * a_fut[omega, tau, j, i]
                                         for omega in range(M)
                                         for tau in range(1, H + 1)
@@ -355,7 +347,7 @@ class SAAdvanceAgent:
             m.addConstrs(
                 (
                     z_bar_t[j] == z[j] + gp.quicksum(
-                        gp.quicksum(a_t[min(k, H), i] * r[j - k, i] for k in range(max(j - l + 1, 0), min(j, H) + 1))
+                        gp.quicksum(a_t[k, i] * r[j - k, i] for k in range(max(j - l + 1, 0), min(j, H) + 1))
                         for i in range(I))
                     for j in range(H + l)
                 ),
@@ -366,7 +358,7 @@ class SAAdvanceAgent:
                 (
                     z_bar_fut[omega, tau, j] == (
                         z_bar_t[j + 1] if tau == 1 else z_bar_fut[omega, tau - 1, j + 1]) + gp.quicksum(
-                        gp.quicksum(a_fut[omega, tau, min(k, H - tau), i] * r[j - k, i]
+                        gp.quicksum(a_fut[omega, tau, k, i] * r[j - k, i]
                                     for k in range(max(j - l + 1, 0), min(j, H - tau) + 1))
                         for i in range(I))
                     for tau in range(1, H + 1)
@@ -450,14 +442,14 @@ if __name__ =="__main__":
     from environment.utility import get_system_dynamic
     import time
     # 54946.988268116984
-
+    '''
     config = Config.from_adjust_EJOR_case()
     env_params = config.env_params
     env = AdvanceSchedulingEnv(**env_params)
     init_state, info = env.reset(percentage_occupied=0.5)
     #print(init_state)
     agent = SAAdvanceAgent(env, discount_factor=env_params['discount_factor'])
-    agent.set_sample_paths(500)
+    agent.set_sample_paths(1)
     #print("Solver 1 path:", agent.delta)
     start = time.time()
     action, overtime, obj_value = agent.solve_original(init_state, 1)
@@ -465,6 +457,7 @@ if __name__ =="__main__":
     print(action)
     print(obj_value)
     # Memory now: 2.78 GB  (peak 4.47 GB)
+    '''
 
 
 
@@ -474,10 +467,10 @@ if __name__ =="__main__":
     init_state, info = env.reset(percentage_occupied=0.5)
     #print(init_state)
     agent = SAAdvanceAgent(env, discount_factor=env_params['discount_factor'])
-    agent.set_sample_paths(500)
+    agent.set_sample_paths(50)
     #print("Solver 2 path:", agent.delta)
     start = time.time()
-    action, overtime, obj_value = agent.solve(init_state, 1)
+    action, overtime, obj_value = agent.solve(init_state, 1, future_decision_var_type=GRB.CONTINUOUS)
     print("time:", time.time() - start)
     print(str(action))
     print(obj_value)
@@ -488,6 +481,19 @@ if __name__ =="__main__":
     # a_fut: {(0, 1, 0, 0): 2.0, (0, 1, 0, 1): 0.0, (0, 1, 1, 0): 0.0, (0, 1, 1, 1): 0.0, (0, 1, 2, 0): 0.0, (0, 1, 2, 1): 0.0, (0, 2, 0, 0): 1.0, (0, 2, 0, 1): 1.0, (0, 2, 1, 0): 0.0, (0, 2, 1, 1): 0.0, (0, 3, 0, 0): 1.0, (0, 3, 0, 1): 3.0}
     # z_bar_fut: {(0, 1, 0): 4.0, (0, 1, 1): 2.0, (0, 1, 2): 0.0, (0, 1, 3): 0.0, (0, 2, 0): 5.0, (0, 2, 1): 0.0, (0, 2, 2): 0.0, (0, 3, 0): 5.0, (0, 3, 1): 0.0}
     # z_bar_fut: {(0, 1, 0): 4.0, (0, 1, 1): 2.0, (0, 2, 0): 5.0, (0, 2, 1): 1.0, (0, 3, 0): 6.0, (0, 3, 1): 1.0}
+    config = Config.from_adjust_EJOR_case()
+    env_params = config.env_params
+    env = AdvanceSchedulingEnv(**env_params)
+    init_state, info = env.reset(percentage_occupied=0.5)
+    # print(init_state)
+    agent = SAAdvanceAgent(env, discount_factor=env_params['discount_factor'])
+    agent.set_sample_paths(50)
+    # print("Solver 2 path:", agent.delta)
+    start = time.time()
+    action, overtime, obj_value = agent.solve(init_state, 1, future_decision_var_type=GRB.INTEGER)
+    print("time:", time.time() - start)
+    print(str(action))
+    print(obj_value)
 
 
 
