@@ -151,14 +151,14 @@ class AdvanceSchedulingEnv:
             if t+1 > self.decision_epoch:
                 delta = np.zeros(self.num_types, dtype=int)
             done = t == self.decision_epoch
-            state = (next_bookings, next_waitlist, new_future_first_appts) = self.post_action_state_to_new_state(
+            next_state = (next_bookings, next_waitlist, new_future_first_appts) = self.post_action_state_to_new_state(
                 post_state, delta)
             if (next_waitlist.sum() < 0) or (done and next_waitlist.sum() > 0):
                 print('time:', t, 'decision_epoch:', self.decision_epoch)
                 print(state)
                 print(action)
                 raise ValueError("Invalid action")
-            res.append([prob, state, cost, done])
+            res.append([prob, next_state, cost, done])
         return res
 
     def reset(self, init_state=None, t=1, new_arrivals=None, percentage_occupied=0):
@@ -244,9 +244,11 @@ if __name__ == "__main__":
     from waiting_cost import wait_time_penalty
     from experiments import Config
     import matplotlib.pyplot as plt
-    config = Config.from_adjust_EJOR_case()
+    config = Config.from_multiappt_default_case()
     env_params = config.env_params
-    bookings, init_arrival, future_schedule = config.init_state
     env = AdvanceSchedulingEnv(**env_params)
-    state, info = env.reset(None, 1, percentage_occupied=0.2)
-    print(state)
+    bookings = np.array([2]*(env.decision_epoch+env.num_sessions-1))
+    action = np.array([[2,1] for i in range(env.decision_epoch)])
+    print(bookings)
+    print(action)
+    print(env.advance_scheduling_one_time_cost_fn(bookings, action, 1))

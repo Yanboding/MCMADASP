@@ -4,8 +4,6 @@ import sys
 import os
 from pprint import pprint
 
-from environment import MultiClassPoissonArrivalGenerator, AdvanceSchedulingEnv
-
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from utils import iter_to_tuple, convert_str_keys_to_tuple, convert_tuple_keys_to_str, keep_significant_digits
 import numpy as np
@@ -205,39 +203,35 @@ class OptimalAgent:
         plt.show()
 
 if __name__ == '__main__':
-    decision_epoch = 3
-    class_number = 2
-    arrival_generator = MultiClassPoissonArrivalGenerator(3, 2, [1 / class_number] * class_number)
-    env_params = {
-        'treatment_pattern': [[2, 1]],
-        'decision_epoch': decision_epoch,
-        'arrival_generator': arrival_generator,
-        'holding_cost': [10 - i * 5/(class_number-1)for i in range(class_number)],
-        'overtime_cost': 40,
-        'duration': 1,
-        'regular_capacity': 5,
-        'discount_factor': 0.99,
-        'problem_type': 'allocation'
-    }
-    bookings = np.array([0])
-    future_schedule = np.array([[0] * class_number for i in range(decision_epoch)])
-    new_arrival = np.array([5, 6])
-    init_state = (bookings, new_arrival, future_schedule)
+    from experiments import ExperimentConfig, Config
+    from environment import AdvanceSchedulingEnv
+    config = ExperimentConfig.from_EJOR_case()
+    env = config.env
+    init_state = config.init_state
     t = 1
 
-    env = AdvanceSchedulingEnv(**env_params)
-
     print('Waiting for Optimal...')
-    optimal_agent = OptimalAgent(env=env, discount_factor=env_params['discount_factor'])
+    optimal_agent = OptimalAgent(env=env, discount_factor=env.discount_factor)
     optimal_agent.train(init_state, t)
     optimal_value = optimal_agent.get_state_value(init_state, t)
     optimal_action = optimal_agent.policy(init_state, t)
     print('Optimal Done:', optimal_value, 'Optimal action:', optimal_action)
-    pprint(optimal_agent.get_action_value(init_state, [4, 0], t))
-    pprint(optimal_agent.get_action_values(init_state, t))
+    #pprint(optimal_agent.get_action_value(init_state, [4, 0], t))
+    #pprint(optimal_agent.get_action_values(init_state, t))
     #           OPT  SAAllocationAdvanceAgent
     # 0  489.330991                470.361765
     #       OPT SAAllocationAdvanceAgent
     # 0  [4, 1]                   [2, 4]
     # [4, 0]491.50670496172813
-
+    # 1183.3444922662575
+    '''
+    old_config = Config.from_multiappt_default_case()
+    env_params = old_config.env_params
+    env = AdvanceSchedulingEnv(**env_params)
+    init_state = old_config.init_state
+    optimal_agent = OptimalAgent(env=env, discount_factor=env.discount_factor)
+    optimal_agent.train(init_state, t)
+    optimal_value = optimal_agent.get_state_value(init_state, t)
+    optimal_action = optimal_agent.policy(init_state, t)
+    print('Optimal Done:', optimal_value, 'Optimal action:', optimal_action)
+    '''

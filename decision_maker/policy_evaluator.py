@@ -84,21 +84,19 @@ class PolicyEvaluator:
     '''
 
 if __name__ == '__main__':
-    from experiments import Config
-    config = Config.from_multiappt_default_case()
-    env_params = config.env_params
+    from experiments import ExperimentConfig
+    config = ExperimentConfig.from_EJOR_case()
+    env = config.env
     init_state = config.init_state
     t = 1
-    env = AdvanceSchedulingEnv(**env_params)
-    sa_advance_agent = SAAdvanceAgent(env=env, discount_factor=env_params['discount_factor'])
+    sa_advance_agent = SAAdvanceAgent(env=env, discount_factor=env.discount_factor)
     sa_advance_agent.set_sample_paths(1000)
     #print("Action:", sa_advance_agent.policy(init_state, t))
-    policy_evaluator = PolicyEvaluator(env, sa_advance_agent, discount_factor=env_params['discount_factor'])
+    policy_evaluator = PolicyEvaluator(env, sa_advance_agent, discount_factor=env.discount_factor)
     start = time.time()
     mean= policy_evaluator.evaluate(init_state, t)
     print(mean)
     print(time.time() - start)
     print(sa_advance_agent.solve(init_state, t))
-    print(sa_advance_agent.solve_single_appointment(init_state, t))
 
 

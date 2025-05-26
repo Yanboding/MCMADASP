@@ -82,10 +82,17 @@ def wait_time(l):
     cumulative_cost_by_day = []
     for start, end, cost in l:
         cumulative_cost_by_day += [cost]*(end - start)
-    print(cumulative_cost_by_day)
     cumulative_cost_by_day = np.array(cumulative_cost_by_day)
-    cost_by_day = np.diff(cumulative_cost_by_day)
-    return sum(cost_by_day)/len(cost_by_day)
+    return cumulative_cost_by_day
+
+class Treatment:
+
+    def __init__(self, treatment_pattern, cumulate_cost):
+        self.treatment_pattern = treatment_pattern
+        self.cumulate_cost = cumulate_cost
+
+    def get_cost(self, t, i):
+        return self.cumulate_cost[t, i]
 
 if __name__ == '__main__':
     l1_3 = [(0,1,0),(1,5,100),(5,100,150)]
@@ -101,4 +108,41 @@ if __name__ == '__main__':
     print('l13_14:', wait_time(l13_14))
     print('l15_17:', wait_time(l15_17))
     print('l18:', wait_time(l18))
-    print([(i,j) for i in range(10) for j in range(3)])
+    cumulate_cost = []
+    for i in range(18):
+        if 0 <= i <3:
+            wait_cost_by_day = wait_time(l1_3)
+        elif 3 <= i <6:
+            wait_cost_by_day = wait_time(l4_6)
+        elif 6 <= i <12:
+            wait_cost_by_day = wait_time(l7_12)
+        elif 12 <= i <14:
+            wait_cost_by_day = wait_time(l13_14)
+        elif 14 <= i <17:
+            wait_cost_by_day = wait_time(l15_17)
+        elif 17 <= i < 18:
+            wait_cost_by_day = wait_time(l18)
+        cumulate_cost.append(wait_cost_by_day)
+    cumulate_cost = np.array(cumulate_cost)
+    patterns = ['1* 2 + 4 * 1',
+                '1*2',
+                '1*2+3*1',
+                '1* 2 + 15 * 1',
+                '1*2 + 15*1 + 1*2 + 3*1',
+                '1* 3 + 15 * 2',
+                '1* 2',
+                '1* 2 + 4 * 1',
+                '1* 2 + 9 * 1',
+                '1 * 2 + 3 * 1',
+                '1 * 2 + 14 * 1',
+                '1 * 1',
+                '1 * 2 + 19 * 1',
+                '1 * 3 + 34 * 2',
+                '1 * 2 + 32 * 1',
+                '1 * 2 + 36 * 1',
+                '1 * 2 + 21 * 1 + 1 * 2 + 14 * 1',
+                '1 * 2 + 32 * 1']
+    treatment_pattern = str2treatment_patterns(patterns)
+    treatment = Treatment(treatment_pattern, cumulate_cost)
+    print(treatment.get_cost(2,1))
+

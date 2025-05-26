@@ -1,3 +1,4 @@
+import time
 from collections import defaultdict
 
 import numpy as np
@@ -259,15 +260,14 @@ class SAAdvanceAgent:
         H = N - t  # remaining horizon
         M = self.sample_path_number
         gamma = self.discount_factor
-        w = np.asarray(self.env.holding_cost)
+        w = self.env.holding_cost
         r = np.asarray(self.env.treatment_pattern)  # (l, I)
         C = self.env.regular_capacity
         O = self.env.overtime_cost
         l = self.env.num_sessions
 
-        bookings, delta_t, future_schedule = state  # b shape = (H+1, I)
+        z, delta_t = state  # b shape = (H+1, I)
         delta = self.delta  # shape = (M, H, I)
-        z = convet_state_to_booked_slots(bookings, future_schedule, self.env.treatment_pattern)
         # ---------- model ----------
         with (gp.Model("SA_Advance", env=self.grb_env) as m):
             #m.setParam("OutputFlag", 0)
@@ -302,18 +302,13 @@ class SAAdvanceAgent:
             # overtime
             y = m.addVars(M, H + l, lb=0, vtype=GRB.CONTINUOUS, name="y")
             # ---------- 1. objective ----------
-            '''
-            imm_cost = gp.quicksum(gp.quicksum(gamma**k * w[i] for k in range(j+1)) * a_t[j, i]
-                                   for j in range(H+1)
-                                   for i in range(I)) + O * y[0, 0]
-            '''
-            imm_wait_cost = gp.quicksum(gp.quicksum(gamma**k * w[i] for k in range(j+1)) * a_t[j, i]
+            imm_wait_cost = gp.quicksum(gp.quicksum(gamma**k * w(k, i) for k in range(j+1)) * a_t[j, i]
                                    for j in range(H+1)
                                    for i in range(I))
             imm_overtime_cost = O * y[0, 0]
             imm_cost = imm_wait_cost + imm_overtime_cost
 
-            fut_wait_cost = gp.quicksum(gp.quicksum(gamma**(k+tau) * w[i] for k in range(j+1)) * a_fut[omega, tau, j, i]
+            fut_wait_cost = gp.quicksum(gamma**tau * gp.quicksum(gamma**k * w(k, i) for k in range(j+1)) * a_fut[omega, tau, j, i]
                                         for omega in range(M)
                                         for tau in range(1, H + 1)
                                         for j in range(H + 1 - tau)
@@ -331,7 +326,7 @@ class SAAdvanceAgent:
                     gp.quicksum(a_t[j, i] for j in range(H + 1)) == delta_t[i]
                     for i in range(I)
                 ),
-                name="C3_demand_today",
+                name="C1_demand_today",
             )
             # demand for future
             m.addConstrs(
@@ -341,7 +336,7 @@ class SAAdvanceAgent:
                     for omega in range(M)
                     for i in range(I)
                 ),
-                name="C4_demand_future",
+                name="C2_demand_future",
             )
             # booked appointment slots at the end of today
             m.addConstrs(
@@ -351,7 +346,7 @@ class SAAdvanceAgent:
                         for i in range(I))
                     for j in range(H + l)
                 ),
-                name="C2_booked_slot_today"
+                name="C3_booked_slot_today"
             )
             # booked appointment slots at the end of t+tau
             m.addConstrs(
@@ -365,7 +360,7 @@ class SAAdvanceAgent:
                     for j in range(H + l - tau)
                     for omega in range(M)
                 ),
-                name="C6_booked_slot_future"
+                name="C4_booked_slot_future"
             )
             # ---------- 5. capacity (overtime) ----------
             m.addConstrs(
@@ -374,7 +369,7 @@ class SAAdvanceAgent:
                     for tau in range(H + 1)
                     for omega in range(M)
                 ),
-                name="C8_overtime_main",
+                name="C5_overtime_main",
             )
             m.addConstrs(
                 (
@@ -382,9 +377,8 @@ class SAAdvanceAgent:
                     for tau in range(1, l)
                     for omega in range(M)
                 ),
-                name="C8_overtime_tail",
+                name="C5_overtime_tail",
             )
-
             # ---------- 7. solve ----------
             m.setParam("Presolve", 2)
             m.setParam("Threads", 0)
@@ -436,64 +430,16 @@ def convet_state_to_booked_slots(bookings, future_schedule, treatment_patterns):
     # 3.  Pre‑existing bookings (past days).
     booked_slots[:len(bookings)] += bookings
     return booked_slots
+
 if __name__ =="__main__":
-    from experiments.config import Config
-    from environment import AdvanceSchedulingEnv, MultiClassPoissonArrivalGenerator
-    from environment.utility import get_system_dynamic
-    import time
+    from experiments import ExperimentConfig
     # 54946.988268116984
-    '''
-    config = Config.from_adjust_EJOR_case()
-    env_params = config.env_params
-    env = AdvanceSchedulingEnv(**env_params)
-    init_state, info = env.reset(percentage_occupied=0.5)
-    #print(init_state)
-    agent = SAAdvanceAgent(env, discount_factor=env_params['discount_factor'])
-    agent.set_sample_paths(1)
-    #print("Solver 1 path:", agent.delta)
-    start = time.time()
-    action, overtime, obj_value = agent.solve_original(init_state, 1)
-    print("time:", time.time() - start)
-    print(action)
-    print(obj_value)
-    # Memory now: 2.78 GB  (peak 4.47 GB)
-    '''
-
-
-
-    config = Config.from_adjust_EJOR_case()
-    env_params = config.env_params
-    env = AdvanceSchedulingEnv(**env_params)
-    init_state, info = env.reset(percentage_occupied=0.5)
-    #print(init_state)
-    agent = SAAdvanceAgent(env, discount_factor=env_params['discount_factor'])
-    agent.set_sample_paths(50)
-    #print("Solver 2 path:", agent.delta)
-    start = time.time()
-    action, overtime, obj_value = agent.solve(init_state, 1, future_decision_var_type=GRB.CONTINUOUS)
-    print("time:", time.time() - start)
-    print(str(action))
-    print(obj_value)
-    #45.80203080177307
-    #[[2 0][0 1]]
-    # understand why two solvers have different result.
-    # a_fut: {(0, 1, 0, 0): 2.0, (0, 1, 0, 1): 0.0, (0, 1, 1, 0): 0.0, (0, 1, 1, 1): 0.0, (0, 1, 2, 0): 0.0, (0, 1, 2, 1): 0.0, (0, 2, 0, 0): 1.0, (0, 2, 0, 1): 1.0, (0, 2, 1, 0): 0.0, (0, 2, 1, 1): 0.0, (0, 3, 0, 0): 1.0, (0, 3, 0, 1): 3.0}
-    # a_fut: {(0, 1, 0, 0): 2.0, (0, 1, 0, 1): 0.0, (0, 1, 1, 0): 0.0, (0, 1, 1, 1): 0.0, (0, 1, 2, 0): 0.0, (0, 1, 2, 1): 0.0, (0, 2, 0, 0): 1.0, (0, 2, 0, 1): 1.0, (0, 2, 1, 0): 0.0, (0, 2, 1, 1): 0.0, (0, 3, 0, 0): 1.0, (0, 3, 0, 1): 3.0}
-    # z_bar_fut: {(0, 1, 0): 4.0, (0, 1, 1): 2.0, (0, 1, 2): 0.0, (0, 1, 3): 0.0, (0, 2, 0): 5.0, (0, 2, 1): 0.0, (0, 2, 2): 0.0, (0, 3, 0): 5.0, (0, 3, 1): 0.0}
-    # z_bar_fut: {(0, 1, 0): 4.0, (0, 1, 1): 2.0, (0, 2, 0): 5.0, (0, 2, 1): 1.0, (0, 3, 0): 6.0, (0, 3, 1): 1.0}
-    config = Config.from_adjust_EJOR_case()
-    env_params = config.env_params
-    env = AdvanceSchedulingEnv(**env_params)
-    init_state, info = env.reset(percentage_occupied=0.5)
-    # print(init_state)
-    agent = SAAdvanceAgent(env, discount_factor=env_params['discount_factor'])
-    agent.set_sample_paths(50)
-    # print("Solver 2 path:", agent.delta)
-    start = time.time()
-    action, overtime, obj_value = agent.solve(init_state, 1, future_decision_var_type=GRB.INTEGER)
-    print("time:", time.time() - start)
-    print(str(action))
-    print(obj_value)
-
-
+    config = ExperimentConfig.from_EJOR_case()
+    env = config.env
+    init_state = config.init_state
+    t = 1
+    agent = SAAdvanceAgent(env=env, discount_factor=env.discount_factor)
+    agent.set_sample_paths(500)
+    action, owvertime, opt_val = agent.solve(init_state, t)
+    print("value function lower bound:", opt_val)
 

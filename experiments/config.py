@@ -61,12 +61,12 @@ class Config:
 
     @classmethod
     def from_multiappt_default_case(cls):
-        decision_epoch = 4
+        decision_epoch = 3
         class_number = 2
         arrival_generator = MultiClassPoissonArrivalGenerator(3, 4, [1 / class_number] * class_number,
                                                               is_precompute_state=True)
         env_params = {
-            'treatment_pattern': [[2,1],[1,0]],
+            'treatment_pattern': [[2,1],[1,0], [1, 1]],
             'decision_epoch': decision_epoch,
             'arrival_generator': arrival_generator,
             'holding_cost': [10 - i * 5 / max((class_number - 1), 1) for i in range(class_number)],

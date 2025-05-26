@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 
 from decision_maker.memory_efficient_mcma_agent import SAAdvanceFastAgent
-from experiments.config import get_config_by_type
+from experiments.experiment_config import get_config_by_type
 from utils import iter_to_tuple, RunningStat
 from experiments import Config
 from environment import AdvanceSchedulingEnv  # Replace 'some_module' with the actual module name where AdvanceSchedulingEnv is defined
@@ -77,9 +77,6 @@ def experiment_revise(command_id, sample_path, sample_path_numbers, replication,
     }
     '''
     t = 1
-    # determine what config to use
-    config = get_config_by_type(case_type)
-    env_params = config.env_params
     # For each different number of sample paths
     for M in sample_path_numbers:
         # set result identifier
@@ -90,14 +87,15 @@ def experiment_revise(command_id, sample_path, sample_path_numbers, replication,
         # evaluate agent performance
         for agent in agents:
             agent_name, args = agent['agent_name'], agent['args']
-            env = AdvanceSchedulingEnv(**env_params)
-            state, info = env.reset(t=t, percentage_occupied=occupancy_percentage, new_arrivals=sample_path)
+            config = get_config_by_type(case_type)
+            env = config.env
+            state, info = env.reset(t=t, percentage_occupied=occupancy_percentage, new_arrivals=sample_path, seed=command_id)
             if agent_name == "hindsight_approx":
-                agent_instance = SAAdvanceAgent(env, discount_factor=env_params['discount_factor'], **args)
+                agent_instance = SAAdvanceAgent(env, discount_factor=env.discount_factor, **args)
             elif agent_name == "myopic":
-                agent_instance = SAAdvanceFastAgent(env, discount_factor=env_params['discount_factor'], **args)
+                agent_instance = SAAdvanceFastAgent(env, discount_factor=env.discount_factor, **args)
             agent_instance.set_sample_paths(M)
-            evaluator = PolicyEvaluator(env, agent_instance, env_params['discount_factor'])
+            evaluator = PolicyEvaluator(env, agent_instance, env.discount_factor)
             sample_average_V = evaluator.simulation_evaluate_helper(state, t=t,
                                                                     sample_paths=[np.array(sample_path)])
             res[agent_name+'_value'] = sample_average_V[(iter_to_tuple(state), t)].expect[0]
@@ -108,27 +106,17 @@ def experiment_revise(command_id, sample_path, sample_path_numbers, replication,
                 res['count_' + agent_name + '_' + str(type_i)] = running_stat.count
             for day in range(len(env.overtime)):
                 res[agent_name + '_overtime_' + str(day)] = env.overtime[day]
-
-        # calculate the lower bound
-        hindsight_lower_bound_stat = RunningStat((1,))
-        # runtime stat
-        hindsight_approx_runtime_stat = RunningStat((1,))
-        env = AdvanceSchedulingEnv(**env_params)
-        state, info = env.reset(t=t, percentage_occupied=occupancy_percentage, new_arrivals=sample_path)
-        hindsight_lower_bound_agent = SAAdvanceAgent(env, discount_factor=env_params['discount_factor'])
-        for _ in range(replication):
+        config = get_config_by_type(case_type)
+        env = config.env
+        state, info = env.reset(t=t, percentage_occupied=occupancy_percentage, new_arrivals=sample_path, seed=command_id)
+        hindsight_lower_bound_agent = SAAdvanceAgent(env, discount_factor=env.discount_factor)
+        for r in range(replication):
             hindsight_lower_bound_agent.set_sample_paths(M)
             start = time.time()
             action, overtime, obj_value = hindsight_lower_bound_agent.solve(state, t)
             end = time.time() - start
-            hindsight_lower_bound_stat.record(obj_value)
-            hindsight_approx_runtime_stat.record(end)
-        res["expect_hindsight_approx"] = hindsight_lower_bound_stat.expect[0]
-        res["varSum_hindsight_approx"] = hindsight_lower_bound_stat.varSum[0]
-        res["count_hindsight_approx"] = hindsight_lower_bound_stat.count
-        res["expect_hindsight_approx_runtime"] = hindsight_approx_runtime_stat.expect[0]
-        res["varSum_hindsight_approx_runtime"] = hindsight_approx_runtime_stat.varSum[0]
-        res["count_hindsight_approx_runtime"] = hindsight_approx_runtime_stat.count
+            res['hindsight_lower_bound_' + str(r)] = obj_value
+            res['hindsight_lower_bound_runtime_' + str(r)] = end
         df = pd.DataFrame(
             [res]
         )

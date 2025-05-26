@@ -58,15 +58,14 @@ class SAAdvanceFastAgent:
         H = N - t
         M = self.sample_path_number
         gamma = self.discount_factor
-        w = np.asarray(self.env.holding_cost)
+        w = self.env.holding_cost
         r = np.asarray(self.env.treatment_pattern)  # (l, I)
         C = self.env.regular_capacity
         O = self.env.overtime_cost
         l = self.env.num_sessions
 
-        bookings, delta_t, future_schedule = state  # b shape = (H+1, I)
+        z, delta_t = state  # b shape = (H+1, I)
         delta = self.delta  # shape = (M, H, I)
-        z = convet_state_to_booked_slots(bookings, future_schedule, self.env.treatment_pattern)
         decision_variable_type = GRB.INTEGER
         # ---------- shortcuts ----------
         with gp.Model("SA_Advance", env=self.grb_env) as m:
@@ -113,7 +112,7 @@ class SAAdvanceFastAgent:
                 y_fut = m.addVars(idx_y_t_fut, lb=0, vtype=GRB.CONTINUOUS, name='y_fut')
 
             # ---------- 6. objective ----------
-            imm_wait_cost = gp.quicksum(gp.quicksum(gamma ** k * w[i] for k in range(j + 1)) * a_t[j, i]
+            imm_wait_cost = gp.quicksum(gp.quicksum(gamma ** k * w(k,i) for k in range(j + 1)) * a_t[j, i]
                                         for j in range(H + 1)
                                         for i in range(I))
             imm_overtime_cost = gp.quicksum(gamma ** j * O * y_t[j] for j in range(H + l))
@@ -121,7 +120,7 @@ class SAAdvanceFastAgent:
             obj_func = imm_cost
             if self.is_myopic == False:
                 fut_wait_cost = gp.quicksum(
-                    gp.quicksum(gamma ** (k + tau) * w[i] for k in range(j + 1)) * a_fut[omega, tau, j, i]
+                    gp.quicksum(gamma ** (k + tau) * w(k,i) for k in range(j + 1)) * a_fut[omega, tau, j, i]
                     for omega in range(M)
                     for tau in range(1, H + 1)
                     for j in range(H + 1 - tau)
@@ -199,6 +198,11 @@ class SAAdvanceFastAgent:
                 )
             # ---------- 7. solve ----------
             m.optimize()
+            '''
+            print("imm_cost:", imm_cost.getValue())
+            print("imm_wait_cost:", imm_wait_cost.getValue())
+            print("imm_overtime_cost:", imm_overtime_cost.getValue())
+            '''
             cur_mem = m.getAttr(GRB.Attr.MemUsed)  # current RAM in GB
             peak_mem = m.getAttr(GRB.Attr.MaxMemUsed)  # peak RAM in GB
             print(f"Memory now: {cur_mem:.2f} GB  (peak {peak_mem:.2f} GB)")
@@ -234,33 +238,15 @@ def convet_state_to_booked_slots(bookings, future_schedule, treatment_patterns):
     return booked_slots
 
 if __name__ == "__main__":
-    from experiments import Config
-    from environment import AdvanceSchedulingEnv
-    config = Config.from_adjust_EJOR_case()
-    env_params = config.env_params
-    env = AdvanceSchedulingEnv(**env_params)
-    init_state, info = env.reset(percentage_occupied=0.5)
-    #print(init_state)
-    agent = SAAdvanceFastAgent(env, discount_factor=env_params['discount_factor'])
-    agent.set_sample_paths(300)
-    start = time.time()
-    action, overtime, obj_value = agent.solve(init_state, 1)
-    print(time.time() - start)
-    print(action)
-    print(overtime)
-    print(obj_value)
+    from experiments import ExperimentConfig
 
-    config = Config.from_adjust_EJOR_case()
-    env_params = config.env_params
-    env = AdvanceSchedulingEnv(**env_params)
-    init_state, info = env.reset(percentage_occupied=0.5)
-    # print(init_state)
-    agent = SAAdvanceFastAgent(env, discount_factor=env_params['discount_factor'], is_myopic=False)
-    agent.set_sample_paths(300)
-    start = time.time()
-    action, overtime, obj_value = agent.solve(init_state, 1)
-    print(time.time() - start)
-    print(action)
-    print(overtime)
-    print(obj_value)
+    # 54946.988268116984
+    config = ExperimentConfig.from_EJOR_case()
+    env = config.env
+    init_state = config.init_state
+    t = 1
+    agent = SAAdvanceFastAgent(env=env, discount_factor=env.discount_factor)
+    agent.set_sample_paths(500)
+    action, owvertime, opt_val = agent.solve(init_state, t)
+    print("value function lower bound:", opt_val)
 

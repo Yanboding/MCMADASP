@@ -33,6 +33,33 @@ def get_valid_advance_actions(waitlist, number_days):
 
     backtracking([], waitlist)
     return np.array(actions).transpose((0, 2, 1))
+'''
+
+def get_valid_advance_actions(waitlist, number_days):
+    if number_days < 1:
+        raise ValueError('number_days must be at least 1')
+
+    @functools.lru_cache(maxsize=None)
+    def compositions(n, k):
+        # Generate all tuples of k non-negative integers summing to n
+        if k == 1:
+            return [(n,)]
+        results = []
+        for i in range(n + 1):
+            for tail in compositions(n - i, k - 1):
+                results.append((i,) + tail)
+        return results
+
+    def get_all_class_combinations():
+        return [compositions(w, number_days) for w in waitlist]
+
+    # Cartesian product of all class-level combinations
+    all_class_combinations = get_all_class_combinations()
+    all_actions = list(itertools.product(*all_class_combinations))
+
+    # Convert to ndarray: (num_actions, number_days, num_classes)
+    return np.array(all_actions).transpose((0, 2, 1))
+'''
 
 def get_system_dynamic(mean_arrival, maximum_arrival, type_probs):
     total_poisson = poisson(mean_arrival)
@@ -84,8 +111,8 @@ if __name__ =='__main__':
     #system_dynamic = get_system_dynamic_fast(10, 30, [0.4, 0.3, 0.2, 0.1])
     class_number = 8
     probability = 1 / class_number
-    system_dynamic = get_system_dynamic(10, 30, [probability] * class_number)
-    print(system_dynamic)
+    actions = get_valid_advance_actions([3, 3, 4], 100)
+    print(actions)
     '''
     probabilities = [item[0] for item in system_dynamic]
     arrivals = [item[1] for item in system_dynamic]
