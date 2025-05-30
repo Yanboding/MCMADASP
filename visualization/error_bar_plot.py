@@ -22,7 +22,7 @@ def error_bar_plot(stats_by_sample_path, x_vals, xlabel, ylabel, plot_labels, sa
     plt.show()
 
 def error_bar_plot_from_running_stats_dict(running_stats_dict, x_vals, xticklabels, xlabel, ylabel, plot_labels, title, save_file, is_show_text=True):
-    fig, ax = plt.subplots(1, 1, figsize=(20, 10))
+    fig, ax = plt.subplots(1, 1, figsize=(12, 10))
     for label in plot_labels:
         running_stats_by_x_val = running_stats_dict[label]
         means = []
@@ -38,8 +38,9 @@ def error_bar_plot_from_running_stats_dict(running_stats_dict, x_vals, xticklabe
         # Plot (one chart, default style)
         ax.errorbar(x_vals, means, yerr=half_window, label=plot_labels[label], fmt='o', capsize=5, linewidth=1.5)
         if is_show_text:
-            for x, y in zip(x_vals, means):
-                plt.text(x, y, f"{y:.2f}", ha='center', va='bottom', fontsize=20)
+            for x, y, hw in zip(x_vals, means, half_window):
+                offset = max(hw * 1.1, 0.02)  # Ensure a minimum offset
+                ax.text(x, y + offset, f"{y:.2f}", ha='center', va='bottom', fontsize=16)
     handles, labels = ax.get_legend_handles_labels()
     unique_labels = sorted(list(set(labels)))
     unique_handles = [handles[labels.index(label)] for label in unique_labels]
@@ -52,7 +53,7 @@ def error_bar_plot_from_running_stats_dict(running_stats_dict, x_vals, xticklabe
     set_fontsize(ax, 20)
     # Create legend
     ax.legend(unique_handles, unique_labels, fontsize=20)
+    ax.grid(True)
     fig.tight_layout()
-    print(save_file)
     plt.savefig(save_file)
     plt.show()

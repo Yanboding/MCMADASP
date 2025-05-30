@@ -6,6 +6,7 @@ from pprint import pprint
 
 import numpy as np
 import pandas as pd
+from gurobipy import GRB
 
 from decision_maker.memory_efficient_mcma_agent import SAAdvanceFastAgent
 from experiments.experiment_config import get_config_by_type
@@ -86,9 +87,9 @@ def experiment_revise(command_id, sample_path, sample_path_numbers, replication,
         res["occupancy_percentage"] = occupancy_percentage
         # evaluate agent performance
         for agent in agents:
-            agent_name, args = agent['agent_name'], agent['args']
-            config = get_config_by_type(case_type)
+            config = get_config_by_type(case_type, random_seed=command_id + 1)
             env = config.env
+            agent_name, args = agent['agent_name'], agent['args']
             state, info = env.reset(t=t, percentage_occupied=occupancy_percentage, new_arrivals=sample_path, seed=command_id)
             if agent_name == "hindsight_approx":
                 agent_instance = SAAdvanceAgent(env, discount_factor=env.discount_factor, **args)
@@ -106,17 +107,16 @@ def experiment_revise(command_id, sample_path, sample_path_numbers, replication,
                 res['count_' + agent_name + '_' + str(type_i)] = running_stat.count
             for day in range(len(env.overtime)):
                 res[agent_name + '_overtime_' + str(day)] = env.overtime[day]
-        config = get_config_by_type(case_type)
+
+        config = get_config_by_type(case_type, random_seed=command_id + 1)
         env = config.env
-        state, info = env.reset(t=t, percentage_occupied=occupancy_percentage, new_arrivals=sample_path, seed=command_id)
+        state, info = env.reset(t=t, percentage_occupied=occupancy_percentage, new_arrivals=sample_path,
+                                seed=command_id)
         hindsight_lower_bound_agent = SAAdvanceAgent(env, discount_factor=env.discount_factor)
-        for r in range(replication):
-            hindsight_lower_bound_agent.set_sample_paths(M)
-            start = time.time()
-            action, overtime, obj_value = hindsight_lower_bound_agent.solve(state, t)
-            end = time.time() - start
-            res['hindsight_lower_bound_' + str(r)] = obj_value
-            res['hindsight_lower_bound_runtime_' + str(r)] = end
+        hindsight_lower_bound_agent.set_real_sample_paths([sample_path])
+        action, overtime, obj_value = hindsight_lower_bound_agent.solve(state, t,
+                                                                        current_decision_var_type=GRB.INTEGER)
+        res['hindsight_lower_bound'] = obj_value
         df = pd.DataFrame(
             [res]
         )

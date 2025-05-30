@@ -118,8 +118,8 @@ class ExperimentConfig:
         return cls(env, reset_params, init_state)
 
     @classmethod
-    def from_adjust_EJOR_case(cls):
-        decision_epoch = 30
+    def from_adjust_EJOR_case(cls, random_seed):
+        decision_epoch = 20
         class_number = 18
         arrival_rates = np.array(
             [0.19, 0.11, 0.11, 1.43, 0.59, 0.45, 1.42, 1.36, 0.57, 0.38, 0.18, 0.18, 0.29, 0.21, 0.3, 0.29, 0.15,
@@ -148,6 +148,7 @@ class ExperimentConfig:
         total_arrival_rate_mean = np.sum(arrival_rates)
         type_probs = arrival_rates / total_arrival_rate_mean
         arrival_generator = MultiClassPoissonArrivalGenerator(total_arrival_rate_mean, 25, type_probs,
+                                                              random_seed1=random_seed,
                                                               is_precompute_state=False)
         holding_cost_fn = lambda t, i: holding_cost[i]
         env_params = {
@@ -172,11 +173,11 @@ class ExperimentConfig:
         init_state = (bookings, delta)
         return cls(env, reset_params, init_state)
 
-def get_config_by_type(case_type):
+def get_config_by_type(case_type, random_seed):
     if case_type == "default":
         config = ExperimentConfig.from_multiappt_default_case()
     elif case_type == 'ejor':
         config = ExperimentConfig.from_EJOR_case()
     elif case_type == 'adjust_ejor':
-        config = ExperimentConfig.from_adjust_EJOR_case()
+        config = ExperimentConfig.from_adjust_EJOR_case(random_seed)
     return config

@@ -28,7 +28,10 @@ class SAAdvanceAgent:
             new_arrivals = self.env.reset_arrivals(1)
             delta.append(new_arrivals)
         self.delta = np.array(delta)
-    
+
+    def set_real_sample_paths(self, sample_paths):
+        self.sample_path_number = len(sample_paths)
+        self.delta = np.array(sample_paths)
     # ------------------------------------------------------------------
     # Helper: wait‑until‑token‑free loop
     # ------------------------------------------------------------------
@@ -253,7 +256,7 @@ class SAAdvanceAgent:
             else:
                 raise RuntimeError("Optimal solution not found")
 
-    def solve(self, state, t, x=None, action=None, future_decision_var_type=GRB.CONTINUOUS):
+    def solve(self, state, t, x=None, action=None, current_decision_var_type=GRB.INTEGER, future_decision_var_type=GRB.CONTINUOUS):
         # ---------- shortcuts ----------
         N = self.env.decision_epoch
         I = self.env.num_types
@@ -272,9 +275,9 @@ class SAAdvanceAgent:
         with (gp.Model("SA_Advance", env=self.grb_env) as m):
             #m.setParam("OutputFlag", 0)
             #m.setParam("LogToConsole", 0)
-            m.setParam("MIPFocus", 1)
+            #m.setParam("MIPFocus", 1)
             # ---------- 1. today’s increments ----------
-            a_t = m.addVars(H + 1, I, vtype=GRB.INTEGER, name="a_t")
+            a_t = m.addVars(H + 1, I, vtype=current_decision_var_type, name="a_t")
             if action is not None:
                 for j in range(H + 1):
                     for i in range(I):

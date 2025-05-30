@@ -13,6 +13,7 @@ file_name = 'adjust_ejor_policy_value.csv'
 data_path = os.path.join('.', file_name)
 type_num = 18
 days = 56
+lower_bound_replication = 30
 agents = ['hindsight_approx', 'myopic']
 column_path = os.path.join('.', 'columns.txt')
 with open("columns.txt", "r", encoding="utf-8") as f:
@@ -21,13 +22,14 @@ print(result_header)
 result_df = pd.read_csv(data_path, names=result_header, header=None)
 print(result_df)
 
-value_by_agent = defaultdict(lambda:defaultdict(lambda:defaultdict(lambda: RunningStat(1))))
+improvement_by_agent = defaultdict(lambda:defaultdict(lambda:defaultdict(lambda: RunningStat(1))))
 wait_time_by_type_by_agent = defaultdict(lambda:defaultdict(lambda:defaultdict(lambda:defaultdict(lambda: RunningStat(1)))))
 overtime_by_day_by_agent = defaultdict(lambda:defaultdict(lambda:defaultdict(lambda: RunningStat(days))))
 total_overtime_by_day_by_agent = defaultdict(lambda:defaultdict(lambda:defaultdict(lambda: RunningStat(1))))
 hindsight_lower_bound_dict = defaultdict(lambda:defaultdict(lambda: RunningStat(1)))
 run_time_dict = defaultdict(lambda:defaultdict(lambda: RunningStat(1)))
 total_average_wait_time = defaultdict(lambda:defaultdict(lambda:defaultdict(lambda: RunningStat(1))))
+hindsight_lower_bound_columns = ['hindsight_lower_bound_'+str(r) for r in range(lower_bound_replication)]
 for i in range(len(result_df)):
     row = result_df.iloc[i]
     sample_path_number = row['sample_path_number']
