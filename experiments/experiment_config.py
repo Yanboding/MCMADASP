@@ -1,25 +1,24 @@
 import numpy as np
 
-from environment import MultiClassPoissonArrivalGenerator, SchedulingEnv
+from environment import MultiClassPoissonArrivalGenerator, SchedulingEnv, RTEnv
 from utils import str2treatment_patterns, wait_time
 
 
 class ExperimentConfig:
 
-    def __init__(self, env, reset_params, init_state):
+    def __init__(self, env, reset_params, init_state, valid_action=None):
         self.env = env
         self.reset_params = reset_params
         self.init_state = init_state
+        self.valid_action = valid_action
 
     @classmethod
     def from_multiappt_default_case(cls):
         decision_epoch = 3
         class_number = 2
-        arrival_generator = MultiClassPoissonArrivalGenerator(3, 4, [1 / class_number] * class_number,
+        arrival_generator = MultiClassPoissonArrivalGenerator(3, 2, [1 / class_number] * class_number,
                                                               is_precompute_state=True)
-        treatment_pattern = np.array([[2, 1],
-                                      [1, 0],
-                                      [1, 1]])
+        treatment_pattern = np.array([[2, 1]])
         holding_cost = [10 - i * 5 / max((class_number - 1), 1) for i in range(class_number)]
         holding_cost_fn = lambda t, i: holding_cost[i]
         env_params = {
@@ -38,9 +37,51 @@ class ExperimentConfig:
             't': 1
         }
         bookings = np.array([0]*(decision_epoch+len(treatment_pattern)-1))
-        delta = np.array([6, 6])
+        delta = np.array([3, 3])
         init_state = (bookings, delta)
         return cls(env, reset_params, init_state)
+
+    @classmethod
+    def from_rt_default_case(cls, random_seed):
+        decision_epoch = 5
+        planning_horizon = 2
+        class_number = 2
+        arrival_generator = MultiClassPoissonArrivalGenerator(3, 4, [1 / class_number] * class_number,
+                                                              random_seed=random_seed,
+                                                              is_precompute_state=True)
+        treatment_pattern = np.array([[2, 1],
+                                      [1, 0],
+                                      [1, 1]])
+        holding_cost = [10 - i * 5 / max((class_number - 1), 1) for i in range(class_number)]
+        holding_cost_fn = lambda t, i: holding_cost[i]
+        overtime_cost_fn = lambda t: 40
+        postponing_cost = np.array([10 - i * 5 / max((class_number - 1), 1) for i in range(class_number)])
+        postponing_cost_fn = lambda i: postponing_cost[i]
+        env_params = {
+            'treatment_pattern': treatment_pattern,
+            'decision_epoch': decision_epoch,
+            'planning_horizon': planning_horizon,
+            'arrival_generator': arrival_generator,
+            'holding_cost': holding_cost_fn,
+            'overtime_cost': overtime_cost_fn,
+            'postponing_cost': postponing_cost_fn,
+            'duration': 1,
+            'regular_capacity': 2,
+            'overtime_capacity': 1,
+            'discount_factor': 0.99,
+        }
+        env = RTEnv(**env_params)
+        reset_params = {
+            'percentage_occupied': 0,
+            't': 1
+        }
+        occupied_capacity = env_params['regular_capacity'] * reset_params['percentage_occupied']
+        bookings = np.array([occupied_capacity] * (planning_horizon + len(treatment_pattern) - 1))
+        overtimes = np.array([0] * (planning_horizon + len(treatment_pattern) - 1))
+        waitlist = np.array([2] * class_number)
+        init_state = (bookings, overtimes, waitlist)
+        valid_action = (np.array([[1,1],[1,0]]), np.array([1,1,1,0]))
+        return cls(env, reset_params, init_state, valid_action)
 
     @classmethod
     def from_EJOR_case(cls):
@@ -148,7 +189,7 @@ class ExperimentConfig:
         total_arrival_rate_mean = np.sum(arrival_rates)
         type_probs = arrival_rates / total_arrival_rate_mean
         arrival_generator = MultiClassPoissonArrivalGenerator(total_arrival_rate_mean, 25, type_probs,
-                                                              random_seed1=random_seed,
+                                                              random_seed=random_seed,
                                                               is_precompute_state=False)
         holding_cost_fn = lambda t, i: holding_cost[i]
         env_params = {
@@ -180,4 +221,9 @@ def get_config_by_type(case_type, random_seed):
         config = ExperimentConfig.from_EJOR_case()
     elif case_type == 'adjust_ejor':
         config = ExperimentConfig.from_adjust_EJOR_case(random_seed)
+    elif case_type == 'rt_default':
+        config = ExperimentConfig.from_rt_default_case(random_seed)
     return config
+
+if __name__ == '__main__':
+    config = get_config_by_type('rt_default', 0)

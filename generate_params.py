@@ -79,7 +79,7 @@ def generate_params(request_path, result_path, dat_file='table.dat', case_type='
 
 if __name__ == '__main__':
     generate_params(request_path='adjust_ejor_request.csv',
-                    result_path='experiments/adjust_ejor_policy_value.csv',
+                    result_path='experiments/data_result/adjust_ejor_policy_value.csv',
                     dat_file='table.dat',
                     case_type='adjust_ejor',
                     is_reuse=True)

@@ -1,2 +1,1 @@
-from .config import Config
-from .experiment_config import ExperimentConfig
+from .experiment_config import get_config_by_type

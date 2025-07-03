@@ -5,18 +5,18 @@ import pandas as pd
 from collections import defaultdict
 
 from utils import RunningStat
-from visualization import error_bar_plot, approximate_value_plot_from_running_stats, approximate_value_plot, \
+from visualization import error_bar_plot, approximate_value_plot, \
     approximate_value_plot_from_running_stats_dict, error_bar_plot_from_running_stats_dict, \
     approximate_value_plot_from_multid_running_stats
 
-file_name = 'adjust_ejor_policy_value.csv'
+file_name = 'data_result/adjust_ejor_policy_value.csv'
 data_path = os.path.join('.', file_name)
 type_num = 18
 days = 56
 lower_bound_replication = 30
 agents = ['hindsight_approx', 'myopic']
-column_path = os.path.join('.', 'columns.txt')
-with open("columns.txt", "r", encoding="utf-8") as f:
+column_path = os.path.join('.', 'data_result/columns.txt')
+with open("data_result/columns.txt", "r", encoding="utf-8") as f:
     result_header = [line.strip() for line in f]
 print(result_header)
 result_df = pd.read_csv(data_path, names=result_header, header=None)

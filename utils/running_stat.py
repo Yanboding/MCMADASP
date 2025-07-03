@@ -90,6 +90,10 @@ class RunningStat:
         self.expect = new_expected
         self.varSum = new_varSum
 
+    def __str__(self):
+        half_window = self.half_window(0.95)
+        return str((self.expect, self.expect-half_window, self.expect+half_window, self.count))
+
 if __name__ == "__main__":
     import matplotlib.pyplot as plt
     schedule1 = np.array([

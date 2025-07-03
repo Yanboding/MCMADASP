@@ -111,7 +111,7 @@ if __name__ =='__main__':
     #system_dynamic = get_system_dynamic_fast(10, 30, [0.4, 0.3, 0.2, 0.1])
     class_number = 8
     probability = 1 / class_number
-    actions = get_valid_advance_actions([3, 3, 4], 100)
+    actions = get_valid_advance_actions([3]*8, 100)
     print(actions)
     '''
     probabilities = [item[0] for item in system_dynamic]

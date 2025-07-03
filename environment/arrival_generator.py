@@ -8,13 +8,13 @@ from scipy.stats import poisson, multinomial
 
 class MultiClassPoissonArrivalGenerator:
 
-    def __init__(self, mean_arrival_rate, maximum_arrival, type_probs, random_seed1=42, is_precompute_state=False):
+    def __init__(self, mean_arrival_rate, maximum_arrival, type_probs, random_seed=42, is_precompute_state=False):
         self.mean_arrival = mean_arrival_rate
         self.maximum_arrival = maximum_arrival
         self.type_probs = np.asarray(type_probs)
         self.is_precompute_state = is_precompute_state
 
-        self.rng1 = np.random.default_rng(random_seed1)
+        self.rng = np.random.default_rng(random_seed)
         # Precompute total-poisson cdf for normalization
         total_poisson = poisson(mean_arrival_rate)
         normalizer = total_poisson.cdf(maximum_arrival)
@@ -26,16 +26,16 @@ class MultiClassPoissonArrivalGenerator:
             self._arrivals_with_probs = self._precompute_all_states()
 
     def rvs(self, size=1):
-        N_values = self.rng1.choice(
+        N_values = self.rng.choice(
             self.maximum_arrival + 1, size=size, p=self.truncate_poisson_pmf
         )
         arrivals = np.array([
-            self.rng1.multinomial(N, self.type_probs) for N in N_values
+            self.rng.multinomial(N, self.type_probs) for N in N_values
         ])
         return arrivals
 
     def arrival_type_rvs(self, arrival_num, size=1):
-        arrivals = self.rng1.multinomial(arrival_num, self.type_probs,size=size)
+        arrivals = self.rng.multinomial(arrival_num, self.type_probs,size=size)
         return arrivals
 
     def _precompute_all_states(self):

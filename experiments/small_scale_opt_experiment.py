@@ -1,14 +1,16 @@
 import os
 import time
+from collections import defaultdict
 from pprint import pprint
+from utils import iter_to_tuple, iter_to_list, RunningStat
 
 import numpy as np
 import pandas as pd
 
-from decision_maker import SAAdvanceAgent, OptimalAgent, PolicyEvaluator, SAAllocationAdvanceAgent, \
-    ApproxAllocationAdvanceAgent, SAMultiClassMultiAppntAllocationAdvanceAgent
-from visualization import opt_plot
-from environment import MultiClassPoissonArrivalGenerator, AdvanceSchedulingEnv
+from decision_maker import SAAdvanceAgent, OptimalAgent, PolicyEvaluator, \
+    ApproxAllocationAdvanceAgent
+from visualization import opt_plot, approximate_value_plot_from_running_stats_dict
+from environment import MultiClassPoissonArrivalGenerator
 
 def basic_converge_experiment(env_params, agents, init_state, t, M):
     env = AdvanceSchedulingEnv(**env_params)
@@ -145,106 +147,64 @@ def sample_path_experiment(env_params, agents, sample_path_number, init_state, p
                  ylabel='Value Function',
                  x_val_col='num_sample_path')
 
+def action_value_function_compare_experiment(config):
+    '''
+    1. index actions by integers
+    2. plot exact q value function on each action and information relaxation bound on each action
+    '''
+    env = config.env
+    init_state = config.init_state
+    optimal_agent = OptimalAgent(env=env, discount_factor=env.discount_factor)
+    agent = SAAdvanceAgent(env=env, discount_factor=env.discount_factor)
+    optimal_agent.train(init_state, 1)
+    print('finish optimal')
+    state_tuple = iter_to_tuple(init_state)
+    x = []
+    xticks = []
+    xticklabels = []
+    actions = []
+    action_values = defaultdict(lambda:defaultdict(lambda: RunningStat(1)))
+    min_value = float('inf')
+    best_action = None
+    best_index = None
+    optimal_action = optimal_agent.policy(init_state, 1)
+    optimal_action_tuple = iter_to_tuple(optimal_action)
+    for i, (action, qValue) in enumerate(optimal_agent.Q[(state_tuple, 1)].items()):
+        action_now = np.array(iter_to_list(action))
+        x.append(i)
+        actions.append(action)
+        action_values['optimal_policy'][i].record(qValue)
+        for j in range(10):
+            agent.set_sample_paths(500)
+            _, _, approximate_value = agent.solve(init_state, 1, action=action_now)
+            action_values['hindsight_policy'][i].record(approximate_value)
+        if action_values['hindsight_policy'][i].expect < min_value:
+            min_value = action_values['hindsight_policy'][i].expect
+            best_action = action_now
+            best_index = i
+        if action == optimal_action_tuple:
+            xticks.append(i)
+            xticklabels.append(str(optimal_action))
+    xticks.append(best_index)
+    xticklabels.append(str(best_action))
+    print(optimal_action)
+    print(best_action)
+
+    approximate_value_plot_from_running_stats_dict(running_stats_dict=action_values,
+                                                   x_vals=sorted(x),
+                                                   xticks=xticks,
+                                                   xticklabels=xticklabels,
+                                                   xlabel='Best Action',
+                                                   ylabel="Value Function",
+                                                   plot_labels={'optimal_policy': 'Optimal Policy',
+                                                                'hindsight_policy': 'Hindsight Approx Policy'
+                                                                },
+                                                   title=None,
+                                                   save_file='action_value_comparison',
+                                                   is_show_text=False)
+
 
 if __name__ == '__main__':
-    decision_epoch = 3
-    class_number = 2
-    arrival_generator = MultiClassPoissonArrivalGenerator(3, 4, [1 / class_number] * class_number)
-    env_params = {
-        'treatment_pattern': [[2,1]],
-        'decision_epoch': decision_epoch,
-        'arrival_generator': arrival_generator,
-        'holding_cost': [10 - i * 5/(class_number-1)for i in range(class_number)],
-        'overtime_cost': 40,
-        'duration': 1,
-        'regular_capacity': 5,
-        'discount_factor': 0.99,
-        'problem_type':'advance'
-    }
-
-    agents = {
-        'SAAdvanceAgent': SAAdvanceAgent,
-        'SAAllocationAdvanceAgent': SAAllocationAdvanceAgent
-    }
-    init_arrival = np.array([6, 6])
-    # env_params, agents, period_num, init_arrival, plot_labels, data_file_path, image_path, skip_optimal = False
-    # experiment 1: Compare the period to go value function in advance scheduling problem
-    '''
-    period_to_go_experiment(env_params=env_params, agents=agents, period_num=4, init_arrival=init_arrival,
-                            plot_labels=['Sample Average Advance Policy', 'Sample Average Translate Policy'],
-                            data_file_path='data/sa_opt_advance_compare.csv',
-                            image_path="figures/sa_opt_advance_compare", skip_optimal=False)
-    '''
-    # experiment 2: Only compare the SA Advance scheduling problem with the translation policy
-    period_to_go_experiment(env_params=env_params, agents=agents, period_num=7, init_arrival=init_arrival,
-                            plot_labels=['Sample Average Advance Policy', 'Sample Average Translate Policy'],
-                            data_file_path='data/sa_advance_translate_compare_backup.csv',
-                            image_path="figures/sa_advance_translate_compare", skip_optimal=True, shortcut=True)
-    ''''
-    # experiment 3: Compare the approximate value function with the optimal advance scheduling problem
-    bookings = np.array([0])
-    future_schedule = np.array([[0] * class_number for i in range(decision_epoch)])
-    new_arrival = init_arrival
-    init_state = (bookings, init_arrival, future_schedule)
-    sample_path_number = 3000
-    # compare the advance value function
-    agents = {
-        'SAAdvanceAgent': SAAdvanceAgent
-    }
-    #env_params, agents, sample_path_number, init_state, plot_labels, data_file_path, image_path
-    sample_path_experiment(env_params=env_params,
-                           agents=agents,
-                           sample_path_number=sample_path_number,
-                           init_state=init_state,
-                           plot_labels=['Sample Average Advance Value Function'],
-                           data_file_path='data/small_size_advance_converge.csv',
-                           image_path='figures/small_size_advance_converge', shortcut=True)
-    bookings = np.array([0])
-    future_schedule = np.array([[0] * class_number for i in range(decision_epoch)])
-    new_arrival = init_arrival
-    init_state = (bookings, init_arrival, future_schedule)
-    sample_path_number = 3000
-    
-    # compare the allocation value function
-    env_params['problem_type'] = 'allocation'
-    agents = {
-        'SAAllocationAdvanceAgent': SAAllocationAdvanceAgent
-    }
-    
-    # env_params, agents, sample_path_number, init_state, plot_labels, data_file_path, image_path
-    sample_path_experiment(env_params=env_params,
-                           agents=agents,
-                           sample_path_number=sample_path_number,
-                           init_state=init_state,
-                           plot_labels=['Sample Average Allocation Value Function'],
-                           data_file_path='data/small_size_allocation_converge.csv',
-                           image_path='figures/small_size_allocation_converge',
-                           shortcut=False)
-    
-    # experiment 4: Compare the sa allocation policy with the optimal allocation policy
-    period_to_go_experiment(env_params=env_params, agents=agents, period_num=7, init_arrival=init_arrival,
-                            plot_labels=['Sample Average Allocation Policy'],
-                            data_file_path='data/sa_opt_allocation_compare.csv',
-                            image_path="figures/sa_opt_allocation_compare", skip_optimal=False)
-    env_params['problem_type'] = 'allocation'
-    agents = {
-        'SAAllocationAdvanceAgent': SAAllocationAdvanceAgent
-    }
-    bookings = np.array([0])
-    future_schedule = np.array([[0] * class_number for i in range(decision_epoch)])
-    new_arrival = np.array([5, 6])
-    init_state = (bookings, new_arrival, future_schedule)
-    t = 1
-    M = 3000
-    value_function_df, best_action_df = basic_converge_experiment(env_params, agents, init_state, t, M)
-    print(value_function_df)
-    print(best_action_df)
-    
-    bookings = np.array([0])
-    future_schedule = np.array([[0] * class_number for i in range(decision_epoch)])
-    new_arrival = init_arrival
-    init_state = (bookings, init_arrival, future_schedule)
-    sample_path_number = 3000
-    print(basic_policy_evaluation_experiment(env_params=env_params, agents=agents, init_state=init_state, t=1, M=sample_path_number))
-    '''
-
+    from experiments.experiment_config import ExperimentConfig
+    config = ExperimentConfig.from_multiappt_default_case()
+    action_value_function_compare_experiment(config)

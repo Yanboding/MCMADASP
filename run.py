@@ -115,7 +115,8 @@ def experiment_revise(command_id, sample_path, sample_path_numbers, replication,
         hindsight_lower_bound_agent = SAAdvanceAgent(env, discount_factor=env.discount_factor)
         hindsight_lower_bound_agent.set_real_sample_paths([sample_path])
         action, overtime, obj_value = hindsight_lower_bound_agent.solve(state, t,
-                                                                        current_decision_var_type=GRB.INTEGER)
+                                                                        current_decision_var_type=GRB.INTEGER,
+                                                                        future_decision_var_type=GRB.INTEGER)
         res['hindsight_lower_bound'] = obj_value
         df = pd.DataFrame(
             [res]

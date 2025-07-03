@@ -4,9 +4,10 @@ from collections import defaultdict
 from pprint import pprint
 #from joblib import Parallel, delayed
 import numpy as np
+from joblib import Parallel, delayed
 
 from decision_maker import OptimalAgent, SAAdvanceAgent
-from environment import MultiClassPoissonArrivalGenerator, AdvanceSchedulingEnv
+from environment import MultiClassPoissonArrivalGenerator
 from utils import iter_to_tuple
 from utils.running_stat import RunningStat
 
@@ -68,7 +69,7 @@ class PolicyEvaluator:
                 sample_average_V[(iter_to_tuple(s), t + tau)].record(G)
         return sample_average_V
     
-    '''
+
     def simulation_evaluate(self, state, t, replication, confidence):
         num_cpus = os.cpu_count()
         sample_paths = [self.env.reset_arrivals(t=t) for _ in range(replication)]
@@ -81,10 +82,9 @@ class PolicyEvaluator:
         mean = self.sample_average_V[(state_tuple, t)].mean()
         half_window = self.sample_average_V[(state_tuple, t)].half_window(confidence)
         return mean, mean-half_window, mean+half_window
-    '''
+
 
 if __name__ == '__main__':
-    from experiments import ExperimentConfig
     config = ExperimentConfig.from_EJOR_case()
     env = config.env
     init_state = config.init_state

@@ -1,5 +1,4 @@
 from .optimal_agent import OptimalAgent
 from .sa_advance_agent import SAAdvanceAgent
 from .approx_allocation_to_advance_agent import ApproxAllocationAdvanceAgent
-from .sa_multiclass_multiappointment_allocation_to_advance_agent import SAMultiClassMultiAppntAllocationAdvanceAgent
 from .policy_evaluator import PolicyEvaluator

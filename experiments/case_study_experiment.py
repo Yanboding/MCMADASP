@@ -8,19 +8,19 @@ from utils import RunningStat
 from visualization import approximate_value_plot, error_bar_plot_from_running_stats_dict, \
     approximate_value_plot_from_running_stats_dict
 
-file_name = 'adjust_ejor_policy_value.csv'
+file_name = 'data_result/adjust_ejor_policy_value.csv'
 data_path = os.path.join('.', file_name)
 type_num = 18
 days = 56
-lower_bound_replication = 30
+#lower_bound_replication = 30
 agents = ['hindsight_approx', 'myopic']
-column_path = os.path.join('.', 'columns.txt')
-with open("columns.txt", "r", encoding="utf-8") as f:
+column_path = os.path.join('.', 'data_result/columns.txt')
+with open("data_result/columns.txt", "r", encoding="utf-8") as f:
     result_header = [line.strip() for line in f]
 print(result_header)
 result_df = pd.read_csv(data_path, names=result_header, header=None)
 print(result_df)
-
+average_value_function_by_agent = defaultdict(lambda:defaultdict(lambda: RunningStat(1)))
 improvement_by_agent = defaultdict(lambda:defaultdict(lambda: RunningStat(1)))
 wait_time_by_type_by_agent = defaultdict(lambda:defaultdict(lambda:defaultdict(lambda: RunningStat(1))))
 total_average_wait_time = defaultdict(lambda:defaultdict(lambda: RunningStat(1)))
@@ -29,11 +29,12 @@ for i in range(len(result_df)):
     row = result_df.iloc[i]
     sample_path_number = row['sample_path_number']
     occupancy_percentage = row['occupancy_percentage']
+    average_value_function_by_agent['hindsight_lower_bound'][occupancy_percentage].record(row['hindsight_lower_bound'])
     for agent_name in agents:
-        for r in range(lower_bound_replication):
-            hindsight_lower_bound = row['hindsight_lower_bound_'+str(r)]
-            improvement = (row[agent_name+'_value'] - hindsight_lower_bound) / hindsight_lower_bound * 100
-            improvement_by_agent[agent_name][occupancy_percentage].record(improvement)
+        hindsight_lower_bound = row['hindsight_lower_bound']
+        improvement = (row[agent_name+'_value'] - hindsight_lower_bound) / hindsight_lower_bound * 100
+        improvement_by_agent[agent_name][occupancy_percentage].record(improvement)
+        average_value_function_by_agent[agent_name][occupancy_percentage].record(row[agent_name+'_value'])
         for j in range(type_num):
             wait_time_stats = RunningStat(1)
             wait_time_stats.expect = np.array([row['expect_' + agent_name + '_' + str(j)]])
@@ -86,3 +87,8 @@ for occupancy_percentage in occupancy_percentages:
                                                    title="Waiting time with Capacity Occupancy: " + str(occupancy_percentage),
                                                    save_file='average_wait_time_type_'+str(int(occupancy_percentage*100)),
                                                    is_show_text=False)
+    for agent_name in ['hindsight_approx', 'myopic']:
+        #print(agent_name, f'value_function_{occupancy_percentage}', f"{average_value_function_by_agent[agent_name][occupancy_percentage].expect[0]:.3f}", '\pm', f"{average_value_function_by_agent[agent_name][occupancy_percentage].half_window(0.95)[0]:.3f}")
+        print(agent_name, f'total_overtime_{occupancy_percentage}',
+              f"{total_overtime_by_day_by_agent[agent_name][occupancy_percentage].expect[0]:.3f}", '\pm',
+              f"{total_overtime_by_day_by_agent[agent_name][occupancy_percentage].half_window(0.95)[0]:.3f}")

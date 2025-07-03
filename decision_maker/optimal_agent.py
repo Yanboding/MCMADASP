@@ -30,10 +30,6 @@ class OptimalAgent:
             state_tuple = iter_to_tuple(state)
             min_total_cost = float('inf')
             for action in self.env.valid_actions(state, t):
-                '''
-                print('Action:')
-                print(action)
-                '''
                 action_tuple = iter_to_tuple(action)
                 q = 0
                 for prob, next_state, cost, done in self.env.transition_dynamic(state, action, t):
