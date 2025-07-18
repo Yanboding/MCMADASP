@@ -25,6 +25,8 @@ class MultiClassPoissonArrivalGenerator:
         if is_precompute_state:
             self._arrivals_with_probs = self._precompute_all_states()
 
+        self.mean_by_type = self.mean_arrival * self.type_probs
+
     def rvs(self, size=1):
         N_values = self.rng.choice(
             self.maximum_arrival + 1, size=size, p=self.truncate_poisson_pmf
@@ -104,5 +106,5 @@ if __name__ == "__main__":
     class_number = 2
     probability = 1 / class_number
     mcag = MultiClassPoissonArrivalGenerator(3, 4, [probability] * class_number, 42)
-    P, delta = mcag.get_sample_paths_with_prob(4)
-    print(len(P))
+
+    print(mcag.type_probs * mcag.mean_arrival)

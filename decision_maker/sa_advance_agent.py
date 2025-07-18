@@ -9,9 +9,15 @@ from utils import iter_to_tuple
 
 class SAAdvanceAgent:
     TOKEN_WAIT = 15
-    def __init__(self, env, discount_factor, V=None, Q=None):
+    def __init__(self, env, discount_factor, V=None, Q=None, sample_path_number=500):
         self.env = env
         self.discount_factor = discount_factor
+        self.sample_path_number = sample_path_number
+        delta = []
+        for omega in range(self.sample_path_number):
+            new_arrivals = self.env.reset_arrivals(1)
+            delta.append(new_arrivals)
+        self.delta = np.array(delta)
         self.V = V
         self.Q = Q
         if Q is None:
@@ -32,6 +38,10 @@ class SAAdvanceAgent:
     def set_real_sample_paths(self, sample_paths):
         self.sample_path_number = len(sample_paths)
         self.delta = np.array(sample_paths)
+
+    def set_sample_path(self, sample_path):
+        self.sample_path_number = 1
+        self.delta = np.array([sample_path])
     # ------------------------------------------------------------------
     # Helper: wait‑until‑token‑free loop
     # ------------------------------------------------------------------
@@ -243,6 +253,6 @@ if __name__ =="__main__":
     t = 1
     agent = SAAdvanceAgent(env=env, discount_factor=env.discount_factor)
     agent.set_sample_paths(500)
-    action, owvertime, opt_val = agent.solve(init_state, t)
+    action, overtime, opt_val = agent.solve(init_state, t)
     print("value function lower bound:", opt_val)
 

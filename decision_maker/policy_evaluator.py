@@ -83,6 +83,18 @@ class PolicyEvaluator:
         half_window = self.sample_average_V[(state_tuple, t)].half_window(confidence)
         return mean, mean-half_window, mean+half_window
 
+    def sample_path_optimality_gap_evaluate(self, lower_bound_solver, state, t, sample_path):
+        state_tuple = iter_to_tuple(state)
+        lower_bound_solver.set_sample_path(sample_path)
+        _, _, lower_bound = lower_bound_solver.solve(state, t)
+        sample_average_V = self.simulation_evaluate_helper(state, t, [sample_path])
+        upper_bound = sample_average_V[(state_tuple, t)].expect[0]
+        opt_gap = max(upper_bound - lower_bound, 0)
+        if opt_gap == 0:
+            return 0
+        return opt_gap / lower_bound * 100
+
+
 
 if __name__ == '__main__':
     config = ExperimentConfig.from_EJOR_case()

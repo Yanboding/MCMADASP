@@ -92,7 +92,7 @@ class SchedulingEnv:
             res.append([prob, next_state, cost, done])
         return res
 
-    def reset(self, init_state=None, t=1, new_arrivals=None, percentage_occupied=0, seed=None):
+    def reset(self, init_state=None, t=1, new_arrivals=None, percentage_occupied=0, init_new_arrivals=None,seed=None):
         if new_arrivals is not None and len(new_arrivals) != self.decision_epoch - t + 1:
             print("length of new arrivals:", len(new_arrivals), "length of decision epoch:",self.decision_epoch - t + 1)
             raise ValueError('Invalid sample path!')
@@ -103,6 +103,8 @@ class SchedulingEnv:
             self.new_arrivals = self.reset_arrivals(t)
         else:
             self.new_arrivals = new_arrivals
+        if init_new_arrivals is not None:
+            self.new_arrivals[0] = init_new_arrivals
         if init_state == None:
             init_state = self.reset_initial_state(t, percentage_occupied, seed)
         bookings, waitlist = init_state

@@ -50,3 +50,5 @@ def convert_str_keys_to_tuple(d):
 
 def keep_significant_digits(number, significant: int) -> float:
     return float(("{:." + str(significant) + "g}").format(number))
+
+get_solution_value = np.vectorize(lambda v: v.X)

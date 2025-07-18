@@ -58,7 +58,7 @@ def approximate_value_plot(df, xlabel, ylabel, approx_labels, text_labels, plot_
     plt.savefig(save_file)
     plt.show()
 
-def approximate_value_plot_from_running_stats_dict(running_stats_dict, x_vals, xticks, xticklabels, xlabel, ylabel, plot_labels, title, save_file, is_show_text=True):
+def approximate_value_plot_from_running_stats_dict(running_stats_dict, x_vals, xticks, xticklabels, xlabel, ylabel, plot_labels, title, save_file, is_show_text=True, is_set_x_color=False):
     fig, ax = plt.subplots(1, 1, figsize=(12, 10))
     lines = []
     for label in plot_labels:
@@ -87,8 +87,9 @@ def approximate_value_plot_from_running_stats_dict(running_stats_dict, x_vals, x
         ax.set_xticks(xticks)
         ax.set_xticklabels(xticklabels, rotation=0, fontsize=20)
         xtick_labels = ax.get_xticklabels()
-        for label, line in zip(xtick_labels, lines):
-            label.set_color(line.get_color())
+        if is_set_x_color:
+            for label, line in zip(xtick_labels, lines):
+                label.set_color(line.get_color())
     ax.set_xlabel(xlabel, fontsize=30)
     ax.set_ylabel(ylabel, fontsize=30)
     ax.set_title(title, fontsize=30)

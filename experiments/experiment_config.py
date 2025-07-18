@@ -13,10 +13,13 @@ class ExperimentConfig:
         self.valid_action = valid_action
 
     @classmethod
-    def from_multiappt_default_case(cls):
+    def from_multiappt_default_case(cls, random_seed):
         decision_epoch = 3
         class_number = 2
-        arrival_generator = MultiClassPoissonArrivalGenerator(3, 2, [1 / class_number] * class_number,
+        arrival_generator = MultiClassPoissonArrivalGenerator(mean_arrival_rate=3,
+                                                              maximum_arrival=9,
+                                                              type_probs=[1 / class_number] * class_number,
+                                                              random_seed= random_seed,
                                                               is_precompute_state=True)
         treatment_pattern = np.array([[2, 1]])
         holding_cost = [10 - i * 5 / max((class_number - 1), 1) for i in range(class_number)]
@@ -32,13 +35,15 @@ class ExperimentConfig:
             'discount_factor': 0.99,
         }
         env = SchedulingEnv(**env_params)
-        reset_params = {
-            'percentage_occupied': 0,
-            't': 1
-        }
         bookings = np.array([0]*(decision_epoch+len(treatment_pattern)-1))
         delta = np.array([3, 3])
         init_state = (bookings, delta)
+        reset_params = {
+            'percentage_occupied': 0,
+            't': 1,
+            'init_new_arrivals': delta,
+            'seed': 0
+        }
         return cls(env, reset_params, init_state)
 
     @classmethod
@@ -216,7 +221,7 @@ class ExperimentConfig:
 
 def get_config_by_type(case_type, random_seed):
     if case_type == "default":
-        config = ExperimentConfig.from_multiappt_default_case()
+        config = ExperimentConfig.from_multiappt_default_case(random_seed)
     elif case_type == 'ejor':
         config = ExperimentConfig.from_EJOR_case()
     elif case_type == 'adjust_ejor':
