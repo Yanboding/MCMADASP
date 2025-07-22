@@ -15,7 +15,8 @@ class SchedulingEnv:
                  overtime_cost,
                  duration,
                  regular_capacity,
-                 discount_factor
+                 discount_factor,
+                 random_seed=None
                  ):
         self.treatment_pattern = np.array(treatment_pattern)
         self.decision_epoch = decision_epoch
@@ -25,6 +26,8 @@ class SchedulingEnv:
         self.duration = duration
         self.regular_capacity = regular_capacity
         self.discount_factor = discount_factor
+        self.random_seed = random_seed
+        self.rng = np.random.default_rng(random_seed)
         self.num_sessions, self.num_types = self.treatment_pattern.shape
 
     def valid_actions(self, state, t):
@@ -125,14 +128,12 @@ class SchedulingEnv:
         capacity_occupied = self.regular_capacity * percentage_occupied
         # initialize the current booking slots with all zeros
         booking_horizon = self.decision_epoch-t + self.num_sessions
-        if seed is not None:
-            np.random.seed(seed)
         # Step 1: Generate from truncated normal distribution
         mean = 1.0
         std_dev = 0.3
         lower, upper = 0, 2
         a, b = (lower - mean) / std_dev, (upper - mean) / std_dev
-        samples = truncnorm.rvs(a, b, loc=mean, scale=std_dev, size=booking_horizon)
+        samples = truncnorm.rvs(a, b, loc=mean, scale=std_dev, size=booking_horizon, random_state=self.rng)
         # Step 2: Scale so that the average is exactly 100 * p
         scaled = samples / samples.mean() * capacity_occupied
         return (scaled, self.new_arrivals[0])

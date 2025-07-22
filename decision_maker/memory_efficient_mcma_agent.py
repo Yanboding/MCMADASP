@@ -11,12 +11,18 @@ from utils import iter_to_tuple
 class SAAdvanceFastAgent:
     TOKEN_WAIT = 15
 
-    def __init__(self, env, discount_factor, is_myopic=True, V=None, Q=None):
+    def __init__(self, env, discount_factor, is_myopic=True, V=None, Q=None, sample_path_number=500):
         self.env = env
         self.discount_factor = discount_factor
         self.is_myopic = is_myopic
+        self.sample_path_number = sample_path_number
         self.V = V
         self.Q = Q
+        delta = []
+        for omega in range(self.sample_path_number):
+            new_arrivals = self.env.reset_arrivals(1)
+            delta.append(new_arrivals)
+        self.delta = np.array(delta)
         if Q is None:
             self.Q = defaultdict(lambda: defaultdict(int))
         if V is None:

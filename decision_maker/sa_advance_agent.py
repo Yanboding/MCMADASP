@@ -9,10 +9,12 @@ from utils import iter_to_tuple
 
 class SAAdvanceAgent:
     TOKEN_WAIT = 15
-    def __init__(self, env, discount_factor, V=None, Q=None, sample_path_number=500):
+    def __init__(self, env, discount_factor, V=None, Q=None, sample_path_number=500, current_decision_var_type=GRB.INTEGER, future_decision_var_type=GRB.CONTINUOUS):
         self.env = env
         self.discount_factor = discount_factor
         self.sample_path_number = sample_path_number
+        self.current_decision_var_type = GRB.INTEGER if current_decision_var_type is None or current_decision_var_type =='integer' else GRB.CONTINUOUS
+        self.future_decision_var_type = GRB.INTEGER if future_decision_var_type is None or future_decision_var_type =='integer' else GRB.CONTINUOUS
         delta = []
         for omega in range(self.sample_path_number):
             new_arrivals = self.env.reset_arrivals(1)
@@ -86,7 +88,7 @@ class SAAdvanceAgent:
             #m.setParam("LogToConsole", 0)
             #m.setParam("MIPFocus", 1)
             # ---------- 1. today’s increments ----------
-            a_t = m.addVars(H + 1, I, vtype=current_decision_var_type, name="a_t")
+            a_t = m.addVars(H + 1, I, vtype=self.current_decision_var_type, name="a_t")
             if action is not None:
                 for j in range(H + 1):
                     for i in range(I):
@@ -100,7 +102,7 @@ class SAAdvanceAgent:
                 for omega in range(M)  # scenario
                 for i in range(I)  # class
             ]
-            a_fut = m.addVars(idx_a_fut, lb=0, vtype=future_decision_var_type, name="a_fut")
+            a_fut = m.addVars(idx_a_fut, lb=0, vtype=self.future_decision_var_type, name="a_fut")
             # N-t+l-1 = H + l-1
             z_bar_t  = m.addVars(H + l, vtype=GRB.CONTINUOUS, name='z_t')
             idx_z_fut = [

@@ -10,54 +10,43 @@ from gurobipy import GRB
 
 from decision_maker.memory_efficient_mcma_agent import SAAdvanceFastAgent
 from experiments.experiment_config import get_config_by_type
-from utils import iter_to_tuple, RunningStat
-from experiments import Config
-from environment import AdvanceSchedulingEnv  # Replace 'some_module' with the actual module name where AdvanceSchedulingEnv is defined
+from utils import iter_to_tuple
 from decision_maker import SAAdvanceAgent, PolicyEvaluator
 
-def experiment(sample_path, sample_path_numbers, command_id, output_file='real_scale_policy_value.csv', case_type='ejor'):
-    for sample_path_number in sample_path_numbers:
-        print('sample_path_number:', sample_path_number)
-        config = None
-        if case_type == 'real_scale':
-            config = Config.from_real_scale()
-        elif case_type == 'ejor':
-            config = Config.from_EJOR_case()
-        elif case_type == 'adjust_ejor':
-            config = Config.from_adjust_EJOR_case()
-        env_params = config.env_params
-        bookings, _, future_schedule = config.init_state
-        init_state = (bookings, np.array(sample_path[0]), future_schedule)
-        t = 1
-        env = AdvanceSchedulingEnv(**env_params)
-        agent_instance = SAAdvanceAgent(env, discount_factor=env_params['discount_factor'])
-        agent_instance.set_sample_paths(sample_path_number)
+def experiment(env_args, agent_args, sample_path, uid, output_file):
+    res = {'result':[]}
+    res["uid"] = uid
+    sample_path = np.array(sample_path)
+    t = 1  # Assuming a single time step for the experiment
+    for agent in agent_args:
+        config = get_config_by_type(case_type='custom',args=env_args)
+        env = config.env
+        agent_name, args = agent['agent_name'], agent['args']
+        stats = {'agent_name': agent_name}
+        state, info = env.reset(**config.reset_params)
+        if agent_name == "hindsight_approx":
+            agent_instance = SAAdvanceAgent(env, discount_factor=env.discount_factor, **args)
+        elif agent_name == "myopic":
+            agent_instance = SAAdvanceFastAgent(env, discount_factor=env.discount_factor, **args)
         evaluator = PolicyEvaluator(env, agent_instance, env.discount_factor)
-        start = time.time()
-        action, overtime, obj_value = agent_instance.solve(init_state, t)
-        end = time.time() - start
-        # add myopic policy here
-        # evaluate the myopic policy
-        sample_average_V = evaluator.simulation_evaluate_helper(init_state, t=t, sample_paths=[np.array(sample_path)])
-        value = sample_average_V[(iter_to_tuple(init_state), t)].expect[0]
-        res = {}
-        res['value'] = value
-        res['sample_path_number'] = sample_path_number
-        res['hindsight_value'] = obj_value
-        res['run_time'] = end
-        res['command_id'] = command_id
+        lower_bound_solver = SAAdvanceAgent(env, discount_factor=env.discount_factor,current_decision_var_type=GRB.INTEGER,
+                                            future_decision_var_type=GRB.INTEGER)
+        opt_gap = evaluator.sample_path_optimality_gap_evaluate(lower_bound_solver, state, t, sample_path)
+        stats['opt_gap'] = opt_gap
+        wait_time_by_type =[]
         for type_i, running_stat in env.wait_time_by_type.items():
-            res['expect_'+str(type_i)] = running_stat.expect[0]
-            res['varSum_' + str(type_i)] = running_stat.varSum[0]
-            res['count_' + str(type_i)] = running_stat.count
-        for day in range(len(env.overtime)):
-            res['slot_number_'+str(day)] = env.overtime[day]
-        df = pd.DataFrame(
-            [res]
-        )
-        print(df.columns.tolist())
-        data_path = os.path.join('.', output_file)
-        df.to_csv(data_path, mode='a', index=False, header=False)
+            wait_time_by_type.append({"treatment_type":type_i,
+                                      "expect":running_stat.expect.tolist()[0],
+                                      "varSum":running_stat.varSum.tolist()[0],
+                                      "count":int(running_stat.count)})
+        stats['wait_time_by_type'] = wait_time_by_type
+        stats['overtime'] = env.overtime.tolist()
+        res['result'].append(stats)
+    print(res)
+    with open(output_file, 'a') as f:  # 'a' will create the file if not present
+        f.write(json.dumps(res) + '\n')
+    
+
 
 def experiment_revise(command_id, sample_path, sample_path_numbers, replication, agents, occupancy_percentage, output_file, case_type):
     '''
@@ -133,5 +122,5 @@ if __name__ == '__main__':
     parser.add_argument('--params', help='Input JSON-encoded list of lists', type=str)
     args = parser.parse_args()
     params = json.loads(args.params)
-    experiment_revise(**params)
+    experiment(**params)
     
