@@ -9,99 +9,229 @@ from utils import iter_to_tuple, iter_to_list
 from pathlib import Path
 import hashlib
 import json
+import copy
+
 def get_uid(parameter):
-    # Ensure the dict is serialized consistently
+    """
+    Generates a unique MD5 hash for a given parameter dictionary.
+
+    Args:
+        parameter (dict): The dictionary of parameters.
+
+    Returns:
+        str: A unique hexadecimal MD5 hash string.
+    """
+    # Serialize the dictionary to a string in a consistent order.
     param_str = json.dumps(parameter, sort_keys=True)
     return hashlib.md5(param_str.encode('utf-8')).hexdigest()
 
-def different_demand_rate_request_df(total_rate_list, test_sample_path_num, request_path):
-    env_args = get_config_by_type('base_case').args
-    arrival_rates = np.array(env_args['arrival_rates'])
-    total_arrival_rate_mean = np.sum(arrival_rates)
-    type_probs = arrival_rates / total_arrival_rate_mean
-    result = {}
-    with open(request_path, "w") as f:
-        for total_rate in total_rate_list:
-            arrival_rates = total_rate * type_probs
-            env_args['arrival_rates'] = arrival_rates.tolist()
-            for command_id in range(test_sample_path_num):
-                # random seed is not good
-                env_args['arrival_random_seed'] = command_id
-                env_args['env_random_seed'] = command_id + 1
-                config = get_config_by_type('custom', args=env_args)
-                env = config.env
-                sample_path = env.reset_arrivals(t=1)
-                agent_args = [{'agent_name': 'hindsight_approx', 'args':{'sample_path_number': 500,'current_decision_var_type':'integer', 'future_decision_var_type':'continuous'}}, {'agent_name': 'myopic', 'args':{}}]
-                parameter = {
-                    "sample_path": sample_path.tolist(),
-                    "env_args": env_args,
-                    "agent_args": agent_args,
-                    }
-                uid = get_uid(parameter)
-                parameter["uid"] = uid
-                parameter_str = json.dumps(parameter)
-                result[uid] = parameter
-                f.write(parameter_str + '\n')
-    return result
+def _generate_experiment_parameters(experiment_name, param_name, param_values, test_sample_path_num, request_path, base_env_args_overrides=None, param_modifier_fn=None):
+    """
+    A generic function to generate experiment parameter files.
 
-def different_overtime_cost(overtime_cost_list, test_sample_path_num, request_path):
-    env_args = get_config_by_type('base_case').args
-    result = {}
-    with open(request_path, "w") as f:
-        for overtime_cost in overtime_cost_list:
-            # Use random seed 0 to generate sample paths, then use different random seeds to generate sample paths for hindsight_approx agent
-            env_args['overtime_cost_by_day'] = overtime_cost
-            env_args['arrival_random_seed'] = 0
-            config = get_config_by_type('custom', args=env_args)
-            for command_id in range(test_sample_path_num):
-                # random seed is not good
-                env_args['arrival_random_seed'] = command_id+1
-                env_args['env_random_seed'] = command_id + 2
-                env = config.env
-                sample_path = env.reset_arrivals(t=1)
-                agent_args = [{'agent_name': 'hindsight_approx', 'args':{'sample_path_number': 500,'current_decision_var_type':'integer', 'future_decision_var_type':'continuous'}}, {'agent_name': 'myopic', 'args':{}}]
-                parameter = {
-                    "sample_path": sample_path.tolist(),
-                    "env_args": env_args,
-                    "agent_args": agent_args,
-                    }
-                uid = get_uid(parameter)
-                parameter["uid"] = uid
-                parameter_str = json.dumps(parameter)
-                result[uid] = parameter
-                f.write(parameter_str + '\n')
-    return result
+    This function handles the core logic of iterating through parameter values and trials,
+    generating unique configurations, and writing them to a request file.
 
-def generate_params(request_path, result_path, dat_file='table.dat', is_reuse=False):
-    request_file = Path(request_path)
-    if request_file.exists() and is_reuse:
-        request_dict = {}
-        with open(request_file, 'r') as f:
-            for line in f:
-                request = json.loads(line)
-                request_dict[request['uid']] = request
-    else:
-        #request_dict = different_demand_rate_request_df(total_rate_list=[4, 8, 12], test_sample_path_num=10, request_path=request_path)
-        request_dict = different_overtime_cost(overtime_cost_list=[150], test_sample_path_num=2000, request_path=request_path)
-    result_file = Path(result_path)
-    if result_file.exists() and is_reuse:
-        result_dict = {}
-        with open(result_file, 'r') as f:
-            for line in f:
-                result = json.loads(line)
-                result_dict[result['uid']] = result
-    else:
-        result_dict = {}
-    # Filter out requests that have already been processed
+    Args:
+        experiment_name (str): The name of the current experiment.
+        param_name (str): The key of the environment argument to modify.
+                          Use dot notation for nested keys (e.g., 'reset_params.percentage_occupied').
+        param_values (list): A list of values for the parameter to be tested.
+        test_sample_path_num (int): The number of random trials to generate for each parameter value.
+        request_path (str or Path): The path to the output request file.
+        base_env_args_overrides (dict, optional): A dictionary of arguments to override in the base configuration.
+        param_modifier_fn (function, optional): A function for complex parameter modifications.
+                                                It should take (env_args, value) and return modified_env_args.
+
+    Returns:
+        dict: A dictionary of the generated parameters, keyed by their UID.
+    """
+    # Start with a base configuration.
+    base_env_args = get_config_by_type('base_case').args
+    if base_env_args_overrides:
+        base_env_args.update(base_env_args_overrides)
+
+    # Define a standard set of agent arguments.
+    agent_args = [
+        {'agent_name': 'hindsight_approx', 'args': {'sample_path_number': 500, 'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous'}},
+        {'agent_name': 'myopic', 'args': {}}
+    ]
+
+    result_dict = {}
+    lines_to_write = [] # Optimization: Collect lines to write in a list
+    print(f"Generating parameters for {experiment_name}...")
+    
+    # Iterate over each value of the parameter being tested.
+    for value in param_values:
+        # Optimization: Use copy.deepcopy for more efficient object copying.
+        env_args_for_value = copy.deepcopy(base_env_args)
+
+        # Modify the environment arguments for the current value.
+        if param_modifier_fn:
+            env_args_for_value = param_modifier_fn(env_args_for_value, value)
+        else:
+            # Handle simple or nested parameter updates using dot notation.
+            keys = param_name.split('.')
+            d = env_args_for_value
+            for key in keys[:-1]:
+                d = d.setdefault(key, {})
+            d[keys[-1]] = value
+        
+        # Generate multiple random trials for each parameter value.
+        for command_id in range(test_sample_path_num):
+            # 1. Generate the sample path with a specific, isolated random seed.
+            sample_gen_args = copy.deepcopy(env_args_for_value)
+            sample_gen_args['arrival_random_seed'] = command_id + 1 # Seed for sample path generation
+            
+            config_for_sample_path = get_config_by_type('custom', args=sample_gen_args)
+            env_for_sample_path = config_for_sample_path.env
+            sample_path = env_for_sample_path.reset_arrivals(t=1) if env_for_sample_path else [[]]
+
+            # 2. Prepare the final parameters for the actual simulation run with a different seed.
+            trial_env_args = copy.deepcopy(env_args_for_value)
+            trial_env_args['arrival_random_seed'] = command_id + 2 # Seed for agent's future paths
+            trial_env_args['env_random_seed'] = command_id + 3     # Seed for the main environment simulation
+
+            parameter = {
+                "experiment_name": experiment_name,
+                "param_value": value,
+                "sample_path": sample_path.tolist() if hasattr(sample_path, 'tolist') else sample_path,
+                "env_args": trial_env_args,
+                "agent_args": agent_args,
+            }
+            
+            # Generate a unique ID and save the parameter set.
+            uid = get_uid(parameter)
+            parameter["uid"] = uid
+            parameter_str = json.dumps(parameter)
+            result_dict[uid] = parameter
+            lines_to_write.append(parameter_str + '\n')
+
+    # Optimization: Write all lines to the file at once to reduce I/O operations.
+    print(f"Writing {len(lines_to_write)} parameters to {request_path}...")
+    with open(request_path, "w") as f:
+        f.writelines(lines_to_write)
+    
+    print("Parameter generation complete.")
+    return result_dict
+
+def generate_all_experiments(experiment_configs, test_sample_path_num_map, dat_file='table.dat', is_reuse=False):
+    """
+    Generates parameters for all defined experiments and writes them to a single DAT file.
+
+    Args:
+        experiment_configs (dict): A dictionary defining all available experiments.
+        test_sample_path_num_map (dict): A map from experiment_name to the number of trials.
+        dat_file (str): The name of the output DAT file for all commands.
+        is_reuse (bool): If True, reuse existing request and result files.
+    """
+    all_requests = {}
+    all_results = {}
+
+    # --- 1. Generate or Load all Request Files ---
+    print("--- Processing all experiments ---")
+    for name, config in experiment_configs.items():
+        request_path = config.get('request_path', f'{name}_request.jsonl')
+        request_file = Path(request_path)
+        
+        # Ensure parent directory exists
+        request_file.parent.mkdir(parents=True, exist_ok=True)
+
+        if request_file.exists() and is_reuse:
+            print(f"Reusing existing request file: {request_path}")
+            with open(request_file, 'r') as f:
+                for line in f:
+                    request = json.loads(line)
+                    all_requests[request['uid']] = request
+        else:
+            test_sample_path_num = test_sample_path_num_map.get(name, 2000) # Default to 2000 if not specified
+            generated_requests = _generate_experiment_parameters(
+                experiment_name=name,
+                param_name=config['param_name'],
+                param_values=config['param_values'],
+                test_sample_path_num=test_sample_path_num,
+                request_path=request_path,
+                base_env_args_overrides=config.get('base_env_args_overrides'),
+                param_modifier_fn=config.get('param_modifier_fn')
+            )
+            all_requests.update(generated_requests)
+
+    # --- 2. Load all existing Result Files ---
+    print("\n--- Loading all existing results ---")
+    for name, config in experiment_configs.items():
+        result_path = config.get('result_path', f'experiments/data_result/{name}_results.jsonl')
+        result_file = Path(result_path)
+        if result_file.exists():
+            print(f"Found existing result file: {result_path}")
+            with open(result_file, 'r') as f:
+                for line in f:
+                    try:
+                        result = json.loads(line)
+                        all_results[result['uid']] = result
+                    except (json.JSONDecodeError, KeyError):
+                        print(f"Warning: Skipping malformed or key-missing line in {result_path}")
+
+    # --- 3. Generate a single DAT file for all pending requests ---
+    print(f"\n--- Generating combined DAT file: {dat_file} ---")
+    pending_requests = 0
     with open(dat_file, 'w') as f:
-        for k, parameter in request_dict.items(): 
-            if k not in result_dict:
-                parameter['output_file'] = result_path
+        for uid, parameter in all_requests.items():
+            if uid not in all_results:
+                # Determine the correct output file for this specific parameter
+                exp_name = parameter['experiment_name']
+                exp_config = experiment_configs[exp_name]
+                result_path = exp_config.get('result_path', f'experiments/data_result/{exp_name}_results.jsonl')
+                
+                parameter['output_file'] = str(result_path)
                 line = "python run.py --params '" + json.dumps(parameter) + "'\n"
                 f.write(line)
+                pending_requests += 1
+    
+    print(f"Generated {pending_requests} commands for pending requests across all experiments.")
+
 
 if __name__ == '__main__':
-    generate_params(request_path='different_overtime_cost_request.jsonl',
-                    result_path='experiments/data_result/different_overtime_cost_results.jsonl',
-                    dat_file='table.dat',
-                    is_reuse=False)
+    # --- Define Experiment-Specific Logic ---
+
+    def demand_rate_modifier(env_args, total_rate):
+        """Modifier function for the demand rate experiment."""
+        base_arrival_rates = np.array(env_args['arrival_rates'])
+        total_arrival_rate_mean = np.sum(base_arrival_rates)
+        
+        if total_arrival_rate_mean == 0:
+            # Avoid division by zero if base rates are all zero.
+            num_types = len(base_arrival_rates) if len(base_arrival_rates) > 0 else 1
+            type_probs = np.ones(num_types) / num_types
+        else:
+            type_probs = base_arrival_rates / total_arrival_rate_mean
+        
+        new_arrival_rates = total_rate * type_probs
+        env_args['arrival_rates'] = new_arrival_rates.tolist()
+        return env_args
+
+    # --- Central Configuration for All Experiments ---
+
+    EXPERIMENT_CONFIGS = {
+        'occupancy_level': {
+            'param_name': 'reset_params.percentage_occupied',
+            'param_values': [0.2, 0.5, 0.8],
+            'base_env_args_overrides': {'decision_epoch': 30}
+        }
+    }
+    
+    # --- Specify the number of trials for each experiment ---
+    # You can customize the number of samples for each experiment here.
+    TEST_SAMPLE_NUM_MAP = {
+        'demand_rate': 2000,
+        'decision_period': 2000,
+        'overtime_cost': 2000,
+        'occupancy_level': 2000
+    }
+
+    # --- Run All Experiments ---
+    generate_all_experiments(
+        experiment_configs=EXPERIMENT_CONFIGS,
+        test_sample_path_num_map=TEST_SAMPLE_NUM_MAP,
+        dat_file='table.dat',
+        is_reuse=False # Set to True to avoid regenerating files and only create the .dat
+    )
