@@ -186,3 +186,7 @@ TMP
 *.mps
 gurobi.env
 *.txt
+table.dat
+experiments/data_result
+*jsonl
+*dat
