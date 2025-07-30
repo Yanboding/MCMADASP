@@ -212,10 +212,23 @@ if __name__ == '__main__':
     # --- Central Configuration for All Experiments ---
 
     EXPERIMENT_CONFIGS = {
+        'demand_rate': {
+            'param_name': 'total_arrival_rate',
+            'param_values': [4, 8, 12],
+            'param_modifier_fn': demand_rate_modifier
+        },
+        'decision_epoch': {
+            'param_name': 'decision_epoch',
+            'param_values': [20, 30, 40],
+        },
+        'overtime_cost_by_day': {
+            'param_name': 'overtime_cost_by_day',
+            'param_values': [100, 150, 200],
+        },
         'occupancy_level': {
             'param_name': 'reset_params.percentage_occupied',
             'param_values': [0.2, 0.5, 0.8],
-            'base_env_args_overrides': {'decision_epoch': 30}
+            'base_env_args_overrides': {'decision_epoch': 40}
         }
     }
     
@@ -223,8 +236,8 @@ if __name__ == '__main__':
     # You can customize the number of samples for each experiment here.
     TEST_SAMPLE_NUM_MAP = {
         'demand_rate': 2000,
-        'decision_period': 2000,
-        'overtime_cost': 2000,
+        'decision_epoch': 2000,
+        'overtime_cost_by_day': 2000,
         'occupancy_level': 2000
     }
 
