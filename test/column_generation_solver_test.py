@@ -6,7 +6,7 @@ from itertools import product
 import gurobipy as gp
 from gurobipy import GRB
 
-from decision_maker import ColumnGenerationSolver
+from utils import ColumnGenerationSolver
 
 
 def compute_b_matrix(N, T, f, gamma):
@@ -492,12 +492,17 @@ def generate_initial_feasible_columns():
     z0 = list(E_Y)
     return [(x0, y0, a0, z0)]
 
-def generate_candidate(dual_values):
+def set_val(vars, vals):
+    for i in vars:
+        vars[i].lb = vals[i]
+        vars[i].ub = vals[i]
+
+def generate_candidate(dual_values, candidate=None):
+    if candidate != None:
+        x_can, y_can, a_can, z_can = candidate
     gamma = params['gamma']
     N = params['N']
     I = params['I']
-    E_X_alpha = params['E_X (alpha)']
-    E_Y_alpha = params['E_Y (alpha)']
     b_mat = params['b']
     f_vec = params['f']
     d_vec = params['d']
@@ -546,7 +551,15 @@ def generate_candidate(dual_values):
     y_vars = m.addVars(I, ub=max_arrival, vtype=GRB.CONTINUOUS, name="y")
     z_vars = m.addVars(I, vtype=GRB.CONTINUOUS, name="z")
     a_vars = m.addVars(I, N, vtype=GRB.CONTINUOUS, name="a")
-
+    if candidate != None:
+        set_val(x_vars, x_can)
+        set_val(y_vars, y_can)
+        set_val(z_vars, z_can)
+        print(a_vars)
+        for i in range(I):
+            for t in range(N):
+                a_vars[i,t].lb = a_can[i][t]
+                a_vars[i, t].ub = a_can[i][t]
     # Constraints: x[n] + sum_i a[i,n] ≤ C1
     for n in range(N):
         m.addConstr(x_vars[n] + gp.quicksum(a_vars[i, n] for i in range(I)) <= C1,
@@ -586,7 +599,7 @@ def generate_candidate(dual_values):
         y_sol = [y_vars[i].x for i in range(I)]
         a_sol = [[a_vars[i, n].x for n in range(N)] for i in range(I)]
         z_sol = [z_vars[i].x for i in range(I)]
-        return (x_sol, y_sol, a_sol, z_sol), m.objVal
+        return [((x_sol, y_sol, a_sol, z_sol), m.objVal)]
     elif status == GRB.INFEASIBLE:
         print("Pricing subproblem infeasible.")
     elif status == GRB.UNBOUNDED:
@@ -594,7 +607,7 @@ def generate_candidate(dual_values):
     else:
         print("Pricing returned status", status)
 
-    return None, None
+    return [(None, None)]
 
 def compute_coeffs(candidate):
     x, y, a, z = candidate
@@ -700,19 +713,13 @@ if __name__ == '__main__':
         'nu_0_Y': nu_0_Y,
     }
 
-    # all_candidates = list(enumerate_candidates(params))
+    all_candidates = list(enumerate_candidates(params))
 
-    # primal = solve_dual_alp_from_tuples(all_candidates, params)
+    primal = solve_dual_alp_from_tuples(all_candidates, params)
 
-    # theoritical_W0 = compute_W0(d, gamma, I, T_target, E_Y, C1)
+    theoritical_W0 = compute_W0(d, gamma, I, T_target, E_Y, C1)
 
-    # dual_complete = solve_primal_alp_from_tuples(all_candidates, params)
-
-    old_obj, dual, var_x, var_coefs, col_candidates = column_generation(params)
-
-    value_function_coeff = np.array(list(dual.values()))
-    print('N:', N, 'I:', I)
-    print(value_function_coeff)
+    dual_complete = solve_primal_alp_from_tuples(all_candidates, params)
 
     cg_solver = ColumnGenerationSolver(master_builder=create_rmp,
                                        pricing_callback=generate_candidate,
@@ -721,4 +728,8 @@ if __name__ == '__main__':
                                        get_obj_coefficient=compute_cost)
 
     cg_solver.solve()
-    print([c.Pi for c in cg_solver.master_model.getConstrs()])
+
+    print(cg_solver.candidates)
+    duals = [41935.11637221304, 0.0, 0.0, 0.0, 0.0]
+    candidate = ([0, 0, 0], [0], [[0.0, 0.0, 0.0]], [0])
+    print(generate_candidate(duals, candidate))

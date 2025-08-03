@@ -176,7 +176,7 @@ cython_debug/
 experiments/data
 experiments/figures
 experiments/*.csv
-experiments/*.png
+*.png
 .idea/
 /*.csv
 MISC/
@@ -190,3 +190,4 @@ table.dat
 experiments/data_result
 *jsonl
 *dat
+decision_maker/col_generation_debug.py

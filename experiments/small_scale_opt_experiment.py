@@ -90,17 +90,19 @@ def decision_epoch_experiment(config, agents, decision_epochs, replication=1000)
     value_fuc_stats = defaultdict(lambda: defaultdict(lambda: RunningStat(1)))
     env = config.env
     for decision_epoch in decision_epochs:
+        print('decision_epoch:', decision_epoch)
         x.append(decision_epoch)
         env.decision_epoch = decision_epoch
         init_state, info = env.reset(**config.reset_params)
         lower_bound_agent = SAAdvanceAgent(env=env, discount_factor=env.discount_factor)
-        for agent_name, (agent, args) in agents.items():
-            agent_instant = agent(env=env, discount_factor=env.discount_factor, **args)
-            policy_evaluator = PolicyEvaluator(env, agent_instant, env.discount_factor)
-            for r in range(replication):
-                sample_path = env.reset_arrivals(t=1)
-                pct_gap = policy_evaluator.sample_path_optimality_gap_evaluate(lower_bound_agent, init_state, 1, sample_path)
-                #print(f'decision_epoch {decision_epoch}, agent_name {agent_name}, replication {r}', pct_gap)
+        for r in range(replication):
+            sample_path = env.reset_arrivals(t=1)
+            for agent_name, (agent, args) in agents.items():
+                agent_instant = agent(env=env, discount_factor=env.discount_factor, **args)
+                policy_evaluator = PolicyEvaluator(env, agent_instant, env.discount_factor)
+                pct_gap = policy_evaluator.sample_path_optimality_gap_evaluate(lower_bound_agent, init_state, 1,
+                                                                               sample_path)
+                print(f'decision_epoch {decision_epoch}, agent_name {agent_name}, replication {r}', pct_gap)
                 value_fuc_stats[agent_name][decision_epoch].record(pct_gap)
     approximate_value_plot_from_running_stats_dict(running_stats_dict=value_fuc_stats,
                                                    x_vals=sorted(x),
@@ -118,10 +120,10 @@ def decision_epoch_experiment(config, agents, decision_epochs, replication=1000)
 if __name__ == '__main__':
     from experiments import get_config_by_type
 
-    config = get_config_by_type('default', 42)
+    config = get_config_by_type('default')
     #action_value_function_compare_experiment(config)
     agents = {
-        'ALP Policy': (ALPAgent, {}),
+        'ALP Policy': (ALPAgent, {'is_trained': True}),
         'Hindsight Approx Policy': (SAAdvanceAgent, {'sample_path_number': 500})
     }
-    decision_epoch_experiment(config, agents, [decision_epoch for decision_epoch in range(1,11)])
+    decision_epoch_experiment(config, agents, [decision_epoch for decision_epoch in range(1, 11)])

@@ -76,14 +76,14 @@ def approximate_value_plot_from_running_stats_dict(running_stats_dict, x_vals, x
         ax.fill_between(x_vals, means-half_window, means+half_window, alpha=0.2)
         if is_show_text:
             for x, y, hw in zip(x_vals, means, half_window):
-                offset = max(hw * 1.1, 0.02)  # Ensure a minimum offset
-                ax.text(x, y + offset, f"{y:.2f}", ha='center', va='bottom', fontsize=16)
+                # offset = max(hw * 1.1, 0.02)  # Ensure a minimum offset
+                ax.text(x, y, f"{y:.2f}", ha='center', va='bottom', fontsize=16)
     set_fontsize(ax, 30)
     # To handle multiple lines with the same label, we need to manually create a custom legend
     handles, labels = ax.get_legend_handles_labels()
     unique_labels = sorted(list(set(labels)))
     unique_handles = [handles[labels.index(label)] for label in unique_labels]
-    if xticklabels != None:
+    if xticklabels is not None:
         ax.set_xticks(xticks)
         ax.set_xticklabels(xticklabels, rotation=0, fontsize=20)
         xtick_labels = ax.get_xticklabels()

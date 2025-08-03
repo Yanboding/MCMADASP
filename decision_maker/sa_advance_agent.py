@@ -9,7 +9,7 @@ from utils import iter_to_tuple
 
 class SAAdvanceAgent:
     TOKEN_WAIT = 15
-    def __init__(self, env, discount_factor, V=None, Q=None, sample_path_number=500, current_decision_var_type=GRB.INTEGER, future_decision_var_type=GRB.CONTINUOUS):
+    def __init__(self, env, discount_factor, V=None, Q=None, sample_path_number=500, current_decision_var_type='integer', future_decision_var_type='continuous'):
         self.env = env
         self.discount_factor = discount_factor
         self.sample_path_number = sample_path_number
@@ -67,7 +67,7 @@ class SAAdvanceAgent:
                 else:
                     raise                       # some other licence error
 
-    def solve(self, state, t, x=None, action=None, current_decision_var_type=GRB.INTEGER, future_decision_var_type=GRB.CONTINUOUS):
+    def solve(self, state, t, action=None):
         # ---------- shortcuts ----------
         N = self.env.decision_epoch
         I = self.env.num_types
@@ -224,11 +224,7 @@ class SAAdvanceAgent:
                 raise RuntimeError("Optimal solution not found")
 
     def policy(self, state, t):
-        state_tuple = iter_to_tuple(state)
-        if (state_tuple, t) in self.action_map:
-            return self.action_map[(state_tuple, t)]
         action, overtime, obj_value = self.solve(state, t)
-        self.action_map[(state_tuple, t)] = action
         return action
 
 def convet_state_to_booked_slots(bookings, future_schedule, treatment_patterns):
@@ -247,14 +243,17 @@ def convet_state_to_booked_slots(bookings, future_schedule, treatment_patterns):
     return booked_slots
 
 if __name__ =="__main__":
-    from experiments import ExperimentConfig
-    # 54946.988268116984
-    config = ExperimentConfig.from_EJOR_case()
+    from experiments import get_config_by_type
+
+    config = get_config_by_type('default', random_seed=None)
+    # action_value_function_compare_experiment(config)
+    agents = {
+        'Hindsight Approx Policy': (SAAdvanceAgent, {'sample_path_number': 500})
+    }
     env = config.env
-    init_state = config.init_state
-    t = 1
-    agent = SAAdvanceAgent(env=env, discount_factor=env.discount_factor)
-    agent.set_sample_paths(500)
-    action, overtime, opt_val = agent.solve(init_state, t)
-    print("value function lower bound:", opt_val)
+    discount_factor = env.discount_factor
+    agent = SAAdvanceAgent(env, discount_factor, **{'sample_path_number': 500})
+    state = (np.array([6, 0]), np.array([1, 1, 4]))
+    action, _, val = agent.solve(state, 2)
+    print(action)
 

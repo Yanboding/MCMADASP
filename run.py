@@ -11,7 +11,8 @@ from gurobipy import GRB
 from decision_maker.memory_efficient_mcma_agent import SAAdvanceFastAgent
 from experiments.experiment_config import get_config_by_type
 from utils import iter_to_tuple
-from decision_maker import SAAdvanceAgent, PolicyEvaluator
+from decision_maker import SAAdvanceAgent, PolicyEvaluator, ALPAgent
+
 
 def experiment(experiment_name, param_value, env_args, agent_args, sample_path, uid, output_file):
     res = {'result':[]}
@@ -30,6 +31,8 @@ def experiment(experiment_name, param_value, env_args, agent_args, sample_path, 
             agent_instance = SAAdvanceAgent(env, discount_factor=env.discount_factor, **args)
         elif agent_name == "myopic":
             agent_instance = SAAdvanceFastAgent(env, discount_factor=env.discount_factor, **args)
+        elif agent_name == 'alp':
+            agent_instance = ALPAgent(env, discount_factor=env.discount_factor, **args)
         evaluator = PolicyEvaluator(env, agent_instance, env.discount_factor)
         lower_bound_solver = SAAdvanceAgent(env, discount_factor=env.discount_factor,current_decision_var_type=GRB.INTEGER,
                                             future_decision_var_type=GRB.INTEGER)
@@ -45,7 +48,7 @@ def experiment(experiment_name, param_value, env_args, agent_args, sample_path, 
         stats['overtime'] = env.overtime.tolist()
         res['result'].append(stats)
     print(res)
-    with open(output_file, 'a') as f:  # 'a' will create the file if not present
+    with open(output_file, 'w') as f:  # 'a' will create the file if not present
         f.write(json.dumps(res) + '\n')
 
 if __name__ == '__main__':

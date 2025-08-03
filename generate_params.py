@@ -54,7 +54,7 @@ def _generate_experiment_parameters(experiment_name, param_name, param_values, t
     # Define a standard set of agent arguments.
     agent_args = [
         {'agent_name': 'hindsight_approx', 'args': {'sample_path_number': 500, 'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous'}},
-        {'agent_name': 'myopic', 'args': {}}
+        {'agent_name': 'myopic', 'args': {}},
     ]
 
     result_dict = {}
@@ -96,13 +96,14 @@ def _generate_experiment_parameters(experiment_name, param_name, param_values, t
                 "experiment_name": experiment_name,
                 "param_value": value,
                 "sample_path": sample_path.tolist() if hasattr(sample_path, 'tolist') else sample_path,
-                "env_args": trial_env_args,
-                "agent_args": agent_args,
+                "env_args": trial_env_args
             }
             
             # Generate a unique ID and save the parameter set.
             uid = get_uid(parameter)
             parameter["uid"] = uid
+            print('uid:', uid)
+            parameter["agent_args"] = agent_args
             parameter_str = json.dumps(parameter)
             result_dict[uid] = parameter
             lines_to_write.append(parameter_str + '\n')

@@ -15,6 +15,7 @@ class ColumnGenerationSolver:
         self.get_constr_coefficients = get_constr_coefficients
         self.get_obj_coefficient = get_obj_coefficient
         self.master_model = master_builder()
+        self.candidates = set()
         # add initial columns to the master model
         for i, candidate in enumerate(initial_columns):
             self.add_column(candidate=candidate, col_name=f"init_{i + 1}")
@@ -26,20 +27,51 @@ class ColumnGenerationSolver:
 
         self.master_model.addVar(obj=self.get_obj_coefficient(candidate), column=new_col, name=col_name)
         self.master_model.update()
+        candidate_str = str(candidate)
+        if candidate_str in self.candidates:
+            raise ValueError(f'already add this candidate: {candidate_str}')
+        self.candidates.add(candidate_str)
 
-    def solve(self, tol=1e-20, max_iter=1000):
+    def solve(self, tol=1e-4, max_iter=1000):
         iteration = 0
-        while True:
-            #self.master_model.write(f"model_{iteration}.rlp")
+        while iteration < max_iter:
             # 1. optimize the model
             self.master_model.optimize()
             if self.master_model.Status != gp.GRB.OPTIMAL:
+                # Print a more user-friendly explanation
+                if self.master_model.status == gp.GRB.INFEASIBLE:
+                    self.master_model.write('infeasible.lp')
+                    print("Model is infeasible.")
+                elif self.master_model.status == gp.GRB.UNBOUNDED:
+                    print("Model is unbounded.")
+                elif self.master_model.status == gp.GRB.INF_OR_UNBD:
+                    print("Model is infeasible or unbounded.")
+                elif self.master_model.status == gp.GRB.TIME_LIMIT:
+                    print("Time limit reached before optimality.")
+                elif self.master_model.status == gp.GRB.INTERRUPTED:
+                    print("Optimization was interrupted.")
+                elif self.master_model.status == gp.GRB.NUMERIC:
+                    print("Numerical issues encountered.")
+                else:
+                    print("See Gurobi documentation for other status codes.")
                 raise ValueError(f"Master model returned status {self.master_model.Status}")
+            print('optimal value:', self.master_model.ObjVal)
             # 2. Get dual values
             duals = [constr.Pi for constr in self.master_model.getConstrs()]
             # 3. Pricing (column generation)
-            candidate, reduce_cost = self.pricing_callback(duals)
-            if not candidate or iteration >= max_iter or -reduce_cost < tol:
-                break
-            self.add_column(candidate=candidate, col_name=f"x_{iteration}")
+            is_column_added = False
+            for candidate, reduce_cost in self.pricing_callback(duals):
+                if -reduce_cost < tol:
+                    break
+                if str(candidate) not in self.candidates:
+                    print(f'iterations: {iteration}, try to add {candidate} with reduce_cost {reduce_cost}')
+                    self.add_column(candidate=candidate, col_name=f"x_{iteration}")
+                    is_column_added = True
+                    break
+            if not is_column_added:
+                print(f"Optimal solution found after {iteration} iterations.")
+                print(duals)
+                break  # No new, valid, improving column was found
             iteration += 1
+        if iteration >= max_iter:
+            print(f"Reached max iterations ({max_iter}).")

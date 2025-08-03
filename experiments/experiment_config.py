@@ -15,14 +15,14 @@ class ExperimentConfig:
 
     @classmethod
     def from_multiappt_default_case(cls, random_seed):
-        decision_epoch = 3
-        class_number = 2
-        arrival_generator = MultiClassPoissonArrivalGenerator(mean_arrival_rate=3,
-                                                              maximum_arrival=9,
+        decision_epoch = 1
+        treatment_pattern = np.array([[1], [1]])
+        class_number = treatment_pattern.shape[1]
+        arrival_generator = MultiClassPoissonArrivalGenerator(mean_arrival_rate=1,
+                                                              maximum_arrival=1,
                                                               type_probs=[1 / class_number] * class_number,
                                                               random_seed= random_seed,
-                                                              is_precompute_state=True)
-        treatment_pattern = np.array([[2, 1]])
+                                                              is_precompute_state=False)
         holding_cost = [10 - i * 5 / max((class_number - 1), 1) for i in range(class_number)]
         holding_cost_fn = lambda t, i: holding_cost[i]
         env_params = {
@@ -32,12 +32,12 @@ class ExperimentConfig:
             'holding_cost': holding_cost_fn,
             'overtime_cost': 40,
             'duration': 1,
-            'regular_capacity': 5,
+            'regular_capacity': 2,
             'discount_factor': 0.99,
         }
         env = SchedulingEnv(**env_params)
         bookings = np.array([0]*(decision_epoch+len(treatment_pattern)-1))
-        delta = np.array([3, 3])
+        delta = np.array([3]*class_number)
         init_state = (bookings, delta)
         reset_params = {
             'percentage_occupied': 0,
@@ -52,7 +52,7 @@ class ExperimentConfig:
         decision_epoch = 5
         planning_horizon = 2
         class_number = 2
-        arrival_generator = MultiClassPoissonArrivalGenerator(3, 4, [1 / class_number] * class_number,
+        arrival_generator = MultiClassPoissonArrivalGenerator(1, 3, [1 / class_number] * class_number,
                                                               random_seed=random_seed,
                                                               is_precompute_state=True)
         treatment_pattern = np.array([[2, 1],
@@ -320,6 +320,11 @@ class ExperimentConfig:
             'random_seed': env_random_seed
         }
         env = SchedulingEnv(**env_params)
+        if init_state == None:
+            bookings = np.array([regular_capacity/2]*(decision_epoch+env.num_sessions-1))
+            waitlists = np.array([1]*env.num_types)
+            valid_action = np.array([waitlists] + [[0]*env.num_types for _ in range(env.decision_epoch-1)])
+            init_state = (bookings, waitlists)
         return cls(env, reset_params, init_state, valid_action, args)
 
 def get_config_by_type(case_type, args=None, random_seed=None):
