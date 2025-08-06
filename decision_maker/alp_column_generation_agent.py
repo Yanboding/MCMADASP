@@ -1,5 +1,6 @@
 import time
 from collections import defaultdict
+from pprint import pprint
 
 import numpy as np
 from scipy.stats import uniform
@@ -7,7 +8,8 @@ import gurobipy as gp
 from gurobipy import GRB
 
 from environment.utility import get_valid_advance_actions
-from utils import get_solution_value, ColumnGenerationSolver, generate_state_action_pairs, solve_and_handle_errors
+from utils import get_solution_value, ColumnGenerationSolver, generate_state_action_pairs, solve_and_handle_errors, \
+    iter_to_tuple
 
 
 def make_index_counter(start=0):
@@ -54,18 +56,18 @@ class ALPAgent:
         return self.W_0, self.Z, self.W
 
     def convert_duals_to_coefficients(self, duals):
-        '''
         N = self.env.decision_epoch
         I = self.env.num_types
         l = self.env.num_sessions
+        '''
         W_0 = {k: final_duals[next(counter) for k in range(1, N + 1)}
         Z = {k: [final_duals[next(counter)] for j in range(N + l - k)] for k in range(1, N + 1)}
         W = {k: [final_duals[next(counter)] for i in range(I)] for k in range(1, N + 1)}
         '''
         counter = make_index_counter(0)
         W_0 = duals[next(counter)]
-        Z = np.array([duals[next(counter)] for k in range(self.env.decision_epoch + self.env.num_sessions - 1)])
-        W = np.array([duals[next(counter)] for i in range(self.env.num_types)])
+        Z = np.array([duals[next(counter)] for k in range(N + l - 1)])
+        W = np.array([duals[next(counter)] for i in range(I)])
         return W_0, Z, W
 
     def master_builder(self):
@@ -140,7 +142,7 @@ class ALPAgent:
         H = N - t
         return W_0 + (Z[:H+l] * bookings_var).sum() + (W * waitlist_var).sum()
 
-    def pricing_callback(self, duals):
+    def pricing_callback(self, duals, max_attempts=10):
         """
         Solves the pricing subproblem by iterating through each time period.
 
@@ -157,95 +159,96 @@ class ALPAgent:
         maximum_arrival = self.env.arrival_generator.maximum_arrival
         z_max = maximum_arrival * N * self.env.treatment_pattern.max() + self.env.regular_capacity
         W_0, Z, W = self.convert_duals_to_coefficients(duals)
+        models = []
+        var_handles = []
+        candidate_costs = []
+        dual_costs = []
 
-        with gp.Model("Pricing_Problem", env=self.grb_env) as pricing_model:
-            pricing_model.setParam('OutputFlag', 0)
-            # --- 3. Configure the Gurobi Solution Pool ---
-            # Find and store as many solutions as possible.
-            #pricing_model.setParam(GRB.Param.PoolSolutions, 300)
-            # Ensure the solutions are the best ones found and are ranked.
-            #pricing_model.setParam(GRB.Param.PoolSearchMode, 2)
+        for t in range(1, N + 1):
+            m = gp.Model(f"Pricing_Problem_t{t}", env=self.grb_env)
+            m.setParam('OutputFlag', 0)
+            H = N - t
+            a_var = np.array([
+                [m.addVar(vtype=GRB.INTEGER, lb=0, name=f"A_{t},{j},{i}") for i in range(I)]
+                for j in range(H + 1)
+            ])
+            b_var = np.array([
+                m.addVar(vtype=GRB.INTEGER, lb=0, ub=z_max, name=f"z_{t},{j}") for j in range(H + l)
+            ])
+            w_var = np.array([
+                m.addVar(vtype=GRB.INTEGER, lb=0, ub=maximum_arrival, name=f"delta_{t},{i}") for i in range(I)
+            ])
 
-            # --- 4. Define Variables, Constraints, and Objective (Same as before) ---
-            # The model structure is identical to the previous version.
-            y = pricing_model.addVars(range(1, N + 1), vtype=GRB.BINARY, name="y")
-            action_vars, bookings_vars, waitlist_vars = {}, {}, {}
-            # ... (variable definitions are identical to the previous version) ...
-            for t in range(1, N + 1):
-                H = N - t
-                action_vars[t] = np.array(
-                    [[pricing_model.addVar(vtype=GRB.INTEGER, lb=0, name=f"A_{t},{j},{i}") for i in range(I)] for j in
-                     range(H + 1)])
-                bookings_vars[t] = np.array(
-                    [pricing_model.addVar(vtype=GRB.INTEGER, lb=0, ub=z_max, name=f"z_{t},{j}") for j in range(H + l)])
-                waitlist_vars[t] = np.array(
-                    [pricing_model.addVar(vtype=GRB.INTEGER, lb=0, ub=maximum_arrival, name=f"delta_{t},{i}") for i in
-                     range(I)])
-            # --- 5. Add Constraints (Same as before) ---
-            pricing_model.addConstr(y.sum() == 1, name="C0_one_hot_selection")
-            M = maximum_arrival
-            # ... (Big-M constraints are identical to the previous version) ...
-            for t in range(1, N + 1):
-                for i in range(I):
-                    lhs = action_vars[t][:, i].sum() - waitlist_vars[t][i]
-                    pricing_model.addConstr(lhs <= M * (1 - y[t]), name=f"C1_upper_{t},{i}")
-                    pricing_model.addConstr(lhs >= -M * (1 - y[t]), name=f"C1_lower_{t},{i}")
+            # [add constraints as needed here...]
+            m.addConstrs(
+                (a_var[:, i].sum() == w_var[i]
+                for i in range(I)),
+                name="C1_demand_today",
+            )
+            m.addConstr(
+                w_var.sum() <= maximum_arrival,
+                name="C2_maximum_arrival",
+            )
 
-            # --- 6. Define the Unified Objective (Same as before) ---
-            objective_expr = 0
-            # ... (objective function definition is identical to the previous version) ...
-            for t in range(1, N + 1):
-                b_vars, w_vars, a_vars = bookings_vars[t], waitlist_vars[t], action_vars[t]
-                approx_V_t = self.get_approx_value_fn(b_vars, w_vars, t, W_0, Z, W)
-                new_bookings_t = self.next_booking(b_vars, a_vars)
-                if t < N:
-                    immediate_cost_t = self.cost_fn(pricing_model, (b_vars, w_vars), a_vars, t)
-                    future_value_t = gamma * self.get_approx_value_fn(new_bookings_t, mu, t + 1, W_0, Z, W)
-                    column_cost_t = immediate_cost_t + future_value_t
-                else:
-                    column_cost_t = self.cost_fn(pricing_model, (b_vars, w_vars), a_vars, N)
-                reduced_cost_t = column_cost_t - approx_V_t
-                objective_expr += y[t] * reduced_cost_t
-            pricing_model.setObjective(objective_expr, GRB.MINIMIZE)
+            # --- Objective ---
+            candidate_cost = self.cost_fn(m, (b_var, w_var), a_var, t)
+            approx_V_t = self.get_approx_value_fn(b_var, w_var, t, W_0, Z, W)
+            new_bookings_t = self.next_booking(b_var, a_var)
+            if t < N:
+                future_value_t = gamma * self.get_approx_value_fn(new_bookings_t, mu, t + 1, W_0, Z, W)
+                dual_cost = approx_V_t - future_value_t
+            else:
+                dual_cost = approx_V_t
+            candidate_costs.append(candidate_cost)
+            dual_costs.append(dual_cost)
+            reduced_cost_t = candidate_cost - dual_cost
+            m.setObjective(reduced_cost_t, GRB.MINIMIZE)
+            m.update()
+            models.append(m)
+            var_handles.append((b_var, w_var, a_var))
+        # Now repeatedly solve until a new best solution is found
+        for _ in range(max_attempts):
+            best_solution = None
+            best_reduced_cost = float("inf")
+            best_t = None
 
-            # --- 2. Iteratively Solve and Cut ---
-            # Loop to find up to 'max_solutions' distinct solutions
-            for k in range(300):
-                pricing_model.optimize()
+            # Solve all models, collect their best solutions
+            for idx, (m, (b_var, w_var, a_var), candidate_cost, dual_cost) in enumerate(zip(models, var_handles, candidate_costs, dual_costs)):
+                t = idx + 1
+                m.optimize()
+                if m.Status == GRB.OPTIMAL:
+                    rc = m.ObjVal
+                    action = get_solution_value(a_var).astype(int)
+                    bookings = get_solution_value(b_var).astype(int)
+                    waitlist = get_solution_value(w_var).astype(int)
+                    if rc < best_reduced_cost:
+                        best_solution = ((bookings, waitlist), action, t)
+                        best_reduced_cost = rc
+                        best_t = t
 
-                # If no more feasible solutions can be found, stop.
-                if pricing_model.SolCount == 0:
-                    break
+            # If new solution, yield and exit
+            yield best_solution, best_reduced_cost
 
-                # --- Extract the current best solution ---
-                reduced_cost = pricing_model.ObjVal
-                active_t = next((t for t, var in y.items() if var.X > 0.5), -1)
+            # Otherwise, add a no-good cut for this solution in its model and try again
+            idx = best_t - 1
+            m = models[idx]
+            b_var, w_var, a_var = var_handles[idx]
+            (bookings, waitlist), action, t = best_solution
+            x_vars = list(b_var) + list(w_var) + list(a_var.flatten())
+            x_vals = list(bookings) + list(waitlist) + list(action.flatten())
+            delta_list = []
+            for i, (var, val) in enumerate(zip(x_vars, x_vals)):
+                delta_le = m.addVar(vtype=GRB.BINARY, name=f"delta_le_{i}")
+                delta_ge = m.addVar(vtype=GRB.BINARY, name=f"delta_ge_{i}")
+                m.addGenConstrIndicator(delta_le, True, var <= val - 1)
+                m.addGenConstrIndicator(delta_ge, True, var >= val + 1)
+                delta_list.extend([delta_le, delta_ge])
+            m.addConstr(gp.quicksum(delta_list) >= 1, name=f"no_good_cut_{t}_{_}")
+            m.update()
 
-                if active_t == -1:
-                    break  # Should not happen if SolCount > 0
+        # If we exit loop, no new improving solution exists
+        return
 
-                action = get_solution_value(action_vars[active_t]).astype(int)
-                bookings = get_solution_value(bookings_vars[active_t]).astype(int)
-                waitlist = get_solution_value(waitlist_vars[active_t]).astype(int)
-                solution = ((bookings, waitlist), action, active_t)
-                # Yield the found solution
-                yield solution, reduced_cost
-
-                # --- Add "No-Good" Cut to remove this solution ---
-                x_vars = list(bookings_vars[active_t]) + list(waitlist_vars[active_t]) + list(
-                    action_vars[active_t].flatten())
-                x_vals = list(bookings) + list(waitlist) + list(action.flatten())
-                delta_list = []
-                for i, (var, val) in enumerate(zip(x_vars, x_vals)):
-                    delta_le = pricing_model.addVar(vtype=GRB.BINARY, name=f"delta_le_{i}")
-                    delta_ge = pricing_model.addVar(vtype=GRB.BINARY, name=f"delta_ge_{i}")
-                    pricing_model.addGenConstrIndicator(delta_le, True, var <= val - 1)
-                    pricing_model.addGenConstrIndicator(delta_ge, True, var >= val + 1)
-                    delta_list.append(delta_le)
-                    delta_list.append(delta_ge)
-
-                # At least one variable must differ:
-                pricing_model.addConstr(gp.quicksum(delta_list) >= 1, name="no_good_cut")
 
     def next_booking(self, bookings, action):
         new_bookings = bookings + self.convert_action_to_booking_slots(action)
@@ -331,21 +334,30 @@ class ALPAgent:
         bookings, waitlist = state
         new_bookings = self.next_booking(bookings, action)
         # W_0 coefficient
-        W_0 = 1 - gamma if t < N else 1
+        if t < N:
+            W_0 = 1 - gamma
+        else:
+            W_0 = 1
         # Z coefficients
         Z = []
         for j in range(N + l - 1):
-            if t < N + l - 1 - j:
-                val = bookings[j] - gamma * new_bookings[j]
-            elif t == N and j < l:
-                val = bookings[j]
-            elif t == N + l - 1 - j and j >= l:
-                val = bookings[j]
-            else:
-                val = 0
+            val = 0
+            if t <= min(N-1, N + l - 2 - j):
+                val += bookings[j] - gamma * new_bookings[j]
+            if t == N + l - 1 - j and j >= l:
+                val += bookings[j]
+            if t == N and j < l:
+                val += bookings[j]
             Z.append(val)
         # W_i coefficients
-        W_i = [(waitlist[i] - gamma * mu[i]) if t < N else waitlist[i] for i in range(I)]
+        W_i = []
+        for i in range(I):
+            val = 0
+            if t < N-1:
+                val += waitlist[i] - gamma * mu[i]
+            elif t == N:
+                val += waitlist[i]
+            W_i.append(val)
         return [W_0] + Z + W_i
 
 
@@ -441,17 +453,36 @@ class ALPAgent:
 if __name__ =="__main__":
     from experiments import get_config_by_type
     # 54946.988268116984
-    config = get_config_by_type('default')
+    config = get_config_by_type('base_case')
     env = config.env
     init_state = config.init_state
-    t = 1
-    exogenous_state_distribution_by_time = {t: uniform(loc=0, scale=100) for t in range(1, env.decision_epoch + 1)}
-    duals = [-9859748.186390756, 99.9999999999992, 6957.658727005252, 13745.750866740453, 6483.3712029391645, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.4142106513626018e-14, 0.0, 0.0, 0.0, 0.0, 1.8088592518732013e-14, 1.7907706593544693e-14, 1.7728629527609246e-14, 1.7551343232333152e-14, 1.737582980000982e-14, 1.7202071502009722e-14, -7.847168073596153e-14, 0.0, 8.044804977647862e-15, 0.0, -7.776741197837839e-14, 0.0, -5.165410149195335e-14, 27180.16298871802, 166.24999999999966, 20761.625497808247, 27147.66298871802, 27147.662988718013, 54261.575977436034, 100.0000000000055, 27113.91298871803, 27113.912988718024, 20695.375497808247, 27113.912988718013, 0.0, 27075.162988718013, 54189.07597743605, 27072.662988718017, 27072.662988718028, 27072.66298871802, 0.0]
-    agent = ALPAgent(env=env, discount_factor=env.discount_factor)
-    columns = list(agent.generate_all_columns())
-    print(columns)
+    duals = [-814342.8028237808, 99.99999999999989, 99.0, 98.00999999999992, 97.02990000000004, 96.05960100000017, 95.09900499000014, 94.14801494010004, 93.20653479069898, 92.27446944279214, 91.3517247483641, 90.43820750088041, 89.53382542587164, 88.63848717161288, 87.75210229989679, 86.87458127689774, 86.00583546412871, 85.14577710948741, 84.29431933839254, 83.45137614500865, 82.61686238355855, 81.79069375972308, 80.9727868221258, 80.16305895390457, 79.36142836436551, 78.56781408072189, 77.78213593991464, 77.00431458051533, 76.23427143471022, 75.4719287203632, 74.71720943315937, 73.97003733882761, 73.2303369654393, 72.49803359578455, 71.77305325982638, 71.05532272722792, 70.3447694999557, 69.64132180495578, 68.94490858690597, 68.25545950103658, 722.5995010000003, 332.5000000000002, 626.539899999989, 1685.422289051244, 2106.0764011371793]
+    candidate = (((np.array([0,  0, 0,  0]), np.array([1, 1])),np.array([[1, 1],
+       [0, 0],
+       [0, 0]])),1)
+    agent = ALPAgent(env=env, discount_factor=env.discount_factor, coefficients=duals)
+    print(agent.solve(init_state, 1))
+    '''
+    ((array([11,  0, 11,  0]), array([1, 1])), array([[1, 1],
+       [0, 0],
+       [0, 0]]), 1)
+    '''
+    #agent.train(debug=False) # 696.6424199999999
+    #agent.train(debug=True) # 696.6424200000007
+    '''
+    for candidate, reduce_cost in agent.pricing_callback(duals):
+        print('candidate:', candidate)
+        candidate_cost = agent.get_obj_coefficient(candidate)
+        candidate_coeffs = agent.get_constr_coefficients(candidate)
+        print('candidate_coeffs:', candidate_coeffs)
+        # reduced cost = cost − ∑ dual[j] * coeffs[j]
+        approx_V = 0
+        for j, coeff in enumerate(candidate_coeffs):
+            approx_V += duals[j] * coeff
+        rc = candidate_cost - approx_V
+        print(candidate, reduce_cost, candidate_cost, approx_V, rc)
+    '''
 
-    W_0, Z, W = agent.train(debug=True)
     #columns = agent.generate_initial_columns()
     #print(columns) 2767.7803639492995
     # -30.0 [15.     14.85   14.7015] [40. 20.]

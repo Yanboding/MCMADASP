@@ -15,8 +15,9 @@ class ExperimentConfig:
 
     @classmethod
     def from_multiappt_default_case(cls, random_seed):
-        decision_epoch = 1
-        treatment_pattern = np.array([[1], [1]])
+        decision_epoch = 3
+        treatment_pattern = np.array([[2, 1,1],
+                                      [1, 1, 0]])
         class_number = treatment_pattern.shape[1]
         arrival_generator = MultiClassPoissonArrivalGenerator(mean_arrival_rate=1,
                                                               maximum_arrival=1,
@@ -222,9 +223,10 @@ class ExperimentConfig:
     
     @classmethod
     def from_base_case(cls):
+        class_num = -1
         env_args = {
             'decision_epoch':20, 
-            'arrival_rates':[0.19, 0.11, 0.11, 1.43, 0.59, 0.45, 1.42, 1.36, 0.57, 0.38, 0.18, 0.18, 0.29, 0.21, 0.3, 0.29, 0.15, 0.04], 
+            'arrival_rates':[0.19, 0.11, 0.11, 1.43, 0.59, 0.45, 1.42, 1.36, 0.57, 0.38, 0.18, 0.18, 0.29, 0.21, 0.3, 0.29, 0.15, 0.04][:class_num],
             'patterns':['1* 2 + 4 * 1',
                         '1*2',
                         '1*2+3*1',
@@ -242,8 +244,8 @@ class ExperimentConfig:
                         '1 * 2 + 32 * 1',
                         '1 * 2 + 36 * 1',
                         '1 * 2 + 21 * 1 + 1 * 2 + 14 * 1',
-                        '1 * 2 + 32 * 1'], 
-            'holding_cost_by_day_by_type':[132.5] * 3 + [100] * 3 + [66.25] * 6 + [27.5] * 2 + [25] * 3 + [20] * 1,
+                        '1 * 2 + 32 * 1'][:class_num],
+            'holding_cost_by_day_by_type':([132.5] * 3 + [100] * 3 + [66.25] * 6 + [27.5] * 2 + [25] * 3 + [20] * 1)[:class_num],
             'overtime_cost_by_day':100, 
             'duration':1, 
             'regular_capacity':120, 

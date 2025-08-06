@@ -61,10 +61,18 @@ class ColumnGenerationSolver:
             # 3. Pricing (column generation)
             is_column_added = False
             for candidate, reduce_cost in self.pricing_callback(duals):
+                candidate_cost = self.get_obj_coefficient(candidate)
+                candidate_coeffs = self.get_constr_coefficients(candidate)
+                # reduced cost = cost − ∑ dual[j] * coeffs[j]
+                rc = candidate_cost
+                for j, coeff in enumerate(candidate_coeffs):
+                    rc -= duals[j] * coeff
+                assert abs(rc -reduce_cost) < tol
                 if -reduce_cost < tol:
+                    print('reduce_cost:', reduce_cost)
                     break
                 if str(candidate) not in self.candidates:
-                    print(f'iterations: {iteration}, try to add {candidate} with reduce_cost {reduce_cost}')
+                    # print(f'iterations: {iteration}, try to add {candidate} with reduce_cost {reduce_cost}')
                     self.add_column(candidate=candidate, col_name=f"x_{iteration}")
                     is_column_added = True
                     break
