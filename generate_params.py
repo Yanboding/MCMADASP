@@ -42,6 +42,8 @@ def _generate_experiment_parameters(experiment_name, param_name, param_values, t
 
     # Define a standard set of agent arguments.
     agent_args = [
+        {'agent_name': 'hindsight_approx', 'args': {'sample_path_number': 500, 'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous'}},
+        {'agent_name': 'myopic', 'args': {}},
     ]
 
     result_dict = {}

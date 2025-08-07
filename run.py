@@ -67,6 +67,6 @@ if __name__ == '__main__':
     parser.add_argument('--job_id', help='Input METAJOB_ID', type=str)
     args = parser.parse_args()
     params = json.loads(args.params)
-    # alp_train(**params, job_id=args.job_id)
-    experiment(**params, job_id=args.job_id)
+    alp_train(**params, job_id=args.job_id)
+    #experiment(**params, job_id=args.job_id)
     
