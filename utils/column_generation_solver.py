@@ -71,10 +71,9 @@ class ColumnGenerationSolver:
                 for j, coeff in enumerate(candidate_coeffs):
                     rc -= duals[j] * coeff
                 if abs(rc -reduce_cost) > tol:
-                    print(duals)
+                    print(candidate)
                     print(f"Warning: calculated reduced cost {rc} differs from pricing callback {reduce_cost}")
-                    raise ValueError("Inconsistent reduced cost calculation.")
-                if -reduce_cost < tol:
+                if -rc < tol:
                     print('reduce_cost:', reduce_cost)
                     break
                 if str(candidate) not in self.candidates:

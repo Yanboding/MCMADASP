@@ -8,6 +8,8 @@ import gurobipy as gp
 from gurobipy import GRB
 import hashlib
 import json
+import os
+import glob
 
 
 def numpy_shift(arr, num_places, fill_na=0):
@@ -229,6 +231,32 @@ def get_uid(parameter):
     # Serialize the dictionary to a string in a consistent order.
     param_str = json.dumps(parameter, sort_keys=True)
     return hashlib.md5(param_str.encode('utf-8')).hexdigest()
+
+def safe_open(file_path, mode, **kwargs):
+    """
+    Safely open a file for writing, creating parent directories if needed.
+
+    Args:
+        file_path (str): Path to the file.
+        mode (str): File open mode (default: 'w').
+        **kwargs: Additional arguments to pass to open().
+
+    Returns:
+        file object: An open file object ready for writing.
+    """
+    parent_dir = os.path.dirname(file_path)
+    if parent_dir:
+        os.makedirs(parent_dir, exist_ok=True)
+    return open(file_path, mode, **kwargs)
+
+def read_lines_with_pattern(folder, pattern):
+    # The pattern can be 'abc*.txt' for files starting with 'abc' and ending with '.txt'
+    search_pattern = os.path.join(folder, '**', pattern)
+    for file_path in glob.glob(search_pattern, recursive=True):
+        if os.path.isfile(file_path):
+            with open(file_path, 'r') as f:
+                for line in f:
+                    yield line.rstrip('\n')
 
 if __name__ == '__main__':
     state_action_pairs = list(generate_state_action_pairs(maximum_slots=3,

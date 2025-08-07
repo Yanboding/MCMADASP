@@ -10,11 +10,11 @@ from gurobipy import GRB
 
 from decision_maker.memory_efficient_mcma_agent import SAAdvanceFastAgent
 from experiments.experiment_config import get_config_by_type
-from utils import iter_to_tuple, get_uid
+from utils import iter_to_tuple, get_uid, safe_open
 from decision_maker import SAAdvanceAgent, PolicyEvaluator, ALPAgent
 
 
-def experiment(experiment_name, param_value, env_args, agent_args, sample_path, uid, output_file):
+def experiment(experiment_name, param_value, env_args, agent_args, sample_path, uid, job_id):
     res = {'result':[]}
     res["uid"] = uid
     res["experiment_name"] = experiment_name
@@ -47,7 +47,7 @@ def experiment(experiment_name, param_value, env_args, agent_args, sample_path, 
         stats['wait_time_by_type'] = wait_time_by_type
         stats['overtime'] = env.overtime.tolist()
         res['result'].append(stats)
-    print(res)
+    output_file = os.path.join('experiments', 'results', experiment_name, f'{job_id}.jsonl')
     with open(output_file, 'a') as f:  # 'a' will create the file if not present
         f.write(json.dumps(res) + '\n')
 
@@ -57,9 +57,9 @@ def alp_train(env_args, experiment_name, job_id=None):
     env_for_train = config_for_train.env
     agent = ALPAgent(env=env_for_train, discount_factor=env_for_train.discount_factor)
     coefficients = agent.train(debug=False)
-    output_file = os.path.join(experiment_name, f'alp_train_{job_id}.jsonl' if job_id else 'alp_train.jsonl')
-    with open(output_file, 'a') as f:  # 'a' will create the file if not present
-        f.write(json.dumps({'uid':get_uid(env_args), 'agent_name': 'alp', 'args': {'coefficients':coefficients}}) + '\n')
+    output_file = os.path.join('experiments','results',experiment_name, f'alp_train{job_id}.jsonl' if job_id else 'alp_train.jsonl')
+    with safe_open(output_file, 'a') as f:  # 'a' will create the file if not present
+        f.write(json.dumps({'uid':get_uid(env_args), 'result': {'agent_name': 'alp', 'args': {'coefficients':coefficients}}}) + '\n')
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Example of using argparse to pass in a list of lists.")
@@ -67,5 +67,6 @@ if __name__ == '__main__':
     parser.add_argument('--job_id', help='Input METAJOB_ID', type=str)
     args = parser.parse_args()
     params = json.loads(args.params)
-    alp_train(**params, job_id=args.job_id)
+    # alp_train(**params, job_id=args.job_id)
+    experiment(**params, job_id=args.job_id)
     

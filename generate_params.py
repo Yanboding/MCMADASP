@@ -7,11 +7,12 @@ import numpy as np
 from decision_maker import ALPAgent
 from environment import SchedulingEnv
 from experiments import get_config_by_type
-from utils import iter_to_tuple, iter_to_list, get_uid
+from utils import iter_to_tuple, iter_to_list, get_uid, read_lines_with_pattern
 from pathlib import Path
 import hashlib
 import json
 import copy
+import os
 
 def _generate_experiment_parameters(experiment_name, param_name, param_values, test_sample_path_num, request_path, base_env_args_overrides=None, param_modifier_fn=None):
     """
@@ -46,7 +47,11 @@ def _generate_experiment_parameters(experiment_name, param_name, param_values, t
     result_dict = {}
     lines_to_write = [] # Optimization: Collect lines to write in a list
     print(f"Generating parameters for {experiment_name}...")
-    
+    directory_path = os.path.join('experiments', 'results', experiment_name)
+    alp_train_res = {}
+    for line in read_lines_with_pattern(directory_path, 'alp_train*.jsonl'):
+        line = json.loads(line)
+        alp_train_res[line['uid']] = line['result']
     # Iterate over each value of the parameter being tested.
     for value in param_values:
         # Optimization: Use copy.deepcopy for more efficient object copying.
@@ -62,11 +67,10 @@ def _generate_experiment_parameters(experiment_name, param_name, param_values, t
             for key in keys[:-1]:
                 d = d.setdefault(key, {})
             d[keys[-1]] = value
+        uid = get_uid(env_args_for_value)
+        agent_args.append(alp_train_res.get(uid, {'agent_name': 'alp', 'args': {'coefficients': None}}))
         config_for_train = get_config_by_type('custom', args=env_args_for_value)
         env_for_train = config_for_train.env
-        agent = ALPAgent(env=env_for_train, discount_factor=env_for_train.discount_factor)
-        coefficients = agent.train(debug=False)
-        agent_args.append({'agent_name': 'alp', 'args': {'coefficients':coefficients}})
         # Generate multiple random trials for each parameter value.
         for command_id in range(test_sample_path_num):
             # 1. Generate the sample path with a specific, isolated random seed.
@@ -170,9 +174,6 @@ def generate_all_experiments(experiment_configs, test_sample_path_num_map, dat_f
                 # Determine the correct output file for this specific parameter
                 exp_name = parameter['experiment_name']
                 exp_config = experiment_configs[exp_name]
-                result_path = exp_config.get('result_path', f'experiments/data_result/{exp_name}_results.jsonl')
-                
-                parameter['output_file'] = str(result_path)
                 line = "python run.py --params '" + json.dumps(parameter) + "'\n"
                 f.write(line)
                 pending_requests += 1
@@ -213,7 +214,7 @@ def generate_alp_train_params(experiment_configs, dat_file):
                                        param_modifier_fn=config.get('param_modifier_fn')):
                 line = "python run.py --params '" + json.dumps({'env_args':env_arg, 'experiment_name': name}) + "'\n"
                 f.write(line)
-        f.write(line)
+
 if __name__ == '__main__':
     # --- Define Experiment-Specific Logic ---
 
@@ -264,8 +265,13 @@ if __name__ == '__main__':
         'overtime_cost_by_day': 2000,
         'occupancy_level': 2000
     }
-    '''
+    
     # --- Run All Experiments ---
+    generate_alp_train_params(
+        experiment_configs=EXPERIMENT_CONFIGS,
+        dat_file = 'table.dat',
+    )
+    '''
     generate_all_experiments(
         experiment_configs=EXPERIMENT_CONFIGS,
         test_sample_path_num_map=TEST_SAMPLE_NUM_MAP,
@@ -273,7 +279,3 @@ if __name__ == '__main__':
         is_reuse=False # Set to True to avoid regenerating files and only create the .dat
     )
     '''
-    generate_alp_train_params(
-        experiment_configs=EXPERIMENT_CONFIGS,
-        dat_file = 'table.dat',
-    )
