@@ -1,5 +1,8 @@
 import gurobipy as gp
 
+from utils import solve_and_handle_errors
+
+
 class ColumnGenerationSolver:
     def __init__(self, master_builder, pricing_callback, initial_columns, get_constr_coefficients, get_obj_coefficient):
         """
@@ -32,7 +35,7 @@ class ColumnGenerationSolver:
             raise ValueError(f'already add this candidate: {candidate_str}')
         self.candidates.add(candidate_str)
 
-    def solve(self, tol=1e-4, max_iter=1000):
+    def solve(self, tol=1e-4, max_iter=3000):
         iteration = 0
         while iteration < max_iter:
             # 1. optimize the model
@@ -82,4 +85,25 @@ class ColumnGenerationSolver:
                 break  # No new, valid, improving column was found
             iteration += 1
         if iteration >= max_iter:
+            solve_and_handle_errors(self.master_model)
+            self.master_model.optimize()
+            if self.master_model.Status != gp.GRB.OPTIMAL:
+                # Print a more user-friendly explanation
+                if self.master_model.status == gp.GRB.INFEASIBLE:
+                    self.master_model.write('infeasible.lp')
+                    print("Model is infeasible.")
+                elif self.master_model.status == gp.GRB.UNBOUNDED:
+                    print("Model is unbounded.")
+                elif self.master_model.status == gp.GRB.INF_OR_UNBD:
+                    print("Model is infeasible or unbounded.")
+                elif self.master_model.status == gp.GRB.TIME_LIMIT:
+                    print("Time limit reached before optimality.")
+                elif self.master_model.status == gp.GRB.INTERRUPTED:
+                    print("Optimization was interrupted.")
+                elif self.master_model.status == gp.GRB.NUMERIC:
+                    print("Numerical issues encountered.")
+                else:
+                    print("See Gurobi documentation for other status codes.")
+                raise ValueError(f"Master model returned status {self.master_model.Status}")
+            print('optimal value:', self.master_model.ObjVal)
             print(f"Reached max iterations ({max_iter}).")

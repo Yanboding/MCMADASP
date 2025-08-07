@@ -39,7 +39,7 @@ METAJOB_ID=${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID}
 
 # Executing the command (a line from table.dat)
 # It's allowed to use more than one shell command (separated by semi-columns) on a single line
-eval "$COMM"
+/home/dingyanb/projects/def-sarhangi/dingyanb/MCMADASP $COMM  -o output.$METAJOB_ID
 
 # Exit status of the code:
 STATUS=$?

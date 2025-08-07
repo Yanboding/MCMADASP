@@ -3,6 +3,8 @@ from pprint import pprint
 
 import pandas as pd
 import numpy as np
+
+from decision_maker import ALPAgent
 from environment import SchedulingEnv
 from experiments import get_config_by_type
 from utils import iter_to_tuple, iter_to_list
@@ -53,8 +55,6 @@ def _generate_experiment_parameters(experiment_name, param_name, param_values, t
 
     # Define a standard set of agent arguments.
     agent_args = [
-        {'agent_name': 'hindsight_approx', 'args': {'sample_path_number': 500, 'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous'}},
-        {'agent_name': 'myopic', 'args': {}},
     ]
 
     result_dict = {}
@@ -76,7 +76,11 @@ def _generate_experiment_parameters(experiment_name, param_name, param_values, t
             for key in keys[:-1]:
                 d = d.setdefault(key, {})
             d[keys[-1]] = value
-        
+        config_for_train = get_config_by_type('custom', args=env_args_for_value)
+        env_for_train = config_for_train.env
+        agent = ALPAgent(env=env_for_train, discount_factor=env_for_train.discount_factor)
+        coefficients = agent.train(debug=False)
+        agent_args.append({'agent_name': 'alp', 'args': {'coefficients':coefficients}})
         # Generate multiple random trials for each parameter value.
         for command_id in range(test_sample_path_num):
             # 1. Generate the sample path with a specific, isolated random seed.
@@ -102,7 +106,6 @@ def _generate_experiment_parameters(experiment_name, param_name, param_values, t
             # Generate a unique ID and save the parameter set.
             uid = get_uid(parameter)
             parameter["uid"] = uid
-            print('uid:', uid)
             parameter["agent_args"] = agent_args
             parameter_str = json.dumps(parameter)
             result_dict[uid] = parameter
@@ -190,6 +193,40 @@ def generate_all_experiments(experiment_configs, test_sample_path_num_map, dat_f
     
     print(f"Generated {pending_requests} commands for pending requests across all experiments.")
 
+def _generate_alp_train_params(experiment_name, param_name, param_values, base_env_args_overrides=None, param_modifier_fn=None):
+    # Start with a base configuration.
+    base_env_args = get_config_by_type('base_case').args
+    if base_env_args_overrides:
+        base_env_args.update(base_env_args_overrides)
+    print(f"Generating parameters for {experiment_name}...")
+
+    # Iterate over each value of the parameter being tested.
+    for value in param_values:
+        # Optimization: Use copy.deepcopy for more efficient object copying.
+        env_args_for_value = copy.deepcopy(base_env_args)
+
+        # Modify the environment arguments for the current value.
+        if param_modifier_fn:
+            env_args_for_value = param_modifier_fn(env_args_for_value, value)
+        else:
+            # Handle simple or nested parameter updates using dot notation.
+            keys = param_name.split('.')
+            d = env_args_for_value
+            for key in keys[:-1]:
+                d = d.setdefault(key, {})
+            d[keys[-1]] = value
+        yield env_args_for_value
+
+def generate_alp_train_params(experiment_configs, dat_file):
+    with open(dat_file, 'w') as f:
+        for name, config in experiment_configs.items():
+            for env_arg in  _generate_alp_train_params(experiment_name=name,
+                                       param_name=config['param_name'],
+                                       param_values=config['param_values'],
+                                       base_env_args_overrides=config.get('base_env_args_overrides'),
+                                       param_modifier_fn=config.get('param_modifier_fn')):
+                line = "python run.py --params '" + json.dumps(env_arg) + "'\n"
+                f.write(line)
 
 if __name__ == '__main__':
     # --- Define Experiment-Specific Logic ---
@@ -220,7 +257,7 @@ if __name__ == '__main__':
         },
         'decision_epoch': {
             'param_name': 'decision_epoch',
-            'param_values': [20, 30, 40],
+            'param_values': [20, 30],
         },
         'overtime_cost_by_day': {
             'param_name': 'overtime_cost_by_day',
@@ -229,7 +266,7 @@ if __name__ == '__main__':
         'occupancy_level': {
             'param_name': 'reset_params.percentage_occupied',
             'param_values': [0.2, 0.5, 0.8],
-            'base_env_args_overrides': {'decision_epoch': 40}
+            'base_env_args_overrides': {'decision_epoch': 30}
         }
     }
     
@@ -241,11 +278,16 @@ if __name__ == '__main__':
         'overtime_cost_by_day': 2000,
         'occupancy_level': 2000
     }
-
+    '''
     # --- Run All Experiments ---
     generate_all_experiments(
         experiment_configs=EXPERIMENT_CONFIGS,
         test_sample_path_num_map=TEST_SAMPLE_NUM_MAP,
         dat_file='table.dat',
         is_reuse=False # Set to True to avoid regenerating files and only create the .dat
+    )
+    '''
+    generate_alp_train_params(
+        experiment_configs=EXPERIMENT_CONFIGS,
+        dat_file = 'table.dat',
     )

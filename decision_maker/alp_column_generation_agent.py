@@ -51,9 +51,7 @@ class ALPAgent:
                                                 get_obj_coefficient=self.get_obj_coefficient)
         self.cg_solver.solve()
         self.is_trained = True
-        final_duals = [c.Pi for c in self.cg_solver.master_model.getConstrs()]
-        self.W_0, self.Z, self.W = self.convert_duals_to_coefficients(final_duals)
-        return self.W_0, self.Z, self.W
+        return [c.Pi for c in self.cg_solver.master_model.getConstrs()]
 
     def convert_duals_to_coefficients(self, duals):
         N = self.env.decision_epoch
@@ -453,15 +451,15 @@ class ALPAgent:
 if __name__ =="__main__":
     from experiments import get_config_by_type
     # 54946.988268116984
-    config = get_config_by_type('base_case')
+    config = get_config_by_type('default')
     env = config.env
     init_state = config.init_state
     duals = [-814342.8028237808, 99.99999999999989, 99.0, 98.00999999999992, 97.02990000000004, 96.05960100000017, 95.09900499000014, 94.14801494010004, 93.20653479069898, 92.27446944279214, 91.3517247483641, 90.43820750088041, 89.53382542587164, 88.63848717161288, 87.75210229989679, 86.87458127689774, 86.00583546412871, 85.14577710948741, 84.29431933839254, 83.45137614500865, 82.61686238355855, 81.79069375972308, 80.9727868221258, 80.16305895390457, 79.36142836436551, 78.56781408072189, 77.78213593991464, 77.00431458051533, 76.23427143471022, 75.4719287203632, 74.71720943315937, 73.97003733882761, 73.2303369654393, 72.49803359578455, 71.77305325982638, 71.05532272722792, 70.3447694999557, 69.64132180495578, 68.94490858690597, 68.25545950103658, 722.5995010000003, 332.5000000000002, 626.539899999989, 1685.422289051244, 2106.0764011371793]
     candidate = (((np.array([0,  0, 0,  0]), np.array([1, 1])),np.array([[1, 1],
        [0, 0],
        [0, 0]])),1)
-    agent = ALPAgent(env=env, discount_factor=env.discount_factor, coefficients=duals)
-    print(agent.solve(init_state, 1))
+    agent = ALPAgent(env=env, discount_factor=env.discount_factor)
+    coeff = agent.train(debug=False)
     '''
     ((array([11,  0, 11,  0]), array([1, 1])), array([[1, 1],
        [0, 0],
