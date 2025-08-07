@@ -10,7 +10,7 @@ from gurobipy import GRB
 
 from decision_maker.memory_efficient_mcma_agent import SAAdvanceFastAgent
 from experiments.experiment_config import get_config_by_type
-from utils import iter_to_tuple
+from utils import iter_to_tuple, get_uid
 from decision_maker import SAAdvanceAgent, PolicyEvaluator, ALPAgent
 
 
@@ -48,13 +48,24 @@ def experiment(experiment_name, param_value, env_args, agent_args, sample_path, 
         stats['overtime'] = env.overtime.tolist()
         res['result'].append(stats)
     print(res)
-    with open(output_file, 'w') as f:  # 'a' will create the file if not present
+    with open(output_file, 'a') as f:  # 'a' will create the file if not present
         f.write(json.dumps(res) + '\n')
+
+def alp_train(env_args, experiment_name, job_id=None):
+    print('Training ALP agent with args:', env_args)
+    config_for_train = get_config_by_type(case_type='custom',args=env_args)
+    env_for_train = config_for_train.env
+    agent = ALPAgent(env=env_for_train, discount_factor=env_for_train.discount_factor)
+    coefficients = agent.train(debug=False)
+    output_file = os.path.join(experiment_name, f'alp_train_{job_id}.jsonl' if job_id else 'alp_train.jsonl')
+    with open(output_file, 'a') as f:  # 'a' will create the file if not present
+        f.write(json.dumps({'uid':get_uid(env_args), 'agent_name': 'alp', 'args': {'coefficients':coefficients}}) + '\n')
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Example of using argparse to pass in a list of lists.")
     parser.add_argument('--params', help='Input JSON-encoded list of lists', type=str)
+    parser.add_argument('--job_id', help='Input METAJOB_ID', type=str)
     args = parser.parse_args()
     params = json.loads(args.params)
-    experiment(**params)
+    alp_train(**params, job_id=args.job_id)
     

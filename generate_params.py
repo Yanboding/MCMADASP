@@ -7,25 +7,11 @@ import numpy as np
 from decision_maker import ALPAgent
 from environment import SchedulingEnv
 from experiments import get_config_by_type
-from utils import iter_to_tuple, iter_to_list
+from utils import iter_to_tuple, iter_to_list, get_uid
 from pathlib import Path
 import hashlib
 import json
 import copy
-
-def get_uid(parameter):
-    """
-    Generates a unique MD5 hash for a given parameter dictionary.
-
-    Args:
-        parameter (dict): The dictionary of parameters.
-
-    Returns:
-        str: A unique hexadecimal MD5 hash string.
-    """
-    # Serialize the dictionary to a string in a consistent order.
-    param_str = json.dumps(parameter, sort_keys=True)
-    return hashlib.md5(param_str.encode('utf-8')).hexdigest()
 
 def _generate_experiment_parameters(experiment_name, param_name, param_values, test_sample_path_num, request_path, base_env_args_overrides=None, param_modifier_fn=None):
     """
@@ -225,9 +211,9 @@ def generate_alp_train_params(experiment_configs, dat_file):
                                        param_values=config['param_values'],
                                        base_env_args_overrides=config.get('base_env_args_overrides'),
                                        param_modifier_fn=config.get('param_modifier_fn')):
-                line = "python run.py --params '" + json.dumps(env_arg) + "'\n"
+                line = "python run.py --params '" + json.dumps({'env_args':env_arg, 'experiment_name': name}) + "'\n"
                 f.write(line)
-
+        f.write(line)
 if __name__ == '__main__':
     # --- Define Experiment-Specific Logic ---
 

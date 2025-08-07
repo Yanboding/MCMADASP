@@ -6,6 +6,8 @@ from collections.abc import Iterable
 
 import gurobipy as gp
 from gurobipy import GRB
+import hashlib
+import json
 
 
 def numpy_shift(arr, num_places, fill_na=0):
@@ -213,6 +215,21 @@ def solve_and_handle_errors(model: gp.Model):
     except Exception as e:
         print(f"An unexpected error occurred: {e}")
         return False
+
+def get_uid(parameter):
+    """
+    Generates a unique MD5 hash for a given parameter dictionary.
+
+    Args:
+        parameter (dict): The dictionary of parameters.
+
+    Returns:
+        str: A unique hexadecimal MD5 hash string.
+    """
+    # Serialize the dictionary to a string in a consistent order.
+    param_str = json.dumps(parameter, sort_keys=True)
+    return hashlib.md5(param_str.encode('utf-8')).hexdigest()
+
 if __name__ == '__main__':
     state_action_pairs = list(generate_state_action_pairs(maximum_slots=3,
                                               maximum_num_sessions=2,
