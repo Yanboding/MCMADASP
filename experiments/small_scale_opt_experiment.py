@@ -1,8 +1,12 @@
+import json
 import os
 import time
 from collections import defaultdict
 from pprint import pprint
-from utils import iter_to_tuple, iter_to_list, RunningStat
+
+from decision_maker.heterogeneous_alp_agent import HeterogeneousALPAgent
+from decision_maker.memory_efficient_mcma_agent import SAAdvanceFastAgent
+from utils import iter_to_tuple, iter_to_list, RunningStat, get_uid
 
 import numpy as np
 import pandas as pd
@@ -12,80 +16,45 @@ from decision_maker import SAAdvanceAgent, OptimalAgent, PolicyEvaluator, \
 from visualization import opt_plot, approximate_value_plot_from_running_stats_dict
 from environment import MultiClassPoissonArrivalGenerator
 
-def action_value_function_compare_experiment(config):
+def action_value_function_compare_experiment(config, agent_configs, plot_labels):
     '''
     1. index actions by integers
     2. plot exact q value function on each action and information relaxation bound on each action
     '''
     env = config.env
     init_state = config.init_state
-    optimal_agent = OptimalAgent(env=env, discount_factor=env.discount_factor)
-    agent = SAAdvanceAgent(env=env, discount_factor=env.discount_factor)
-    alp_agent = ALPAgent(env=env, discount_factor=env.discount_factor)
-    optimal_agent.train(init_state, 1)
-    print('finish optimal')
-    state_tuple = iter_to_tuple(init_state)
+    agents = {agent_name: agent(env=env, discount_factor=env.discount_factor, **args) for agent_name, (agent, args) in agent_configs.items()}
     x = []
     xticks = []
     xticklabels = []
-    actions = []
     action_values = defaultdict(lambda:defaultdict(lambda: RunningStat(1)))
-    min_value = float('inf')
-    best_action = None
-    best_index = None
-    alp_min_value = float('inf')
-    alp_best_action = None
-    alp_best_index = None
-    optimal_action = optimal_agent.policy(init_state, 1)
-    optimal_action_tuple = iter_to_tuple(optimal_action)
-    for i, (action, qValue) in enumerate(optimal_agent.Q[(state_tuple, 1)].items()):
-        action_now = np.array(iter_to_list(action))
+    agent_best_action = defaultdict(lambda: (float('inf'), None, None))
+    for agent_name, agent_instance in agents.items():
+        best_action, action_val = agent_instance.solve(init_state, 1)
+        agent_best_action[agent_name] = (action_val, None, best_action)
+    for i, action in enumerate(env.valid_actions(init_state, 1)):
         x.append(i)
-        actions.append(action)
-        action_values['optimal_policy'][i].record(qValue)
-        # alp policy
-        _, approximate_value = alp_agent.solve(init_state, 1, action_now)
-        action_values['alp_policy'][i].record(approximate_value)
-        if action_values['alp_policy'][i].expect < alp_min_value:
-            alp_min_value = action_values['alp_policy'][i].expect
-            alp_best_action = action_now
-            alp_best_index = i
-        # hindsight policy
-        for j in range(10):
-            agent.set_sample_paths(500)
-            _, _, approximate_value = agent.solve(init_state, 1, action=action_now)
-            action_values['hindsight_policy'][i].record(approximate_value)
-        if action_values['hindsight_policy'][i].expect < min_value:
-            min_value = action_values['hindsight_policy'][i].expect
-            best_action = action_now
-            best_index = i
-        if action == optimal_action_tuple:
-            xticks.append(i)
-            xticklabels.append(str(optimal_action))
-    xticks.append(alp_best_index)
-    xticklabels.append(str(alp_best_action))
-    xticks.append(best_index)
-    xticklabels.append(str(best_action))
-    print(optimal_action)
-    print(alp_best_action)
-    print(best_action)
-
+        for agent_name, agent_instance in agents.items():
+            _, action_val = agent_instance.solve(init_state, 1, action)
+            action_values[agent_name][i].record(action_val)
+            if agent_best_action[agent_name][2] is not None and np.array_equal(agent_best_action[agent_name][2], action):
+                agent_best_action[agent_name] = (action_val, i, action)
+    for agent_name, (action_val, i, action) in agent_best_action.items():
+        xticks.append(i)
+        xticklabels.append(str(action))
     approximate_value_plot_from_running_stats_dict(running_stats_dict=action_values,
                                                    x_vals=sorted(x),
                                                    xticks=xticks,
                                                    xticklabels=xticklabels,
                                                    xlabel='Best Action',
                                                    ylabel="Value Function",
-                                                   plot_labels={'optimal_policy': 'Optimal Policy',
-                                                                'alp_policy': 'ALP Policy',
-                                                                'hindsight_policy': 'Hindsight Approx Policy',
-                                                                },
+                                                   plot_labels=plot_labels,
                                                    title=None,
                                                    save_file='action_value_comparison',
                                                    is_show_text=False,
                                                    is_set_x_color=True)
 
-def decision_epoch_experiment(config, agents, decision_epochs, replication=1000):
+def decision_epoch_experiment(config, agents, decision_epochs, plot_labels, replication=1000):
     x = []
     value_fuc_stats = defaultdict(lambda: defaultdict(lambda: RunningStat(1)))
     env = config.env
@@ -95,14 +64,15 @@ def decision_epoch_experiment(config, agents, decision_epochs, replication=1000)
         env.decision_epoch = decision_epoch
         init_state, info = env.reset(**config.reset_params)
         lower_bound_agent = SAAdvanceAgent(env=env, discount_factor=env.discount_factor)
-        for r in range(replication):
-            sample_path = env.reset_arrivals(t=1)
-            for agent_name, (agent, args) in agents.items():
-                agent_instant = agent(env=env, discount_factor=env.discount_factor, **args)
-                policy_evaluator = PolicyEvaluator(env, agent_instant, env.discount_factor)
+        sample_paths = [env.reset_arrivals(t=1) for _ in range(replication)]
+        for agent_name, (agent, args) in agents.items():
+            agent_instant = agent(env=env, discount_factor=env.discount_factor, **args)
+            policy_evaluator = PolicyEvaluator(env, agent_instant, env.discount_factor)
+            for sample_path in sample_paths:
+                uid = get_uid(sample_path.tolist())
                 pct_gap = policy_evaluator.sample_path_optimality_gap_evaluate(lower_bound_agent, init_state, 1,
                                                                                sample_path)
-                print(f'decision_epoch {decision_epoch}, agent_name {agent_name}, replication {r}', pct_gap)
+                print(f'decision_epoch {decision_epoch}, agent_name {agent_name}, sample path id {uid}', pct_gap)
                 value_fuc_stats[agent_name][decision_epoch].record(pct_gap)
     approximate_value_plot_from_running_stats_dict(running_stats_dict=value_fuc_stats,
                                                    x_vals=sorted(x),
@@ -110,11 +80,15 @@ def decision_epoch_experiment(config, agents, decision_epochs, replication=1000)
                                                    xticklabels=x,
                                                    xlabel='Number of periods',
                                                    ylabel="Value Function",
-                                                   plot_labels= {agent_name: agent_name for agent_name in agents.keys()},
+                                                   plot_labels= plot_labels,
                                                    title=None,
                                                    save_file='decision_epoch_value_comparison',
                                                    is_show_text=False,
                                                    is_set_x_color=False)
+    '''
+    with open('decision_epoch_experiment.jsonl', 'w') as f:
+        f.write(json.dumps({'decision_epoch':decision_epoch, 'agent_name':agent_name, 'uid':uid, 'pct_gap':pct_gap}))
+    '''
 
 
 if __name__ == '__main__':
@@ -122,8 +96,19 @@ if __name__ == '__main__':
 
     config = get_config_by_type('default')
     #action_value_function_compare_experiment(config)
-    agents = {
-        'ALP Policy': (ALPAgent, {'is_trained': True}),
+    agent_configs = {
+        'Myopic Policy': (SAAdvanceAgent, {'sample_path_number': 500, 'is_myopic': True}),
+        'Modify Myopic Policy': (SAAdvanceFastAgent, {'sample_path_number': 500, 'is_myopic': True}),
+        'Homogeneous ALP Policy': (ALPAgent, {'pretrain': True}),
+        'Heterogeneous ALP Policy': (HeterogeneousALPAgent, {'pretrain': True}),
         'Hindsight Approx Policy': (SAAdvanceAgent, {'sample_path_number': 500})
     }
-    decision_epoch_experiment(config, agents, [decision_epoch for decision_epoch in range(1, 11)])
+    plot_labels = {
+        'Myopic Policy': 'Myopic Policy',
+        'Modify Myopic Policy': 'Modify Myopic Policy',
+        'Homogeneous ALP Policy': 'Homogeneous ALP Policy',
+        'Heterogeneous ALP Policy': 'Heterogeneous ALP Policy',
+        'Hindsight Approx Policy': 'Hindsight Approx Policy',
+    }
+    action_value_function_compare_experiment(config, agent_configs,  plot_labels)
+    decision_epoch_experiment(config, agent_configs, [decision_epoch for decision_epoch in range(3, 11)], plot_labels)

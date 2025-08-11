@@ -16,11 +16,10 @@ class ExperimentConfig:
     @classmethod
     def from_multiappt_default_case(cls, random_seed):
         decision_epoch = 3
-        treatment_pattern = np.array([[2, 1,1],
-                                      [1, 1, 0]])
+        treatment_pattern = np.array([[2,1]])
         class_number = treatment_pattern.shape[1]
-        arrival_generator = MultiClassPoissonArrivalGenerator(mean_arrival_rate=1,
-                                                              maximum_arrival=1,
+        arrival_generator = MultiClassPoissonArrivalGenerator(mean_arrival_rate=3,
+                                                              maximum_arrival=9,
                                                               type_probs=[1 / class_number] * class_number,
                                                               random_seed= random_seed,
                                                               is_precompute_state=False)
@@ -33,7 +32,7 @@ class ExperimentConfig:
             'holding_cost': holding_cost_fn,
             'overtime_cost': 40,
             'duration': 1,
-            'regular_capacity': 2,
+            'regular_capacity': 5,
             'discount_factor': 0.99,
         }
         env = SchedulingEnv(**env_params)

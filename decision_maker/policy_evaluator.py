@@ -87,7 +87,7 @@ class PolicyEvaluator:
     def sample_path_optimality_gap_evaluate(self, lower_bound_solver, state, t, sample_path):
         state_tuple = iter_to_tuple(state)
         lower_bound_solver.set_sample_path(sample_path)
-        _, _, lower_bound = lower_bound_solver.solve(state, t)
+        _, lower_bound = lower_bound_solver.solve(state, t)
         sample_average_V = self.simulation_evaluate_helper(state, t, [sample_path])
         upper_bound = sample_average_V[(state_tuple, t)].expect[0]
         opt_gap = max(upper_bound - lower_bound, 0)

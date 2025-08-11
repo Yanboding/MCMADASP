@@ -18,8 +18,10 @@ def make_index_counter(start=0):
         yield index
         index += 1
 
-class ALPAgent:
+
+class HeterogeneousALPAgent:
     TOKEN_WAIT = 15
+
     def __init__(self, env, discount_factor, V=None, Q=None, coefficients=None, pretrain=False):
         self.env = env
         self.discount_factor = discount_factor
@@ -31,7 +33,7 @@ class ALPAgent:
         if V is None:
             self.V = {}
         self.action_map = {}
-        self.booking_weights = [1] * (self.env.decision_epoch+self.env.num_sessions)
+        self.booking_weights = [1] * (self.env.decision_epoch + self.env.num_sessions)
         self.waitlist_weights = [0] * self.env.num_types
         self.grb_env = self._acquire_grb_env()
         if coefficients is not None:
@@ -41,7 +43,7 @@ class ALPAgent:
         if pretrain:
             self.train(False)
 
-    def train(self,debug=False):
+    def train(self, debug=False):
         if debug == True:
             initial_columns = self.generate_all_columns()
         else:
@@ -61,17 +63,12 @@ class ALPAgent:
         N = self.env.decision_epoch
         I = self.env.num_types
         l = self.env.num_sessions
-        '''
-        W_0 = {k: final_duals[next(counter) for k in range(1, N + 1)}
-        Z = {k: [final_duals[next(counter)] for j in range(N + l - k)] for k in range(1, N + 1)}
-        W = {k: [final_duals[next(counter)] for i in range(I)] for k in range(1, N + 1)}
-        '''
         counter = make_index_counter(0)
-        W_0 = duals[next(counter)]
-        Z = np.array([duals[next(counter)] for k in range(N + l - 1)])
-        W = np.array([duals[next(counter)] for i in range(I)])
+        W_0 = {k: duals[next(counter)] for k in range(1, N + 1)}
+        Z = {k: [duals[next(counter)] for j in range(N + l - k)] for k in range(1, N + 1)}
+        W = {k: [duals[next(counter)] for i in range(I)] for k in range(1, N + 1)}
         return W_0, Z, W
-
+# [-195.07475000000005, -197.52500000000003, -200.0, 40.0, 39.6, 39.203999999999986, 40.0, 39.599999999999994, 40.0, 90.0, 45.0, 90.0, 45.0, 90.0, 45.0]
     def master_builder(self):
         '''
         Total number of constraints: N + N+l-1 + N+l -2 ... + l + N*I
@@ -80,28 +77,30 @@ class ALPAgent:
         I = self.env.num_types
         l = self.env.num_sessions
         mean_by_type = self.env.arrival_generator.mean_by_type
-        maximum_arrival = self.env.arrival_generator.maximum_arrival
-        z_max = maximum_arrival * N * self.env.treatment_pattern.max() + self.env.regular_capacity
-        E_z_beta = {t: [uniform(loc=0, scale=self.env.regular_capacity).mean()]*(N+l-t) for t in
+        E_z_beta = {t: [uniform(loc=0, scale=self.env.regular_capacity).mean()] * (N + l - t) for t in
                     range(1, N + 1)}
-        E_delta_beta = {t:  mean_by_type for t in range(1, N+1)}
+        E_delta_beta = {t: mean_by_type for t in range(1, N + 1)}
         master_model = gp.Model("MasterRMP")
         master_model.ModelSense = GRB.MINIMIZE
         master_model.setParam('OutputFlag', 0)
-        master_model.addConstr(
-            (
-                    gp.LinExpr() == N
-            ),
-            name="constr_W_0")
         master_model.addConstrs(
             (
-                gp.LinExpr() >= sum(E_z_beta[t][j] for t in range(1, min(N+l-j, N+1)))
-                for j in range(N + l - 1)
+                    gp.LinExpr() == 1
+                    for _ in range(1, N+1)
+             ),
+            name="constr_W_0")
+
+        master_model.addConstrs(
+            (
+                gp.LinExpr() >= E_z_beta[t][j]
+                for t in range(1, N + 1)
+                for j in range(N + l - t)
             ),
             name="constr_Z")
         master_model.addConstrs(
             (
-                gp.LinExpr() >= sum(E_delta_beta[t][i] for t in range(1, N + 1))
+                gp.LinExpr() >= E_delta_beta[t][i]
+                for t in range(1, N + 1)
                 for i in range(I)
             ),
             name="constr_W")
@@ -112,7 +111,7 @@ class ALPAgent:
         N = self.env.decision_epoch
         l = self.env.num_sessions
         H = N - t
-        return W_0 + (Z[:H+l] * bookings_var).sum() + (W * waitlist_var).sum()
+        return W_0[t] + (Z[t][:H + l] * bookings_var).sum() + (W[t] * waitlist_var).sum()
 
     def pricing_callback(self, duals, max_attempts=10):
         """
@@ -137,6 +136,7 @@ class ALPAgent:
         dual_costs = []
 
         for t in range(1, N + 1):
+            #z_max = maximum_arrival * 1 * self.env.treatment_pattern.max() + self.env.regular_capacity
             m = gp.Model(f"Pricing_Problem_t{t}", env=self.grb_env)
             m.setParam('OutputFlag', 0)
             H = N - t
@@ -154,7 +154,7 @@ class ALPAgent:
             # [add constraints as needed here...]
             m.addConstrs(
                 (a_var[:, i].sum() == w_var[i]
-                for i in range(I)),
+                 for i in range(I)),
                 name="C1_demand_today",
             )
             m.addConstr(
@@ -185,7 +185,8 @@ class ALPAgent:
             best_t = None
 
             # Solve all models, collect their best solutions
-            for idx, (m, (b_var, w_var, a_var), candidate_cost, dual_cost) in enumerate(zip(models, var_handles, candidate_costs, dual_costs)):
+            for idx, (m, (b_var, w_var, a_var), candidate_cost, dual_cost) in enumerate(
+                    zip(models, var_handles, candidate_costs, dual_costs)):
                 t = idx + 1
                 m.optimize()
                 if m.Status == GRB.OPTIMAL:
@@ -223,19 +224,21 @@ class ALPAgent:
 
     def cost_fn(self, model, state, action, t):
         bookings, _ = state
-        waiting_cost = sum(sum(self.discount_factor ** k * self.env.holding_cost(k, i) for k in range(j + 1)) * action[j, i]
-                           for j in range(len(action))
-                           for i in range(len(action[0])))
+        waiting_cost = sum(
+            sum(self.discount_factor ** k * self.env.holding_cost(k, i) for k in range(j + 1)) * action[j, i]
+            for j in range(len(action))
+            for i in range(len(action[0])))
         new_bookings = bookings + self.env.convert_action_to_booking_slots(action)
         overtime_hours = np.array([model.addVar(name="overtime_hours", lb=0) for _ in range(len(new_bookings))])
         overtime_cost = self.env.overtime_cost * overtime_hours[0]
-        model.addConstr(overtime_hours[0] >= (new_bookings[0] * self.env.duration - self.env.regular_capacity), name="overtime_0")
+        model.addConstr(overtime_hours[0] >= (new_bookings[0] * self.env.duration - self.env.regular_capacity),
+                        name="overtime_0")
         if t == self.env.decision_epoch:
             # Only consider the tail overtime if we're at the last decision epoch
             for k in range(1, len(new_bookings)):
                 overtime_cost += self.discount_factor ** k * self.env.overtime_cost * overtime_hours[k]
                 model.addConstr(overtime_hours[k] >= (new_bookings[k] * self.env.duration - self.env.regular_capacity),
-                               name=f"overtime_{k}")
+                                name=f"overtime_{k}")
         return waiting_cost + overtime_cost
 
     def generate_initial_columns(self):
@@ -246,20 +249,27 @@ class ALPAgent:
         regular_capacity = self.env.regular_capacity
         maximum_arrival = self.env.arrival_generator.maximum_arrival
         init_columns = []
-        z_max = maximum_arrival * (N-1) * self.env.treatment_pattern.max() + regular_capacity
-        for t in range(1, N+1):
+        z_max = maximum_arrival * N * self.env.treatment_pattern.max() + regular_capacity
+        for t in range(1, N + 1):
+            #z_max = maximum_arrival * 1 * self.env.treatment_pattern.max() + regular_capacity
             H = N - t
             for i in range(I):
                 with (gp.Model("init_columns", env=self.grb_env) as init_columns_model):
                     waitlist = np.array([0] * I)
                     waitlist[i] = maximum_arrival
-                    bookings_var = np.array([init_columns_model.addVar(vtype=GRB.INTEGER, lb=0, ub=z_max, name=f'init_z^{t}_{j}') for j in range(H+l)])
-                    action_var = np.array([[init_columns_model.addVar(vtype=GRB.INTEGER, lb=0, name=f"init_A^{t}_{j},{i}") for i in range(I)] for j in range(H + 1)])
-                    next_bookings_var = self.env.get_next_bookings(bookings_var,action_var)
+                    bookings_var = np.array(
+                        [init_columns_model.addVar(vtype=GRB.INTEGER, lb=0, ub=z_max, name=f'init_z^{t}_{j}') for j in
+                         range(H + l)])
+                    action_var = np.array([[init_columns_model.addVar(vtype=GRB.INTEGER, lb=0,
+                                                                      name=f"init_A^{t}_{j},{i}") for i in range(I)] for
+                                           j in range(H + 1)])
+                    next_bookings_var = self.env.get_next_bookings(bookings_var, action_var)
                     maximum_difference_var = init_columns_model.addVar(name='maximum_difference')
                     init_columns_model.addConstrs(
                         (
-                            maximum_difference_var <= (bookings_var[j] - gamma * next_bookings_var[j] if t < N + l - 1 - j else bookings_var[j])
+                            maximum_difference_var <= (
+                                bookings_var[j] - gamma * next_bookings_var[j] if t < N + l - 1 - j else bookings_var[
+                                    j])
                             for j in range(len(bookings_var))
                         ),
                         name="C1_maximum_difference",
@@ -289,32 +299,36 @@ class ALPAgent:
         bookings, waitlist = state
         new_bookings = self.env.get_next_bookings(bookings, action)
         # W_0 coefficient
-        if t < N:
-            W_0 = 1 - gamma
-        else:
-            W_0 = 1
+        W_0 = []
+        for k in range(1, N+1):
+            val = 0
+            if k == t:
+                val = 1
+            elif k == t+1 and t < N:
+                val = -gamma
+            W_0.append(val)
+
         # Z coefficients
         Z = []
-        for j in range(N + l - 1):
-            val = 0
-            if t <= min(N-1, N + l - 2 - j):
-                val += bookings[j] - gamma * new_bookings[j]
-            if t == N + l - 1 - j and j >= l:
-                val += bookings[j]
-            if t == N and j < l:
-                val += bookings[j]
-            Z.append(val)
+        for k in range(1, N+1):
+            for j in range(N + l - k):
+                val = 0
+                if k == t:
+                    val = bookings[j]
+                elif k == t+1 and t < N:
+                    val = - gamma * new_bookings[j]
+                Z.append(val)
         # W_i coefficients
         W_i = []
-        for i in range(I):
-            val = 0
-            if t < N-1:
-                val += waitlist[i] - gamma * mu[i]
-            elif t == N:
-                val += waitlist[i]
-            W_i.append(val)
-        return [W_0] + Z + W_i
-
+        for k in range(1, N + 1):
+            for i in range(I):
+                val = 0
+                if k == t:
+                    val = waitlist[i]
+                elif k == t + 1 and t < N:
+                    val = - gamma * mu[i]
+                W_i.append(val)
+        return W_0 + Z + W_i
 
     def get_obj_coefficient(self, candidate):
         state, action, t = candidate
@@ -327,18 +341,18 @@ class ALPAgent:
         """
         while True:
             try:
-                grb_env = gp.Env(empty=True)    # no token yet
+                grb_env = gp.Env(empty=True)  # no token yet
                 if silent:
                     grb_env.setParam("OutputFlag", 0)
-                grb_env.start()                 # tries to grab ONE token
+                grb_env.start()  # tries to grab ONE token
                 print('Get one token...')
-                return grb_env                  # success
+                return grb_env  # success
             except gp.GurobiError as e:
                 if "All tokens currently in use" in str(e):
                     print('Waiting...')
-                    time.sleep(wait)            # back‑off and try again
+                    time.sleep(wait)  # back‑off and try again
                 else:
-                    raise                       # some other licence error
+                    raise  # some other licence error
 
     def solve(self, state, t, action=None):
         # ---------- shortcuts ----------
@@ -351,11 +365,11 @@ class ALPAgent:
         mu = self.env.arrival_generator.mean_by_type
         # assume I know the
         with (gp.Model("ALP_Advance", env=self.grb_env) as m):
-            #m.setParam("OutputFlag", 0)
-            #m.setParam("LogToConsole", 0)
-            #m.setParam("MIPFocus", 1)
+            # m.setParam("OutputFlag", 0)
+            # m.setParam("LogToConsole", 0)
+            # m.setParam("MIPFocus", 1)
             # ---------- 1. today’s increments ----------
-            action_var = np.array([[m.addVar(vtype=GRB.INTEGER, name="a_t") for i in range(I)] for t in range(H+1)])
+            action_var = np.array([[m.addVar(vtype=GRB.INTEGER, name="a_t") for i in range(I)] for t in range(H + 1)])
             if action is not None:
                 for j in range(H + 1):
                     for i in range(I):
@@ -365,7 +379,7 @@ class ALPAgent:
             fut_cost = 0
             if t < N:
                 new_bookings = self.env.get_next_bookings(bookings=bookings, action=action_var)
-                fut_cost += gamma * self.get_approx_value_fn(new_bookings, mu, t+1, self.W_0, self.Z, self.W)
+                fut_cost += gamma * self.get_approx_value_fn(new_bookings, mu, t + 1, self.W_0, self.Z, self.W)
             m.setObjective(imm_cost + fut_cost, GRB.MINIMIZE)
             # demand for today
             m.addConstrs(
@@ -396,34 +410,36 @@ class ALPAgent:
         l = self.env.num_sessions
         regular_capacity = self.env.regular_capacity
         maximum_arrival = self.env.arrival_generator.maximum_arrival
-        z_max = maximum_arrival * (N) * self.env.treatment_pattern.max() + regular_capacity
+        z_max = maximum_arrival * N * self.env.treatment_pattern.max() + regular_capacity
         for column in generate_state_action_pairs(maximum_slots=z_max,
-                                                   maximum_num_sessions=l,
-                                                   maximum_arrival=maximum_arrival,
-                                                   num_type=I,
-                                                   period_to_go=N):
+                                                  maximum_num_sessions=l,
+                                                  maximum_arrival=maximum_arrival,
+                                                  num_type=I,
+                                                  period_to_go=N):
             yield column
 
 
-if __name__ =="__main__":
+
+
+if __name__ == "__main__":
     from experiments import get_config_by_type
+
     # 54946.988268116984
     config = get_config_by_type('default')
     env = config.env
     init_state = config.init_state
-    duals = [-58847.2195869369, 271.70594200258745, 0.0, 109.45000000000005, 108.42945233005194, 216.79515780675138, 107.85286745159996, 0.0, 33.82735715100085]
-    candidate = (((np.array([0,  0, 0,  0]), np.array([1, 1])),np.array([[1, 1],
-       [0, 0],
-       [0, 0]])),1)
-    agent = ALPAgent(env=env, discount_factor=env.discount_factor)
+    agent = HeterogeneousALPAgent(env=env, discount_factor=env.discount_factor)
+    #coeff = agent.get_constr_coefficients(candidate)
+    #print(coeff)
     coeff = agent.train(debug=False)
+    #print(coeff)
     '''
     ((array([11,  0, 11,  0]), array([1, 1])), array([[1, 1],
        [0, 0],
        [0, 0]]), 1)
-    #agent.train(debug=False) # 696.6424199999999
-    #agent.train(debug=True) # 696.6424200000007
-    
+    # agent.train(debug=False) # 696.6424199999999
+    # agent.train(debug=True) # 696.6424200000007
+
     for candidate, reduce_cost in agent.pricing_callback(duals):
         print('candidate:', candidate)
         candidate_cost = agent.get_obj_coefficient(candidate)
@@ -435,19 +451,11 @@ if __name__ =="__main__":
             approx_V += duals[j] * coeff
         rc = candidate_cost - approx_V
         print(candidate, reduce_cost, candidate_cost, approx_V, rc)
-    
 
-    #columns = agent.generate_initial_columns()
-    #print(columns) 2767.7803639492995
+    # columns = agent.generate_initial_columns()
+    # print(columns) 2767.7803639492995
     # -30.0 [15.     14.85   14.7015] [40. 20.]
     # 97.87294488252503 [41.03947446 44.91300951 48.74780922 44.00510413] [89.89858599  0.        ]
-    bookings = np.array([0])
-    new_arrival = np.array([0, 0, 0])
-    action = np.array([[0, 0, 0]])
-    t = 3
-    duals = [132.20717538253967, 72.40099939898013, 58.06119176440023, 57.38614615005441, 56.859501536904766, 0.0]
-    candidate = ((bookings, new_arrival), action, t)
-    print(agent.pricing_callback(duals))
     '''
     print(agent.solve(config.init_state, 1))
 

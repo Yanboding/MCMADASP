@@ -39,6 +39,10 @@ class SchedulingEnv:
         valid_actions = get_valid_advance_actions(waitlist, days_to_go + 1)
         return valid_actions
 
+    def get_next_bookings(self, bookings, action):
+        new_bookings = bookings + self.convert_action_to_booking_slots(action)
+        return new_bookings[1:]
+
     def convert_action_to_booking_slots(self, action):
         appointment_slots = action @ self.treatment_pattern.T
         N, P = appointment_slots.shape

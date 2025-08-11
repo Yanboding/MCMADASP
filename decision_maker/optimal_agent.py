@@ -54,8 +54,7 @@ class OptimalAgent:
             return self.V[(state_tuple, t)]
         dfs(state, t)
 
-    def policy(self, state, t):
-        # All actions that available in the given state
+    def solve(self, state, t):
         state_tuple = iter_to_tuple(state)
         minValue = float('inf')
         bestAction = None
@@ -63,7 +62,12 @@ class OptimalAgent:
             if qValue < minValue or (qValue == minValue and action > bestAction):
                 minValue = qValue
                 bestAction = action
-        return np.array(bestAction)
+        action = np.array(bestAction)
+        return action, minValue
+
+    def policy(self, state, t):
+        action, obj_value = self.solve(state, t)
+        return action
 
     def get_action_value(self, state, action, t):
         state_tuple = iter_to_tuple(state)

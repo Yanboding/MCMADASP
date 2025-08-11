@@ -58,7 +58,7 @@ class SAAdvanceFastAgent:
                 else:
                     raise  # some other licence error
 
-    def solve(self, state, t, x=None, action=None):
+    def solve(self, state, t, action=None):
         N = self.env.decision_epoch
         I = self.env.num_types
         H = N - t
@@ -217,14 +217,14 @@ class SAAdvanceFastAgent:
                 a_now = np.zeros((H + 1, I), dtype=int)
                 for (j, i), v in m.getAttr("X", a_t).items():
                     a_now[j, i] = int(round(v))
-                return a_now, m.getAttr("X", y_t), m.ObjVal
+                return a_now, m.ObjVal
             else:
                 raise RuntimeError("Optimal solution not found")
     def policy(self, state, t):
         state_tuple = iter_to_tuple(state)
         if (state_tuple, t) in self.action_map:
             return self.action_map[(state_tuple, t)]
-        action, overtime, obj_value = self.solve(state, t)
+        action, obj_value = self.solve(state, t)
         self.action_map[(state_tuple, t)] = action
         return action
 
