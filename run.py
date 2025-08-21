@@ -47,6 +47,8 @@ def experiment(experiment_name, param_value, env_args, agent_args, sample_path, 
         stats['overtime'] = env.overtime.tolist()
         res['result'].append(stats)
     output_file = os.path.join('experiments', 'results', experiment_name, f'{job_id}.jsonl')
+    # Make sure the parent directories exist
+    os.makedirs(os.path.dirname(output_file), exist_ok=True)
     with open(output_file, 'a') as f:  # 'a' will create the file if not present
         f.write(json.dumps(res) + '\n')
 
