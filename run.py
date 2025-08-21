@@ -8,7 +8,6 @@ import numpy as np
 import pandas as pd
 from gurobipy import GRB
 
-from decision_maker.memory_efficient_mcma_agent import SAAdvanceFastAgent
 from experiments.experiment_config import get_config_by_type
 from utils import iter_to_tuple, get_uid, safe_open
 from decision_maker import SAAdvanceAgent, PolicyEvaluator, ALPAgent
@@ -30,7 +29,7 @@ def experiment(experiment_name, param_value, env_args, agent_args, sample_path, 
         if agent_name == "hindsight_approx":
             agent_instance = SAAdvanceAgent(env, discount_factor=env.discount_factor, **args)
         elif agent_name == "myopic":
-            agent_instance = SAAdvanceFastAgent(env, discount_factor=env.discount_factor, **args)
+            agent_instance = SAAdvanceAgent(env, discount_factor=env.discount_factor, **args)
         elif agent_name == 'alp':
             agent_instance = ALPAgent(env, discount_factor=env.discount_factor, **args)
         evaluator = PolicyEvaluator(env, agent_instance, env.discount_factor)
@@ -67,6 +66,6 @@ if __name__ == '__main__':
     parser.add_argument('--job_id', help='Input METAJOB_ID', type=str)
     args = parser.parse_args()
     params = json.loads(args.params)
-    alp_train(**params, job_id=args.job_id)
-    #experiment(**params, job_id=args.job_id)
+    #alp_train(**params, job_id=args.job_id)
+    experiment(**params, job_id=args.job_id)
     

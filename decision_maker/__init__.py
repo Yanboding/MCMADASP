@@ -1,5 +1,4 @@
 from .optimal_agent import OptimalAgent
 from .sa_advance_agent import SAAdvanceAgent
-from .approx_allocation_to_advance_agent import ApproxAllocationAdvanceAgent
 from .policy_evaluator import PolicyEvaluator
 from .alp_column_generation_agent import ALPAgent

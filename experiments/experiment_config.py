@@ -1,6 +1,6 @@
 import numpy as np
 
-from environment import MultiClassPoissonArrivalGenerator, SchedulingEnv, RTEnv, AdvSchedulingEnv
+from environment import MultiClassPoissonArrivalGenerator, RTEnv, AdvSchedulingEnv
 from utils import str2treatment_patterns, wait_time
 
 

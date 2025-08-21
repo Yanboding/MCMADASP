@@ -3,8 +3,8 @@
 # It has to contain the runtime switch (either -t or --time):
 #SBATCH -t 24:00:00
 #SBATCH --nodes=1
-#SBATCH --ntasks-per-node=2
-#SBATCH --mem=16G
+#SBATCH --ntasks-per-node=4
+#SBATCH --mem=32G
 #  You have to replace Your_account_name below with the name of your account:
 #SBATCH -A def-sarhangi
 

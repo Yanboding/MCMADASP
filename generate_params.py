@@ -5,7 +5,6 @@ import pandas as pd
 import numpy as np
 
 from decision_maker import ALPAgent
-from environment import SchedulingEnv
 from experiments import get_config_by_type
 from utils import iter_to_tuple, iter_to_list, get_uid, read_lines_with_pattern
 from pathlib import Path
@@ -42,8 +41,8 @@ def _generate_experiment_parameters(experiment_name, param_name, param_values, t
 
     # Define a standard set of agent arguments.
     agent_args = [
-        {'agent_name': 'hindsight_approx', 'args': {'sample_path_number': 500, 'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous'}},
-        {'agent_name': 'myopic', 'args': {}},
+        {'agent_name': 'hindsight_approx', 'args': {'sample_path_number': 500, 'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False}},
+        {'agent_name': 'myopic', 'args': {'is_myopic': True}},
     ]
 
     result_dict = {}
@@ -70,7 +69,7 @@ def _generate_experiment_parameters(experiment_name, param_name, param_values, t
                 d = d.setdefault(key, {})
             d[keys[-1]] = value
         uid = get_uid(env_args_for_value)
-        agent_args.append(alp_train_res.get(uid, {'agent_name': 'alp', 'args': {'coefficients': None}}))
+        #agent_args.append(alp_train_res.get(uid, {'agent_name': 'alp', 'args': {'coefficients': None}}))
         config_for_train = get_config_by_type('custom', args=env_args_for_value)
         env_for_train = config_for_train.env
         # Generate multiple random trials for each parameter value.
@@ -269,6 +268,7 @@ if __name__ == '__main__':
     }
     
     # --- Run All Experiments ---
+    '''
     generate_alp_train_params(
         experiment_configs=EXPERIMENT_CONFIGS,
         dat_file = 'table.dat',
@@ -280,4 +280,4 @@ if __name__ == '__main__':
         dat_file='table.dat',
         is_reuse=False # Set to True to avoid regenerating files and only create the .dat
     )
-    '''
+    

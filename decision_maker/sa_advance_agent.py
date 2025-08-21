@@ -158,7 +158,6 @@ class SAAdvanceAgent:
             m.setParam("Presolve", 2)
             m.setParam("Threads", 0)
             m.optimize()
-            #print(obj_func.getValue())
             # ---------- 8. return ----------
             if m.Status == GRB.OPTIMAL:
                 action = self.get_solution(action_var_t)
