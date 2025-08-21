@@ -11,15 +11,18 @@ import matplotlib.pyplot as plt
 import json
 class OptimalAgent:
 
-    def __init__(self, env, discount_factor, V=None, Q=None):
+    def __init__(self, env, discount_factor, V=None, Q=None, pretrain=False, state=None, t=None):
         self.env = env
         self.discount_factor = discount_factor
         self.V = V
         self.Q = Q
         if Q is None:
-            self.Q = defaultdict(lambda: defaultdict(float))
+            self.Q = defaultdict(lambda: defaultdict(lambda: (float('inf'), None)))
         if V is None:
             self.V = {}
+        if pretrain:
+            self.train(state, t)
+
 
     def train(self, state, t):
         def dfs(state, t):
@@ -47,26 +50,30 @@ class OptimalAgent:
                     else:
                         next_state_val = dfs(next_state, t + 1)
                     q += prob * (cost + self.discount_factor * next_state_val)
-                self.Q[(state_tuple, t)][action_tuple] = q
+                self.Q[(state_tuple, t)][action_tuple] = (q, action)
                 if q < min_total_cost:
                     min_total_cost = q
             self.V[(state_tuple, t)] = min_total_cost
             return self.V[(state_tuple, t)]
         dfs(state, t)
 
-    def solve(self, state, t):
+    def solve(self, state, t, action=None):
         state_tuple = iter_to_tuple(state)
+        if action is not None:
+            action_tuple = iter_to_tuple(action)
+            return action, self.Q[(state_tuple, t)][action_tuple][0], {}
         minValue = float('inf')
+        bestAction_tuple = None
         bestAction = None
-        for action, qValue in self.Q[(state_tuple, t)].items():
-            if qValue < minValue or (qValue == minValue and action > bestAction):
+        for action_tuple, (qValue, action) in self.Q[(state_tuple, t)].items():
+            if qValue < minValue or (qValue == minValue and action_tuple > bestAction_tuple):
                 minValue = qValue
+                bestAction_tuple = action_tuple
                 bestAction = action
-        action = np.array(bestAction)
-        return action, minValue
+        return bestAction, minValue, {}
 
     def policy(self, state, t):
-        action, obj_value = self.solve(state, t)
+        action, obj_value, info = self.solve(state, t)
         return action
 
     def get_action_value(self, state, action, t):
@@ -203,19 +210,21 @@ class OptimalAgent:
         plt.show()
 
 if __name__ == '__main__':
-    from experiments import ExperimentConfig, Config
-    from environment import AdvanceSchedulingEnv
-    config = ExperimentConfig.from_EJOR_case()
+    from experiments import get_config_by_type
+
+    config = get_config_by_type('adv_default')
     env = config.env
+    discount_factor = env.discount_factor
     init_state = config.init_state
     t = 1
-
+    print(config.init_state)
     print('Waiting for Optimal...')
     optimal_agent = OptimalAgent(env=env, discount_factor=env.discount_factor)
     optimal_agent.train(init_state, t)
     optimal_value = optimal_agent.get_state_value(init_state, t)
     optimal_action = optimal_agent.policy(init_state, t)
     print('Optimal Done:', optimal_value, 'Optimal action:', optimal_action)
+
     #pprint(optimal_agent.get_action_value(init_state, [4, 0], t))
     #pprint(optimal_agent.get_action_values(init_state, t))
     #           OPT  SAAllocationAdvanceAgent

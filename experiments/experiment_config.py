@@ -1,6 +1,6 @@
 import numpy as np
 
-from environment import MultiClassPoissonArrivalGenerator, SchedulingEnv, RTEnv
+from environment import MultiClassPoissonArrivalGenerator, SchedulingEnv, RTEnv, AdvSchedulingEnv
 from utils import str2treatment_patterns, wait_time
 
 
@@ -14,66 +14,30 @@ class ExperimentConfig:
         self.args = args if args is not None else {}
 
     @classmethod
-    def from_multiappt_default_case(cls, random_seed):
-        decision_epoch = 3
-        treatment_pattern = np.array([[2,1]])
-        class_number = treatment_pattern.shape[1]
-        arrival_generator = MultiClassPoissonArrivalGenerator(mean_arrival_rate=3,
-                                                              maximum_arrival=9,
-                                                              type_probs=[1 / class_number] * class_number,
-                                                              random_seed= random_seed,
-                                                              is_precompute_state=False)
-        holding_cost = [10 - i * 5 / max((class_number - 1), 1) for i in range(class_number)]
-        holding_cost_fn = lambda t, i: holding_cost[i]
-        env_params = {
-            'treatment_pattern': treatment_pattern,
-            'decision_epoch': decision_epoch,
-            'arrival_generator': arrival_generator,
-            'holding_cost': holding_cost_fn,
-            'overtime_cost': 40,
-            'duration': 1,
-            'regular_capacity': 5,
-            'discount_factor': 0.99,
-        }
-        env = SchedulingEnv(**env_params)
-        bookings = np.array([0]*(decision_epoch+len(treatment_pattern)-1))
-        delta = np.array([3]*class_number)
-        init_state = (bookings, delta)
-        reset_params = {
-            'percentage_occupied': 0,
-            't': 1,
-            'init_new_arrivals': delta,
-            'seed': 0
-        }
-        return cls(env, reset_params, init_state)
-
-    @classmethod
     def from_rt_default_case(cls, random_seed):
         decision_epoch = 5
-        planning_horizon = 2
-        class_number = 2
-        arrival_generator = MultiClassPoissonArrivalGenerator(1, 3, [1 / class_number] * class_number,
+        booking_window_size = 25
+        treatment_pattern = np.array([[1],[1],[1],[1],[1]])
+        class_number = treatment_pattern.shape[1]
+        arrival_generator = MultiClassPoissonArrivalGenerator(10, 30, [1 / class_number] * class_number,
                                                               random_seed=random_seed,
                                                               is_precompute_state=True)
-        treatment_pattern = np.array([[2, 1],
-                                      [1, 0],
-                                      [1, 1]])
-        holding_cost = [10 - i * 5 / max((class_number - 1), 1) for i in range(class_number)]
-        holding_cost_fn = lambda t, i: holding_cost[i]
-        overtime_cost_fn = lambda t: 40
-        postponing_cost = np.array([10 - i * 5 / max((class_number - 1), 1) for i in range(class_number)])
+        holding_cost = [50 - i * 5 / max((class_number - 1), 1) for i in range(class_number)]
+        holding_cost_fn = lambda t, i: holding_cost[i] if t > 10 else 0
+        overtime_cost_fn = lambda t: 100
+        postponing_cost = np.array([1000 - i * 5 / max((class_number - 1), 1) for i in range(class_number)])
         postponing_cost_fn = lambda i: postponing_cost[i]
         env_params = {
             'treatment_pattern': treatment_pattern,
             'decision_epoch': decision_epoch,
-            'planning_horizon': planning_horizon,
+            'booking_window_size': booking_window_size,
             'arrival_generator': arrival_generator,
             'holding_cost': holding_cost_fn,
             'overtime_cost': overtime_cost_fn,
             'postponing_cost': postponing_cost_fn,
             'duration': 1,
-            'regular_capacity': 2,
-            'overtime_capacity': 1,
+            'regular_capacity': 50,
+            'overtime_capacity': 6,
             'discount_factor': 0.99,
         }
         env = RTEnv(**env_params)
@@ -81,12 +45,13 @@ class ExperimentConfig:
             'percentage_occupied': 0,
             't': 1
         }
+        planning_horizon = booking_window_size + len(treatment_pattern) - 1
         occupied_capacity = env_params['regular_capacity'] * reset_params['percentage_occupied']
-        bookings = np.array([occupied_capacity] * (planning_horizon + len(treatment_pattern) - 1))
-        overtimes = np.array([0] * (planning_horizon + len(treatment_pattern) - 1))
+        bookings = np.array([occupied_capacity] * (planning_horizon))
+        overtimes = np.array([0] * (planning_horizon))
         waitlist = np.array([2] * class_number)
         init_state = (bookings, overtimes, waitlist)
-        valid_action = (np.array([[1,1],[1,0]]), np.array([1,1,1,0]))
+        valid_action = (np.array([[1,1],[1,0]]), np.array([1]*planning_horizon))
         return cls(env, reset_params, init_state, valid_action)
 
     @classmethod
@@ -219,12 +184,12 @@ class ExperimentConfig:
         delta = np.array([1] * class_number)
         init_state = (bookings, delta)
         return cls(env, reset_params, init_state)
-    
+
     @classmethod
     def from_base_case(cls):
         class_num = 18
         env_args = {
-            'decision_epoch':20, 
+            'decision_epoch':20,
             'arrival_rates':[0.19, 0.11, 0.11, 1.43, 0.59, 0.45, 1.42, 1.36, 0.57, 0.38, 0.18, 0.18, 0.29, 0.21, 0.3, 0.29, 0.15, 0.04][:class_num],
             'patterns':['1* 2 + 4 * 1',
                         '1*2',
@@ -245,23 +210,23 @@ class ExperimentConfig:
                         '1 * 2 + 21 * 1 + 1 * 2 + 14 * 1',
                         '1 * 2 + 32 * 1'][:class_num],
             'holding_cost_by_day_by_type':([132.5] * 3 + [100] * 3 + [66.25] * 6 + [27.5] * 2 + [25] * 3 + [20] * 1)[:class_num],
-            'overtime_cost_by_day':100, 
-            'duration':1, 
-            'regular_capacity':120, 
-            'discount_factor':0.99, 
+            'overtime_cost_by_day': 100,
+            'duration':1,
+            'regular_capacity':120,
+            'discount_factor':0.99,
             'reset_params':{
                         'percentage_occupied': 0,
                         't': 1
                         },
-            'maximum_total_arrival':25, 
-            'init_state': None, 
-            'valid_action':None, 
-            'env_random_seed':0, 
+            'maximum_total_arrival':25,
+            'init_state': None,
+            'valid_action':None,
+            'env_random_seed':0,
             'arrival_random_seed':42
         }
         return cls.from_custom_case(**env_args)
 
-    
+
     @classmethod
     def from_custom_case(cls, decision_epoch, arrival_rates, patterns, holding_cost_by_day_by_type,
                          overtime_cost_by_day, duration, regular_capacity, discount_factor, reset_params,
@@ -280,19 +245,19 @@ class ExperimentConfig:
         arrival_random_seed
         """
         args = {
-            'decision_epoch':decision_epoch, 
-            'arrival_rates':arrival_rates, 
-            'patterns':patterns, 
+            'decision_epoch':decision_epoch,
+            'arrival_rates':arrival_rates,
+            'patterns':patterns,
             'holding_cost_by_day_by_type':holding_cost_by_day_by_type,
-            'overtime_cost_by_day':overtime_cost_by_day, 
-            'duration':duration, 
-            'regular_capacity':regular_capacity, 
-            'discount_factor':discount_factor, 
+            'overtime_cost_by_day':overtime_cost_by_day,
+            'duration':duration,
+            'regular_capacity':regular_capacity,
+            'discount_factor':discount_factor,
             'reset_params':reset_params,
-            'maximum_total_arrival':maximum_total_arrival, 
-            'init_state':init_state, 
-            'valid_action':valid_action, 
-            'env_random_seed':env_random_seed, 
+            'maximum_total_arrival':maximum_total_arrival,
+            'init_state':init_state,
+            'valid_action':valid_action,
+            'env_random_seed':env_random_seed,
             'arrival_random_seed':arrival_random_seed
         }
         treatment_pattern = str2treatment_patterns(patterns)
@@ -309,24 +274,57 @@ class ExperimentConfig:
             holding_cost_fn = lambda t, i: holding_cost_by_day_by_type[i]
         else:
             holding_cost_fn = lambda t, i: holding_cost_by_day_by_type[t, i]
+        if isinstance(overtime_cost_by_day, int):
+            overtime_cost = lambda t: overtime_cost_by_day
+        else:
+            overtime_cost = overtime_cost_by_day
         env_params = {
             'treatment_pattern': treatment_pattern,
             'decision_epoch': decision_epoch,
             'arrival_generator': arrival_generator,
             'holding_cost': holding_cost_fn,
-            'overtime_cost': overtime_cost_by_day,
+            'overtime_cost': overtime_cost,
             'duration': duration,
             'regular_capacity': regular_capacity,
             'discount_factor': discount_factor,
             'random_seed': env_random_seed
         }
-        env = SchedulingEnv(**env_params)
+        env = AdvSchedulingEnv(**env_params)
         if init_state == None:
             bookings = np.array([regular_capacity/2]*(decision_epoch+env.num_sessions-1))
-            waitlists = np.array([1]*env.num_types)
-            valid_action = np.array([waitlists] + [[0]*env.num_types for _ in range(env.decision_epoch-1)])
+            waitlists = np.array([3]*env.num_types)
+            advance_scheduling_decision = np.array([waitlists] + [[0]*env.num_types for _ in range(env.decision_epoch-1)])
+            overtime_decision = np.maximum(bookings + env.convert_action_to_booking_slots(advance_scheduling_decision) - regular_capacity, 0)
             init_state = (bookings, waitlists)
+            valid_action = (advance_scheduling_decision, overtime_decision)
         return cls(env, reset_params, init_state, valid_action, args)
+
+    @classmethod
+    def from_adv_default(cls):
+        patterns = ['1 * 2', '1 * 1']
+        class_num = len(patterns)
+        mean_arrival_rate = 3
+        arrival_rates = [mean_arrival_rate / class_num]* class_num
+        env_args = {
+            'decision_epoch': 3,
+            'arrival_rates': arrival_rates,
+            'patterns': patterns,
+            'holding_cost_by_day_by_type': [10 - i * 5 / max((class_num - 1), 1) for i in range(class_num)],
+            'overtime_cost_by_day': lambda t: 40,
+            'duration': 1,
+            'regular_capacity': 5,
+            'discount_factor': 0.99,
+            'reset_params': {
+                'percentage_occupied': 0,
+                't': 1
+            },
+            'maximum_total_arrival': mean_arrival_rate * 3,
+            'init_state': None,
+            'valid_action': None,
+            'env_random_seed': 0,
+            'arrival_random_seed': 42
+        }
+        return cls.from_custom_case(**env_args)
 
 def get_config_by_type(case_type, args=None, random_seed=None):
     if args is None:
@@ -343,7 +341,10 @@ def get_config_by_type(case_type, args=None, random_seed=None):
         config = ExperimentConfig.from_custom_case(**args)
     elif case_type == 'base_case':
         config = ExperimentConfig.from_base_case()
+    elif case_type == 'adv_default':
+        config = ExperimentConfig.from_adv_default()
     return config
 
 if __name__ == '__main__':
-    config = get_config_by_type('rt_default', 0)
+    config = get_config_by_type('adv_default', 0)
+    print(config.valid_action)

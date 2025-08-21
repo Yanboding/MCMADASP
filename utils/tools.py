@@ -17,11 +17,11 @@ def numpy_shift(arr, num_places, fill_na=0):
     if num_places == 0:
         return arr
     elif num_places > 0:
-        result = np.empty_like(arr, dtype=float)
+        result = np.empty_like(arr)
         result[:num_places] = fill_na
         result[num_places:] = arr[:-num_places]
     else:
-        result = np.empty_like(arr, dtype=float)
+        result = np.empty_like(arr)
         result[num_places:] = fill_na
         result[:num_places] = arr[-num_places:]
 
@@ -95,6 +95,11 @@ def integer_partitions_fixed_bins(total, bins):
             prev = b
         result.append(total + bins - 1 - prev - 1)
         yield result
+
+def bounded_compositions(total, bins):
+    """Yield all length-`parts` tuples of nonneg ints with sum <= W."""
+    for s in range(total + 1):
+        yield from integer_partitions_fixed_bins(s, bins)
 
 def generate_arrivals(maximum_arrival, num_type):
     """
@@ -258,11 +263,30 @@ def read_lines_with_pattern(folder, pattern):
                 for line in f:
                     yield line.rstrip('\n')
 
+def make_index_counter(start=0):
+    index = start
+    while True:
+        yield index
+        index += 1
+
+def all_schedules(W, N):
+    """
+    W: iterable of length I with W[i] outstanding treatments of type i.
+    N: booking window (days).
+    Yield schedules as a list of N rows, each row has I integers x_{j,i}.
+    """
+    I = len(W)
+    # For each type i, get a lazy generator of its per-day allocations (length-N tuples)
+    per_type_generators = [bounded_compositions(W_i, N) for W_i in W]
+
+    # Cartesian product across types builds a full schedule column-by-column
+    for columns in product(*per_type_generators):
+        # columns is a tuple of I length-N tuples; convert to N rows
+        # x[j][i] = columns[i][j]
+        yield np.array(columns).T
+
+
 if __name__ == '__main__':
-    state_action_pairs = list(generate_state_action_pairs(maximum_slots=3,
-                                              maximum_num_sessions=2,
-                                              maximum_arrival=3,
-                                              num_type=2,
-                                              period_to_go=3))
-    print(len(state_action_pairs))
+    for schedule in all_schedules([3,3], 5):
+        print(schedule)
 

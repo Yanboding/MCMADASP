@@ -393,15 +393,17 @@ class HeterogeneousALPAgent:
             m.setParam("Presolve", 2)
             m.setParam("Threads", 0)
             m.optimize()
+            get_val = np.vectorize(lambda e: e.getValue())
+            info = {'W_0': self.W_0[t + 1], 'new_bookings': get_val(new_bookings).astype(int), 'Zz': (self.Z[t+1][:H + self.env.num_sessions] * new_bookings).sum().getValue(), 'Wmu':(self.W[t] * mu).sum()}
             # ---------- 8. return ----------
             if m.Status == GRB.OPTIMAL:
                 action = get_solution_value(action_var).astype(int)
-                return action, m.ObjVal
+                return action, m.ObjVal, info
             else:
                 raise RuntimeError("Optimal solution not found")
 
     def policy(self, state, t):
-        action, obj_value = self.solve(state, t)
+        action, obj_value, info = self.solve(state, t)
         return action
 
     def generate_all_columns(self):

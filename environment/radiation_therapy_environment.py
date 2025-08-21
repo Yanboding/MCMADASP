@@ -6,14 +6,15 @@ import time
 import numpy as np
 from scipy.stats import truncnorm
 
-from utils import numpy_shift, RunningStat
+from utils import numpy_shift, RunningStat, integer_partitions_fixed_bins, generate_advance_actions, \
+    bounded_compositions
 
 
 class RTEnv:
     def __init__(self,
                  treatment_pattern,
-                 decision_epoch,
-                 planning_horizon,
+                 decision_epoch, # Note: not useful in the EJOR paper
+                 booking_window_size,
                  arrival_generator,
                  holding_cost,
                  overtime_cost,
@@ -25,7 +26,7 @@ class RTEnv:
                  ):
         self.treatment_pattern = np.array(treatment_pattern)
         self.decision_epoch = decision_epoch
-        self.planning_horizon = planning_horizon
+        self.booking_window_size = booking_window_size
         self.arrival_generator = arrival_generator
         self.holding_cost = holding_cost
         self.overtime_cost = overtime_cost
@@ -35,6 +36,7 @@ class RTEnv:
         self.overtime_capacity = overtime_capacity
         self.discount_factor = discount_factor
         self.num_sessions, self.num_types = self.treatment_pattern.shape
+        self.planning_horizon = self.booking_window_size + self.num_sessions - 1
 
     def convert_action_to_booking_slots(self, action):
         appointment_slots = action @ self.treatment_pattern.T
@@ -66,6 +68,43 @@ class RTEnv:
         if not np.all(overtime_decision == overtime_decision.astype(int)):
             raise ValueError("Overtime decision is not all integer")
 
+    def generate_waitlist(self, num_type):
+        """
+        Enumerate all possible arrival vectors (x_1, ..., x_I) and their
+        associated probability. Returns a list of (prob, counts_vector).
+        """
+        # For each possible total arrival from 0..maximum_arrival
+        for N in range(self.arrival_generator.maximum_arrival + 1):
+            for waitlist in integer_partitions_fixed_bins(total=N, bins=num_type):
+                yield np.array(waitlist)
+    def generate_states(self):
+        for bookings_tuple in itertools.product(range(self.regular_capacity + 1), repeat=self.planning_horizon-1):
+            for overtimes_tuple in itertools.product(range(self.overtime_capacity + 1), repeat=self.planning_horizon-1):
+                for waitlist in self.generate_waitlist(self.num_types):
+                    yield np.array(bookings_tuple+(0,)), np.array(overtimes_tuple+(0,)), waitlist
+
+    def generate_advance_actions(self, waitlist, booking_window_size):
+        per_type_generators = [bounded_compositions(w_i, booking_window_size) for w_i in waitlist]
+
+        # Cartesian product across types builds a full schedule column-by-column
+        for columns in itertools.product(*per_type_generators):
+            # columns is a tuple of I length-N tuples; convert to N rows
+            yield np.array(columns).T
+
+    def generate_actions(self, state):
+        bookings, overtimes, waitlist = state
+        for advance_scheduling_decision in self.generate_advance_actions(waitlist, self.booking_window_size):
+            new_booking_slots = self.convert_action_to_booking_slots(advance_scheduling_decision)
+            overtime_decision = np.maximum(bookings + new_booking_slots - self.regular_capacity, 0)
+            if any(overtime_decision > self.overtime_capacity):
+                continue
+            yield (advance_scheduling_decision, overtime_decision)
+
+    def generate_state_action_pairs(self):
+        for state in self.generate_states():
+            for action in self.generate_actions(state):
+                yield (state, action)
+
     def cost_fn(self, state, action):
         '''
         bookings = [1,2,3,4,5]
@@ -82,22 +121,40 @@ class RTEnv:
         postponing_cost = sum(self.postponing_cost(i) * remaining_treatments[i] for i in range(self.num_types))
         return waiting_cost + overtime_cost + postponing_cost
 
-    def post_action_state(self, state, action):
+    def post_action_state(self, state, action, is_var=False):
         # check validation
-        self.validation(state, action)
-        bookings, overtimes, waitlist = copy.deepcopy(state)
+        #self.validation(state, action)
+        if is_var:
+            bookings, overtimes, waitlist = state
+        else:
+            bookings, overtimes, waitlist = copy.deepcopy(state)
         advance_scheduling_decision, overtime_decision = action
         new_bookings = bookings + self.convert_action_to_booking_slots(advance_scheduling_decision) - overtime_decision
         new_overtimes = overtimes + overtime_decision
         new_waitlist = waitlist - advance_scheduling_decision.sum(axis=0)
         return (new_bookings, new_overtimes, new_waitlist)
 
-    def post_action_state_to_new_state(self, post_action_state, new_arrival):
-        post_action_bookings, post_action_overtimes, post_action_waitlist = copy.deepcopy(post_action_state)
+    def post_action_state_to_new_state(self, post_action_state, new_arrival, is_var=True):
+        if is_var:
+            post_action_bookings, post_action_overtimes, post_action_waitlist = post_action_state
+        else:
+            post_action_bookings, post_action_overtimes, post_action_waitlist = copy.deepcopy(post_action_state)
+
         new_bookings = numpy_shift(post_action_bookings, num_places=-1)
         new_overtimes = numpy_shift(post_action_overtimes, num_places=-1)
         new_waitlist  = post_action_waitlist + new_arrival
         return (new_bookings, new_overtimes, new_waitlist)
+
+    def next_state(self, state, action, new_arrival, is_var=True):
+        post_action_state = self.post_action_state(state, action, is_var)
+        next_state = self.post_action_state_to_new_state(post_action_state, new_arrival, is_var)
+        return next_state
+
+    def get_next_bookings(self, bookings, action):
+        advance_scheduling_decision, overtime_decision = action
+        post_action_bookings = bookings + self.convert_action_to_booking_slots(advance_scheduling_decision) - overtime_decision
+        new_bookings = numpy_shift(post_action_bookings, num_places=-1)
+        return new_bookings
 
     def transition_dynamic(self, state, action, t):
         cost = self.cost_fn(state, action)
@@ -225,4 +282,6 @@ if __name__ == '__main__':
     from experiments import get_config_by_type
     config = get_config_by_type('rt_default', 0)
     env = config.env
-    print(env.reset_initial_state(0.5, np.array([6,6])))
+    for (state, action) in env.generate_state_action_pairs():
+        print(state)
+        print(action)

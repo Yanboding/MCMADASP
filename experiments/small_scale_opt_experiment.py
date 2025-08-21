@@ -4,6 +4,7 @@ import time
 from collections import defaultdict
 from pprint import pprint
 
+from decision_maker.alp_cg_ejor_agent import ALPEJORAgent
 from decision_maker.heterogeneous_alp_agent import HeterogeneousALPAgent
 from decision_maker.memory_efficient_mcma_agent import SAAdvanceFastAgent
 from utils import iter_to_tuple, iter_to_list, RunningStat, get_uid
@@ -30,15 +31,20 @@ def action_value_function_compare_experiment(config, agent_configs, plot_labels)
     action_values = defaultdict(lambda:defaultdict(lambda: RunningStat(1)))
     agent_best_action = defaultdict(lambda: (float('inf'), None, None))
     for agent_name, agent_instance in agents.items():
-        best_action, action_val = agent_instance.solve(init_state, 1)
+        best_action, action_val, info = agent_instance.solve(init_state, 1)
         agent_best_action[agent_name] = (action_val, None, best_action)
+    df = []
     for i, action in enumerate(env.valid_actions(init_state, 1)):
         x.append(i)
+        record = {'action':action}
         for agent_name, agent_instance in agents.items():
-            _, action_val = agent_instance.solve(init_state, 1, action)
+            _, action_val, info = agent_instance.solve(init_state, 1, action)
+            record[agent_name] = action_val
+            record.update(info)
             action_values[agent_name][i].record(action_val)
             if agent_best_action[agent_name][2] is not None and np.array_equal(agent_best_action[agent_name][2], action):
                 agent_best_action[agent_name] = (action_val, i, action)
+        df.append(record)
     for agent_name, (action_val, i, action) in agent_best_action.items():
         xticks.append(i)
         xticklabels.append(str(action))
@@ -50,9 +56,11 @@ def action_value_function_compare_experiment(config, agent_configs, plot_labels)
                                                    ylabel="Value Function",
                                                    plot_labels=plot_labels,
                                                    title=None,
-                                                   save_file='action_value_comparison',
+                                                   save_file='action_value_comparison_ALP',
                                                    is_show_text=False,
                                                    is_set_x_color=True)
+    action_value_df = pd.DataFrame(df)
+    action_value_df.to_excel('action_value.xlsx')
 
 def decision_epoch_experiment(config, agents, decision_epochs, plot_labels, replication=1000):
     x = []
@@ -83,32 +91,56 @@ def decision_epoch_experiment(config, agents, decision_epochs, plot_labels, repl
                                                    plot_labels= plot_labels,
                                                    title=None,
                                                    save_file='decision_epoch_value_comparison',
-                                                   is_show_text=False,
+                                                   is_show_text=True,
                                                    is_set_x_color=False)
     '''
     with open('decision_epoch_experiment.jsonl', 'w') as f:
         f.write(json.dumps({'decision_epoch':decision_epoch, 'agent_name':agent_name, 'uid':uid, 'pct_gap':pct_gap}))
     '''
 
+def coefficient_plot(config, agents, prefix):
+    x = []
+    coefficient_fuc_stats = defaultdict(lambda: defaultdict(lambda: RunningStat(1)))
+    env = config.env
+    for agent_name, (agent, args) in agents.items():
+        agent_instant = agent(env=env, discount_factor=env.discount_factor, **args)
+        for n in range(1, env.booking_window_size + 1):
+            x.append(n)
+            for i in range(env.num_types):
+                coefficient_fuc_stats[i][n].record(agent_instant.coeff_C(0, n))
+    plot_labels = {key: f"{prefix} {key}" for key in coefficient_fuc_stats}
+    approximate_value_plot_from_running_stats_dict(running_stats_dict=coefficient_fuc_stats,
+                                                   x_vals=sorted(x),
+                                                   xticks=x,
+                                                   xticklabels=x,
+                                                   xlabel='Workday',
+                                                   ylabel="Coefficient Cin",
+                                                   plot_labels=plot_labels,
+                                                   title=None,
+                                                   save_file='ejor_basecase',
+                                                   is_show_text=False,
+                                                   is_set_x_color=False)
+
 
 if __name__ == '__main__':
     from experiments import get_config_by_type
 
-    config = get_config_by_type('default')
+    config = get_config_by_type('rt_default')
     #action_value_function_compare_experiment(config)
+    '''
     agent_configs = {
         'Myopic Policy': (SAAdvanceAgent, {'sample_path_number': 500, 'is_myopic': True}),
-        'Modify Myopic Policy': (SAAdvanceFastAgent, {'sample_path_number': 500, 'is_myopic': True}),
-        'Homogeneous ALP Policy': (ALPAgent, {'pretrain': True}),
+        #'Modify Myopic Policy': (SAAdvanceFastAgent, {'sample_path_number': 500, 'is_myopic': True}),
+        #'Homogeneous ALP Policy': (ALPAgent, {'pretrain': True}),
         'Heterogeneous ALP Policy': (HeterogeneousALPAgent, {'pretrain': True}),
-        'Hindsight Approx Policy': (SAAdvanceAgent, {'sample_path_number': 500})
+        #'Hindsight Approx Policy': (SAAdvanceAgent, {'sample_path_number': 500}),
+        'Optimal Policy': (OptimalAgent, {'pretrain':True, 'state':config.init_state, 't':1})
     }
-    plot_labels = {
-        'Myopic Policy': 'Myopic Policy',
-        'Modify Myopic Policy': 'Modify Myopic Policy',
-        'Homogeneous ALP Policy': 'Homogeneous ALP Policy',
-        'Heterogeneous ALP Policy': 'Heterogeneous ALP Policy',
-        'Hindsight Approx Policy': 'Hindsight Approx Policy',
+    '''
+    agent_configs = {
+        'EJOR Agent': (ALPEJORAgent, {'pretrain': True})
     }
-    action_value_function_compare_experiment(config, agent_configs,  plot_labels)
-    decision_epoch_experiment(config, agent_configs, [decision_epoch for decision_epoch in range(3, 11)], plot_labels)
+    #plot_labels = {key: key for key in agent_configs}
+    #action_value_function_compare_experiment(config, agent_configs,  plot_labels)
+    #decision_epoch_experiment(config, agent_configs, [decision_epoch for decision_epoch in range(3, 11)], plot_labels)
+    coefficient_plot(config, agent_configs, prefix='type')

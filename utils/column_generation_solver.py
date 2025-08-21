@@ -19,21 +19,52 @@ class ColumnGenerationSolver:
         self.get_obj_coefficient = get_obj_coefficient
         self.master_model = master_builder()
         self.candidates = set()
+        self.candidates_list = []
         # add initial columns to the master model
         for i, candidate in enumerate(initial_columns):
             self.add_column(candidate=candidate, col_name=f"init_{i + 1}")
 
     def add_column(self, candidate, col_name):
         new_col = gp.Column()
-        for j, coefficient in enumerate(self.get_constr_coefficients(candidate)):
-            new_col.addTerms([float(coefficient)], [self.master_model.getConstrs()[j]])
-
-        self.master_model.addVar(obj=self.get_obj_coefficient(candidate), column=new_col, name=col_name)
+        if self.get_constr_coefficients != None:
+            for j, coefficient in enumerate(self.get_constr_coefficients(candidate)):
+                new_col.addTerms([float(coefficient)], [self.master_model.getConstrs()[j]])
+        kwargs = {'column': new_col, 'name': col_name, 'lb': 0}
+        if self.get_obj_coefficient != None:
+            kwargs['obj'] = self.get_obj_coefficient(candidate)
+        self.master_model.addVar(**kwargs)
         self.master_model.update()
+        self.master_model.getConstrs()
         candidate_str = str(candidate)
         if candidate_str in self.candidates:
             raise ValueError(f'already add this candidate: {candidate_str}')
         self.candidates.add(candidate_str)
+        self.candidates_list.append(candidate)
+
+    def initial_columns_solve(self, tol=1e-4, max_iter=3000):
+        iteration = 0
+        while iteration < max_iter:
+            if solve_and_handle_errors(self.master_model):
+                duals = [constr.Pi for constr in self.master_model.getConstrs()]
+                s_val = self.master_model.getVarByName("init_s").X
+                print('S val:', s_val)
+                if s_val < tol:
+                    break
+                #duals = [constr.Pi for constr in self.master_model.getConstrs()]
+                #print('duals:',duals)
+                # 3. Pricing (column generation)
+                for candidate, reduce_cost in self.pricing_callback(duals):
+                    if reduce_cost < -tol and str(candidate) not in self.candidates:
+                        # print(f'iterations: {iteration}, try to add {candidate} with reduce_cost {reduce_cost}')
+                        self.add_column(candidate=candidate, col_name=f"x_{iteration}")
+                        break
+                    else:
+                        print("     No improving column found for Phase‑I (rc≥0).")
+                        break
+                iteration += 1
+            else:
+                raise ValueError('no solution')
+        return self.candidates_list
 
     def solve(self, tol=1e-4, max_iter=3000):
         iteration = 0
