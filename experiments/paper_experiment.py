@@ -4,14 +4,13 @@ from collections import defaultdict
 
 import pandas as pd
 import numpy as np
-import matplotlib.pyplot as plt
-import scipy.stats as st
+import glob
 
 from utils import RunningStat
 from visualization import approximate_value_plot_from_running_stats_dict
 
 
-def plot_experiment_result(file_path, plot_labels, experiment_lables):
+def plot_experiment_result(directory_path, plot_labels, experiment_lables):
     """
     Loads a .jsonl result file and processes it into a pandas DataFrame.
 
@@ -22,40 +21,42 @@ def plot_experiment_result(file_path, plot_labels, experiment_lables):
         pd.DataFrame: A DataFrame containing the processed results,
                       with one row per agent per simulation run.
     """
-    parent_directory = os.path.dirname(file_path)
-    print('parent_directory', parent_directory)
+    print('parent_directory', directory_path)
     pct_opt_gap = defaultdict(lambda:defaultdict(lambda: RunningStat(1)))
     wait_time_by_type_by_agent = defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: RunningStat(1))))
     total_average_wait_time = defaultdict(lambda: defaultdict(lambda: RunningStat(1)))
     total_overtime_by_day_by_agent = defaultdict(lambda: defaultdict(lambda: RunningStat(1)))
     x_values = set()
     treatment_types = set()
-    with open(file_path, 'r') as f:
-        for line in f:
-            try:
-                data = json.loads(line)
-                param_value = data.get('param_value')
-                experiment_name = data.get('experiment_name')
-                x_values.add(param_value)
-                for agent_result in data.get('result', []):
-                    agent_name = agent_result['agent_name']
-                    pct_opt_gap_val = agent_result['opt_gap']
-                    pct_opt_gap[agent_name][param_value].record(pct_opt_gap_val)
-                    for wait_time_by_type in agent_result['wait_time_by_type']:
-                        treatment_type = wait_time_by_type['treatment_type']
-                        treatment_types.add(treatment_type)
-                        wait_time_stats = RunningStat(1)
-                        wait_time_stats.expect = np.array([wait_time_by_type['expect']])
-                        wait_time_stats.varSum = np.array([wait_time_by_type['varSum']])
-                        wait_time_stats.count = wait_time_by_type['count']
-                        wait_time_by_type_by_agent[param_value][agent_name][treatment_type].merge(wait_time_stats)
-                        total_average_wait_time[agent_name][param_value].merge(wait_time_stats)
-                    for overtime in agent_result['overtime']:
-                        total_overtime_by_day_by_agent[agent_name][param_value].record(overtime)
-            except (json.JSONDecodeError, KeyError) as e:
-                print(f"Skipping malformed or incomplete line: {line.strip()} - Error: {e}")
+    pattern = os.path.join(directory_path, '*.jsonl')
+    jsonl_files = glob.glob(pattern)
+    for file_path in jsonl_files:
+        with open(file_path, 'r') as f:
+            for line in f:
+                try:
+                    data = json.loads(line)
+                    param_value = data.get('param_value')
+                    experiment_name = data.get('experiment_name')
+                    x_values.add(param_value)
+                    for agent_result in data.get('result', []):
+                        agent_name = agent_result['agent_name']
+                        pct_opt_gap_val = agent_result['opt_gap']
+                        pct_opt_gap[agent_name][param_value].record(pct_opt_gap_val)
+                        for wait_time_by_type in agent_result['wait_time_by_type']:
+                            treatment_type = wait_time_by_type['treatment_type']
+                            treatment_types.add(treatment_type)
+                            wait_time_stats = RunningStat(1)
+                            wait_time_stats.expect = np.array([wait_time_by_type['expect']])
+                            wait_time_stats.varSum = np.array([wait_time_by_type['varSum']])
+                            wait_time_stats.count = wait_time_by_type['count']
+                            wait_time_by_type_by_agent[param_value][agent_name][treatment_type].merge(wait_time_stats)
+                            total_average_wait_time[agent_name][param_value].merge(wait_time_stats)
+                        for overtime in agent_result['overtime']:
+                            total_overtime_by_day_by_agent[agent_name][param_value].record(overtime)
+                except (json.JSONDecodeError, KeyError) as e:
+                    print(f"Skipping malformed or incomplete line: {line.strip()} - Error: {e}")
     x_values = sorted(list(x_values))
-    os.path.join(parent_directory, f'percentage_optimality_gap_by_{experiment_name}')
+    os.path.join(directory_path, f'percentage_optimality_gap_by_{experiment_name}')
     approximate_value_plot_from_running_stats_dict(running_stats_dict=pct_opt_gap,
                                                    x_vals=x_values,
                                                    xticks=x_values,
@@ -64,7 +65,7 @@ def plot_experiment_result(file_path, plot_labels, experiment_lables):
                                                    ylabel="Percentage Optimality Gap (%)",
                                                    plot_labels=plot_labels,
                                                    title=None,
-                                                   save_file=os.path.join(parent_directory, f'percentage_optimality_gap_by_{experiment_name}'),
+                                                   save_file=os.path.join(directory_path, f'percentage_optimality_gap_by_{experiment_name}'),
                                                    is_show_text=True,
                                                    is_set_x_color=False)
 
@@ -76,7 +77,7 @@ def plot_experiment_result(file_path, plot_labels, experiment_lables):
                                                    ylabel="Waiting time (days)",
                                                    plot_labels=plot_labels,
                                                    title=None,
-                                                   save_file=os.path.join(parent_directory, f'average_wait_time_by_{experiment_name}'),
+                                                   save_file=os.path.join(directory_path, f'average_wait_time_by_{experiment_name}'),
                                                    is_show_text=True,
                                                    is_set_x_color=False)
 
@@ -88,7 +89,7 @@ def plot_experiment_result(file_path, plot_labels, experiment_lables):
                                                    ylabel="Number of Overtime (slots)",
                                                    plot_labels=plot_labels,
                                                    title=None,
-                                                   save_file=os.path.join(parent_directory, f'average_overtime_used_by_{experiment_name}'),
+                                                   save_file=os.path.join(directory_path, f'average_overtime_used_by_{experiment_name}'),
                                                    is_show_text=True,
                                                    is_set_x_color=False)
     treatment_types = np.array(sorted(list(treatment_types)))
@@ -103,23 +104,22 @@ def plot_experiment_result(file_path, plot_labels, experiment_lables):
                                                        ylabel="Waiting time (days)",
                                                        plot_labels=plot_labels,
                                                        title=f"Waiting Time with {experiment_lables[experiment_name]}: {x_value}",
-                                                       save_file=os.path.join(parent_directory, f'average_wait_time_type_{x_value_str}_{experiment_name}'),
+                                                       save_file=os.path.join(directory_path, f'average_wait_time_type_{x_value_str}_{experiment_name}'),
                                                        is_show_text=False,
                                                        is_set_x_color=False)
 
 
 if __name__ == '__main__':
     # Define the path to your results file
-    results_file_path = 'demand_rate_results.jsonl'
     plot_labels = {'hindsight_approx': 'Hindsight Approx Policy', 'myopic': 'Myopic Policy'}
     experiment_lables = {'demand_rate': 'Arrival Rate',
                          'decision_epoch': 'Decision Epoch',
-                         'overtime_cost':'Overtime Cost',
+                         'overtime_cost_by_day':'Overtime Cost',
                          'occupancy_level': 'Occupancy Level'}
     # Load and process the data
-    # plot_experiment_result('demand_rate_results.jsonl', plot_labels, experiment_lables)
-    plot_experiment_result('paper_experiment_result/occupancy_level/occupancy_level_results.jsonl', plot_labels, experiment_lables)
-    # plot_experiment_result('overtime_cost_results.jsonl', plot_labels, experiment_lables)
+    #plot_experiment_result('results/demand_rate', plot_labels, experiment_lables)
+    #plot_experiment_result('results/occupancy_level', plot_labels, experiment_lables)
+    plot_experiment_result('results/overtime_cost_by_day', plot_labels, experiment_lables)
 
     '''
     if not results_df.empty:

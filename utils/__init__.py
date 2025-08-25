@@ -3,3 +3,4 @@ from .tools import *
 from .running_stat import RunningStat
 from .treatment_pattern import *
 from .column_generation_solver import ColumnGenerationSolver
+from .row_generation_solver import RowGenerationSolver

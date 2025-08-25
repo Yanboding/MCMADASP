@@ -4,16 +4,13 @@ import time
 from collections import defaultdict
 from pprint import pprint
 
-from decision_maker.alp_cg_ejor_agent import ALPEJORAgent
-from decision_maker.heterogeneous_alp_agent import HeterogeneousALPAgent
-from decision_maker.memory_efficient_mcma_agent import SAAdvanceFastAgent
 from utils import iter_to_tuple, iter_to_list, RunningStat, get_uid
 
 import numpy as np
 import pandas as pd
 
-from decision_maker import SAAdvanceAgent, OptimalAgent, PolicyEvaluator, \
-    ApproxAllocationAdvanceAgent, ALPAgent
+from decision_maker import SAAdvanceAgent, OptimalAgent, PolicyEvaluator, HeterogeneousALPColumnGenerationAgent, \
+    HeterogeneousALPRowGenerationAgent
 from visualization import opt_plot, approximate_value_plot_from_running_stats_dict
 from environment import MultiClassPoissonArrivalGenerator
 
@@ -42,12 +39,14 @@ def action_value_function_compare_experiment(config, agent_configs, plot_labels)
             record[agent_name] = action_val
             record.update(info)
             action_values[agent_name][i].record(action_val)
-            if agent_best_action[agent_name][2] is not None and np.array_equal(agent_best_action[agent_name][2], action):
-                agent_best_action[agent_name] = (action_val, i, action)
+            if agent_best_action[agent_name][2] is not None and np.array_equal(agent_best_action[agent_name][2][0], action[0]):
+                agent_best_action[agent_name] = (action_val, i, action[0])
         df.append(record)
     for agent_name, (action_val, i, action) in agent_best_action.items():
         xticks.append(i)
         xticklabels.append(str(action))
+    print(agent_best_action)
+    print(x)
     approximate_value_plot_from_running_stats_dict(running_stats_dict=action_values,
                                                    x_vals=sorted(x),
                                                    xticks=xticks,
@@ -62,14 +61,14 @@ def action_value_function_compare_experiment(config, agent_configs, plot_labels)
     action_value_df = pd.DataFrame(df)
     action_value_df.to_excel('action_value.xlsx')
 
-def decision_epoch_experiment(config, agents, decision_epochs, plot_labels, replication=1000):
+def decision_epoch_experiment(config, agents, decision_epochs, plot_labels, ylabel, replication=1000):
     x = []
     value_fuc_stats = defaultdict(lambda: defaultdict(lambda: RunningStat(1)))
     env = config.env
     for decision_epoch in decision_epochs:
         print('decision_epoch:', decision_epoch)
         x.append(decision_epoch)
-        env.decision_epoch = decision_epoch
+        env.set_decision_epoch(decision_epoch)
         init_state, info = env.reset(**config.reset_params)
         lower_bound_agent = SAAdvanceAgent(env=env, discount_factor=env.discount_factor)
         sample_paths = [env.reset_arrivals(t=1) for _ in range(replication)]
@@ -87,7 +86,7 @@ def decision_epoch_experiment(config, agents, decision_epochs, plot_labels, repl
                                                    xticks=x,
                                                    xticklabels=x,
                                                    xlabel='Number of periods',
-                                                   ylabel="Value Function",
+                                                   ylabel=ylabel,
                                                    plot_labels= plot_labels,
                                                    title=None,
                                                    save_file='decision_epoch_value_comparison',
@@ -125,22 +124,22 @@ def coefficient_plot(config, agents, prefix):
 if __name__ == '__main__':
     from experiments import get_config_by_type
 
-    config = get_config_by_type('rt_default')
+    config = get_config_by_type('adv_default')
     #action_value_function_compare_experiment(config)
-    '''
+
     agent_configs = {
         'Myopic Policy': (SAAdvanceAgent, {'sample_path_number': 500, 'is_myopic': True}),
-        #'Modify Myopic Policy': (SAAdvanceFastAgent, {'sample_path_number': 500, 'is_myopic': True}),
-        #'Homogeneous ALP Policy': (ALPAgent, {'pretrain': True}),
-        'Heterogeneous ALP Policy': (HeterogeneousALPAgent, {'pretrain': True}),
-        #'Hindsight Approx Policy': (SAAdvanceAgent, {'sample_path_number': 500}),
-        'Optimal Policy': (OptimalAgent, {'pretrain':True, 'state':config.init_state, 't':1})
+        'Heterogeneous ALP Policy': (HeterogeneousALPRowGenerationAgent, {'pretrain': True}),
+        'Hindsight Approx Policy': (SAAdvanceAgent, {'sample_path_number': 500}),
+        #'Optimal Policy': (OptimalAgent, {'pretrain':True, 'state':config.init_state, 't':1})
     }
+    plot_labels = {key:key for key in agent_configs}
     '''
     agent_configs = {
         'EJOR Agent': (ALPEJORAgent, {'pretrain': True})
     }
+    '''
     #plot_labels = {key: key for key in agent_configs}
     #action_value_function_compare_experiment(config, agent_configs,  plot_labels)
-    #decision_epoch_experiment(config, agent_configs, [decision_epoch for decision_epoch in range(3, 11)], plot_labels)
-    coefficient_plot(config, agent_configs, prefix='type')
+    decision_epoch_experiment(config, agent_configs, [decision_epoch for decision_epoch in range(1, 11)], plot_labels, ylabel='Percentage Optimality Gap (%)')
+    #coefficient_plot(config, agent_configs, prefix='type')

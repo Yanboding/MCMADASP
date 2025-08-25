@@ -221,9 +221,8 @@ if __name__ == '__main__':
     print('Waiting for Optimal...')
     optimal_agent = OptimalAgent(env=env, discount_factor=env.discount_factor)
     optimal_agent.train(init_state, t)
-    optimal_value = optimal_agent.get_state_value(init_state, t)
-    optimal_action = optimal_agent.policy(init_state, t)
-    print('Optimal Done:', optimal_value, 'Optimal action:', optimal_action)
+    print(config.init_state)
+    print(optimal_agent.solve(config.init_state, 1))
 
     #pprint(optimal_agent.get_action_value(init_state, [4, 0], t))
     #pprint(optimal_agent.get_action_values(init_state, t))

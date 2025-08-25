@@ -291,7 +291,7 @@ class ExperimentConfig:
         }
         env = AdvSchedulingEnv(**env_params)
         if init_state == None:
-            bookings = np.array([regular_capacity/2]*(decision_epoch+env.num_sessions-1))
+            bookings = np.array([0]*(decision_epoch+env.num_sessions-1))
             waitlists = np.array([3]*env.num_types)
             advance_scheduling_decision = np.array([waitlists] + [[0]*env.num_types for _ in range(env.decision_epoch-1)])
             overtime_decision = np.maximum(bookings + env.convert_action_to_booking_slots(advance_scheduling_decision) - regular_capacity, 0)

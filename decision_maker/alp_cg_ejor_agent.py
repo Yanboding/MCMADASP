@@ -10,7 +10,7 @@ from gurobipy import GRB
 from environment.utility import get_valid_advance_actions
 from experiments import get_config_by_type
 from utils import get_solution_value, ColumnGenerationSolver, generate_state_action_pairs, solve_and_handle_errors, \
-    iter_to_tuple, make_index_counter
+    iter_to_tuple
 
 
 class ALPEJORAgent:
@@ -112,36 +112,6 @@ class ALPEJORAgent:
             name="constr_W")
         master_model.update()
         return master_model
-
-    def get_approx_value_fn(self, state_var, W_0, U, V, W):
-        bookings_var, overtimes_var, waitlist_var = state_var
-        return W_0 + (U * bookings_var).sum() + (V * overtimes_var).sum() + (W * waitlist_var).sum()
-
-    def add_action_space_constraints(self, model, state_var, action_var):
-        u_var, v_var, w_var = state_var
-        x_var, y_var = action_var
-        model.addConstrs(
-            (x_var[:, i].sum() <= w_var[i]
-             for i in range(self.I)),
-            name="C1_valid_advance_schedule",
-        )
-        booking_slots = self.env.convert_action_to_booking_slots(x_var)
-        model.addConstrs(
-            (
-                u_var[m] + booking_slots[m] <= self.env.regular_capacity + y_var[m]
-                for m in range(self.M)
-            ),
-            name="C2_valid_appointment_slots",
-        )
-        model.addConstrs(
-            (
-                v_var[m] + y_var[m] <= self.env.overtime_capacity
-                for m in range(self.M)
-            ),
-            name="C3_valid_overtime_slots",
-        )
-        return model
-
 
     def pricing_callback(self, duals):
         """
@@ -268,7 +238,7 @@ class ALPEJORAgent:
                     init_columns.append(column)
         return init_columns
 
-    def generate_initial_columns(self, debug=False, skip=False):
+    def generate_initial_columns(self, debug=False):
         if debug == True:
             initial_columns = self.generate_all_columns()
         else:
@@ -332,26 +302,6 @@ class ALPEJORAgent:
     def get_obj_coefficient(self, candidate):
         state, action = candidate
         return self.env.cost_fn(state, action)
-
-    def _acquire_grb_env(self, silent=True, wait=TOKEN_WAIT):
-        """
-        Try to create and start a gp.Env.  If all tokens are in use,
-        wait <wait> seconds and retry indefinitely.
-        """
-        while True:
-            try:
-                grb_env = gp.Env(empty=True)  # no token yet
-                if silent:
-                    grb_env.setParam("OutputFlag", 0)
-                grb_env.start()  # tries to grab ONE token
-                print('Get one token...')
-                return grb_env  # success
-            except gp.GurobiError as e:
-                if "All tokens currently in use" in str(e):
-                    print('Waiting...')
-                    time.sleep(wait)  # back‑off and try again
-                else:
-                    raise  # some other licence error
 
     def solve(self, state, action=None):
         # Need to Fix
@@ -420,7 +370,7 @@ if "__main__" == __name__:
     env = config.env
     init_state = config.init_state
     duals = [194, 0.0, 0.0, 1.0]
-    agent = ALPEJORAgent(env=env, discount_factor=env.discount_factor, pretrain=False)
+    agent = ALPEJORAgent(env=env, discount_factor=env.discount_factor, pretrain=True)
     #print(agent.solve(init_state))
     #candidate = (np.array([0, 0]), np.array([0, 0]), np.array([0])), (np.array([[0],[0]]), np.array([0, 0]))
     #print(agent.get_constr_coefficients(candidate))

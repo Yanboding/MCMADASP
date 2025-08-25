@@ -416,7 +416,10 @@ if __name__ =="__main__":
        [0, 0],
        [0, 0]])),1)
     agent = ALPAgent(env=env, discount_factor=env.discount_factor)
-    coeff = agent.train(debug=False)
+    coeff1 = agent.train(debug=False)
+    coeff2 = agent.train(debug=True)
+    print(coeff1)
+    print(coeff2)
     '''
     ((array([11,  0, 11,  0]), array([1, 1])), array([[1, 1],
        [0, 0],

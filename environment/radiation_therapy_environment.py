@@ -38,6 +38,11 @@ class RTEnv:
         self.num_sessions, self.num_types = self.treatment_pattern.shape
         self.planning_horizon = self.booking_window_size + self.num_sessions - 1
 
+    def get_state(self, state, is_var=False):
+        if not is_var:
+            return copy.deepcopy(state)
+        return state
+
     def convert_action_to_booking_slots(self, action):
         appointment_slots = action @ self.treatment_pattern.T
         N, P = appointment_slots.shape
@@ -124,10 +129,7 @@ class RTEnv:
     def post_action_state(self, state, action, is_var=False):
         # check validation
         #self.validation(state, action)
-        if is_var:
-            bookings, overtimes, waitlist = state
-        else:
-            bookings, overtimes, waitlist = copy.deepcopy(state)
+        bookings, overtimes, waitlist = self.get_state(state, is_var)
         advance_scheduling_decision, overtime_decision = action
         new_bookings = bookings + self.convert_action_to_booking_slots(advance_scheduling_decision) - overtime_decision
         new_overtimes = overtimes + overtime_decision
@@ -135,17 +137,13 @@ class RTEnv:
         return (new_bookings, new_overtimes, new_waitlist)
 
     def post_action_state_to_new_state(self, post_action_state, new_arrival, is_var=True):
-        if is_var:
-            post_action_bookings, post_action_overtimes, post_action_waitlist = post_action_state
-        else:
-            post_action_bookings, post_action_overtimes, post_action_waitlist = copy.deepcopy(post_action_state)
-
+        post_action_bookings, post_action_overtimes, post_action_waitlist = self.get_state(post_action_state, is_var)
         new_bookings = numpy_shift(post_action_bookings, num_places=-1)
         new_overtimes = numpy_shift(post_action_overtimes, num_places=-1)
         new_waitlist  = post_action_waitlist + new_arrival
         return (new_bookings, new_overtimes, new_waitlist)
 
-    def next_state(self, state, action, new_arrival, is_var=True):
+    def get_next_state(self, state, action, new_arrival, is_var=False):
         post_action_state = self.post_action_state(state, action, is_var)
         next_state = self.post_action_state_to_new_state(post_action_state, new_arrival, is_var)
         return next_state

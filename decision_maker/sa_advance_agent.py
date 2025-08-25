@@ -133,11 +133,11 @@ class SAAdvanceAgent:
             # add action constraint
             self.add_action_space_constraints(model=m, state_var=state, action_var=action_var_t, t=t, tau=0)
             # ---------- 1. objective ----------
-            obj_func = self.env.cost_fn(state, action_var_t, t)
+            imm_cost = self.env.cost_fn(state, action_var_t, t)
+            fut_cost = 0
             if not self.is_myopic:
                 prev_state_scenario = [state for _ in range(self.sample_path_number)]
                 prev_action_scenario = [action_var_t for _ in range(self.sample_path_number)]
-                fut_cost = 0
                 for tau in range(1, H+1):
                     state_scenario = []
                     action_scenario = []
@@ -152,15 +152,22 @@ class SAAdvanceAgent:
                         action_scenario.append(action_var_t_tau)
                     prev_state_scenario = state_scenario
                     prev_action_scenario = action_scenario
-                obj_func += fut_cost / self.sample_path_number
-            m.setObjective(obj_func, GRB.MINIMIZE)
+                fut_cost = fut_cost / self.sample_path_number
+            m.setObjective(imm_cost+fut_cost, GRB.MINIMIZE)
             # ---------- 7. solve ----------
             m.setParam("Presolve", 2)
             m.setParam("Threads", 0)
             m.optimize()
+            '''
             cur_mem = m.getAttr(GRB.Attr.MemUsed)  # current RAM in GB
             peak_mem = m.getAttr(GRB.Attr.MaxMemUsed)  # peak RAM in GB
             print(f"Memory now: {cur_mem:.2f} GB  (peak {peak_mem:.2f} GB)")
+            '''
+            print('imm_cost:', imm_cost.getValue())
+            if t >= self.env.decision_epoch or self.is_myopic:
+                print('future_cost:', fut_cost)
+            else:
+                print('future_cost:', fut_cost.getValue())
             # ---------- 8. return ----------
             if m.Status == GRB.OPTIMAL:
                 action = self.get_solution(action_var_t)
@@ -181,11 +188,7 @@ if __name__ =="__main__":
     discount_factor = env.discount_factor
     agent = SAAdvanceAgent(env, discount_factor, **{'sample_path_number': 500, 'is_myopic':False})
     #action, val = agent.solve_deprecate(config.init_state, 1)
-    x = np.array([[3, 2], [0,1], [0,0]])
-    y = np.array([5.5,0,0])
-    action = (x, y)
-    action1, val1, info = agent.solve(config.init_state, 1, action=action)
-    print(action1)
-    print(val1)
+    print(config.init_state)
+    print(agent.solve(config.init_state, 1))
     # 524.608121089574
 

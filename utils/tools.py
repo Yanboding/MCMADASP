@@ -1,4 +1,5 @@
 import ast
+import math
 from itertools import combinations, product
 
 import numpy as np
@@ -263,27 +264,9 @@ def read_lines_with_pattern(folder, pattern):
                 for line in f:
                     yield line.rstrip('\n')
 
-def make_index_counter(start=0):
-    index = start
-    while True:
-        yield index
-        index += 1
-
-def all_schedules(W, N):
-    """
-    W: iterable of length I with W[i] outstanding treatments of type i.
-    N: booking window (days).
-    Yield schedules as a list of N rows, each row has I integers x_{j,i}.
-    """
-    I = len(W)
-    # For each type i, get a lazy generator of its per-day allocations (length-N tuples)
-    per_type_generators = [bounded_compositions(W_i, N) for W_i in W]
-
-    # Cartesian product across types builds a full schedule column-by-column
-    for columns in product(*per_type_generators):
-        # columns is a tuple of I length-N tuples; convert to N rows
-        # x[j][i] = columns[i][j]
-        yield np.array(columns).T
+def clean_value(value: float, tolerance: float) -> float:
+    num_digits = int(-math.log10(tolerance)) + 1
+    return round(value, num_digits) + 0.0
 
 
 if __name__ == '__main__':

@@ -33,6 +33,10 @@ class AdvSchedulingEnv:
         self.num_sessions, self.num_types = self.treatment_pattern.shape
         self.planning_horizon = decision_epoch + self.num_sessions - 1
 
+    def set_decision_epoch(self, decision_epoch):
+        self.decision_epoch = decision_epoch
+        self.planning_horizon = decision_epoch + self.num_sessions - 1
+
     def get_next_regular_bookings(self, regular_bookings, advance_scheduling_decision):
         new_regular_bookings = regular_bookings + self.convert_action_to_booking_slots(advance_scheduling_decision)
         return new_regular_bookings[1:]
@@ -68,6 +72,25 @@ class AdvSchedulingEnv:
             new_booking_slots = self.convert_action_to_booking_slots(advance_scheduling_decision)
             overtime_decision = np.maximum(regular_bookings + new_booking_slots - self.regular_capacity, 0)
             yield (advance_scheduling_decision, overtime_decision)
+
+    def generate_regular_hour_bookings(self, t):
+        for p in itertools.product(range(self.regular_capacity + 1), repeat=self.planning_horizon - t + 1):
+            yield np.array(p)
+
+    def generate_arrivals(self):
+        for N in range(self.arrival_generator.maximum_arrival + 1):
+            for arrivals in integer_partitions_fixed_bins(total=N, bins=self.num_types):
+                yield np.array(arrivals)
+    def generate_states(self):
+        for t in range(1, self.decision_epoch+1):
+            for regular_hour_bookings in self.generate_regular_hour_bookings(t):
+                for arrivals in self.generate_arrivals():
+                    yield (regular_hour_bookings, arrivals), t
+
+    def generate_state_action_pairs(self):
+        for state, t in self.generate_states():
+            for action in self.valid_actions(state, t):
+                yield (state, action, t)
 
     def cost_fn(self, state, action, t):
         advance_scheduling_decision, overtime_decision = action
@@ -175,19 +198,6 @@ if __name__ =='__main__':
     from experiments import get_config_by_type
     config = get_config_by_type('adv_default')
     env = config.env
-    valid_action = config.valid_action
-    state, info = env.reset(**config.reset_params)
-    print(state)
-    print(info)
-    action = list(env.valid_actions(state, 1))[0]
-    state, cost, done, info = env.step(action)
-    print(state)
-    print(info)
-    action = list(env.valid_actions(state, 2))[0]
-    state, cost, done, info = env.step(action)
-    print(state)
-    print(info)
-    action = list(env.valid_actions(state, 3))[0]
-    state, cost, done, info = env.step(action)
-    print(state)
-    print(info)
+    s = set(str(i) for i in env.generate_state_action_pairs())
+    l = list(env.generate_state_action_pairs())
+    print(len(s), len(l))
