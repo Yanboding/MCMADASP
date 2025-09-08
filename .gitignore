@@ -191,3 +191,6 @@ experiments/data_result
 *jsonl
 *dat
 decision_maker/col_generation_debug.py
+*.lp
+*.ilp
+*.xlsx
