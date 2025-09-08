@@ -30,6 +30,8 @@ def plot_experiment_result(directory_path, plot_labels, experiment_lables):
     treatment_types = set()
     pattern = os.path.join(directory_path, '*.jsonl')
     jsonl_files = glob.glob(pattern)
+    count = 0
+    uids = set()
     for file_path in jsonl_files:
         with open(file_path, 'r') as f:
             for line in f:
@@ -37,24 +39,31 @@ def plot_experiment_result(directory_path, plot_labels, experiment_lables):
                     data = json.loads(line)
                     param_value = data.get('param_value')
                     experiment_name = data.get('experiment_name')
-                    x_values.add(param_value)
-                    for agent_result in data.get('result', []):
-                        agent_name = agent_result['agent_name']
-                        pct_opt_gap_val = agent_result['opt_gap']
-                        pct_opt_gap[agent_name][param_value].record(pct_opt_gap_val)
-                        for wait_time_by_type in agent_result['wait_time_by_type']:
-                            treatment_type = wait_time_by_type['treatment_type']
-                            treatment_types.add(treatment_type)
-                            wait_time_stats = RunningStat(1)
-                            wait_time_stats.expect = np.array([wait_time_by_type['expect']])
-                            wait_time_stats.varSum = np.array([wait_time_by_type['varSum']])
-                            wait_time_stats.count = wait_time_by_type['count']
-                            wait_time_by_type_by_agent[param_value][agent_name][treatment_type].merge(wait_time_stats)
-                            total_average_wait_time[agent_name][param_value].merge(wait_time_stats)
-                        for overtime in agent_result['overtime']:
-                            total_overtime_by_day_by_agent[agent_name][param_value].record(overtime)
+                    uid = data.get('uid')
+                    if uid in uids:
+                        continue
+                    else:
+                        uids.add(uid)
+                        count += 1
+                        x_values.add(param_value)
+                        for agent_result in data.get('result', []):
+                            agent_name = agent_result['agent_name']
+                            pct_opt_gap_val = agent_result['opt_gap']
+                            pct_opt_gap[agent_name][param_value].record(pct_opt_gap_val)
+                            for wait_time_by_type in agent_result['wait_time_by_type']:
+                                treatment_type = wait_time_by_type['treatment_type']
+                                treatment_types.add(treatment_type)
+                                wait_time_stats = RunningStat(1)
+                                wait_time_stats.expect = np.array([wait_time_by_type['expect']])
+                                wait_time_stats.varSum = np.array([wait_time_by_type['varSum']])
+                                wait_time_stats.count = wait_time_by_type['count']
+                                wait_time_by_type_by_agent[param_value][agent_name][treatment_type].merge(wait_time_stats)
+                                total_average_wait_time[agent_name][param_value].merge(wait_time_stats)
+                            for overtime in agent_result['overtime']:
+                                total_overtime_by_day_by_agent[agent_name][param_value].record(overtime)
                 except (json.JSONDecodeError, KeyError) as e:
                     print(f"Skipping malformed or incomplete line: {line.strip()} - Error: {e}")
+    print("Sample path number:", count)
     x_values = sorted(list(x_values))
     os.path.join(directory_path, f'percentage_optimality_gap_by_{experiment_name}')
     approximate_value_plot_from_running_stats_dict(running_stats_dict=pct_opt_gap,
@@ -119,7 +128,7 @@ if __name__ == '__main__':
     # Load and process the data
     #plot_experiment_result('results/demand_rate', plot_labels, experiment_lables)
     #plot_experiment_result('results/occupancy_level', plot_labels, experiment_lables)
-    plot_experiment_result('results/overtime_cost_by_day', plot_labels, experiment_lables)
+    plot_experiment_result('results/higher_demand_rate', plot_labels, experiment_lables)
 
     '''
     if not results_df.empty:

@@ -6,7 +6,7 @@ import time
 import numpy as np
 from scipy.stats import truncnorm
 
-from utils import numpy_shift, RunningStat, integer_partitions_fixed_bins, generate_advance_actions, \
+from utils import numpy_shift, RunningStats, integer_partitions_fixed_bins, generate_advance_actions, \
     bounded_compositions
 
 
@@ -22,7 +22,8 @@ class RTEnv:
                  duration,
                  regular_capacity,
                  overtime_capacity,
-                 discount_factor
+                 discount_factor,
+                 random_seed
                  ):
         self.treatment_pattern = np.array(treatment_pattern)
         self.decision_epoch = decision_epoch
@@ -35,6 +36,8 @@ class RTEnv:
         self.regular_capacity = regular_capacity
         self.overtime_capacity = overtime_capacity
         self.discount_factor = discount_factor
+        self.random_seed = random_seed
+        self.rng = np.random.default_rng(random_seed)
         self.num_sessions, self.num_types = self.treatment_pattern.shape
         self.planning_horizon = self.booking_window_size + self.num_sessions - 1
 
@@ -79,7 +82,8 @@ class RTEnv:
         associated probability. Returns a list of (prob, counts_vector).
         """
         # For each possible total arrival from 0..maximum_arrival
-        for N in range(self.arrival_generator.maximum_arrival + 1):
+        maximum_number_of_waitlist = self.arrival_generator.maximum_arrival * 5
+        for N in range(maximum_number_of_waitlist + 1):
             for waitlist in integer_partitions_fixed_bins(total=N, bins=num_type):
                 yield np.array(waitlist)
     def generate_states(self):
@@ -206,7 +210,7 @@ class RTEnv:
                 continue
 
     # simulation
-    def reset(self, init_state=None, t=1, new_arrivals=None, percentage_occupied=0, seed=None):
+    def reset(self, init_state=None, t=1, new_arrivals=None, percentage_occupied=0):
         if new_arrivals is not None and len(new_arrivals) != self.decision_epoch - t + 1:
             print("length of new arrivals:", len(new_arrivals), "length of decision epoch:",self.decision_epoch - t + 1)
             raise ValueError('Invalid sample path!')
@@ -218,14 +222,14 @@ class RTEnv:
         else:
             self.new_arrivals = new_arrivals
         if init_state == None:
-            init_state = self.reset_initial_state(percentage_occupied, self.new_arrivals[0], seed)
+            init_state = self.reset_initial_state(percentage_occupied, self.new_arrivals[0])
         bookings, overtimes, waitlist = init_state
         bookings = np.array(bookings)
         overtimes = np.array(overtimes)
         waitlist = np.array(waitlist)
         self.state = (bookings, overtimes, waitlist)
         # measure of performance
-        self.wait_time_by_type = {j: RunningStat((1,)) for j in range(self.num_types)}
+        self.wait_time_by_type = {j: RunningStats() for j in range(self.num_types)}
         self.overtime = np.array([0] * (self.decision_epoch + self.num_sessions - t))
         return copy.deepcopy(self.state), {'wait_time_by_type': self.wait_time_by_type,
                                            'overtime': self.overtime}
@@ -233,19 +237,17 @@ class RTEnv:
     def reset_arrivals(self, t=1):
         return self.arrival_generator.rvs(self.decision_epoch - t + 1)
 
-    def reset_initial_state(self, percentage_occupied, new_arrivals, seed=None):
+    def reset_initial_state(self, percentage_occupied, new_arrivals):
         # find out the average appointment slot required in first period
         capacity_occupied = (self.regular_capacity + self.overtime_capacity) * percentage_occupied
         # initialize the current booking slots with all zeros
         booking_horizon = self.planning_horizon + self.num_sessions - 1
-        if seed is not None:
-            np.random.seed(seed)
         # Step 1: Generate from truncated normal distribution
         mean = 1.0
         std_dev = 0.3
         lower, upper = 0, 2
         a, b = (lower - mean) / std_dev, (upper - mean) / std_dev
-        samples = truncnorm.rvs(a, b, loc=mean, scale=std_dev, size=booking_horizon)
+        samples = truncnorm.rvs(a, b, loc=mean, scale=std_dev, size=booking_horizon, random_state=self.rng)
         # Step 2: Scale so that the average is exactly 100 * p
         total_bookings = samples / samples.mean() * capacity_occupied
         overtimes = np.maximum(total_bookings - self.regular_capacity, 0)

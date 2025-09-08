@@ -67,7 +67,7 @@ def approximate_value_plot_from_running_stats_dict(running_stats_dict, x_vals, x
         half_window = []
         for x_val in x_vals:
             running_stats = running_stats_by_x_val[x_val]
-            means.append(running_stats.expect)
+            means.append(running_stats.mean)
             half_window.append(running_stats.half_window(0.95))
         means = np.array(means).reshape(-1)
         half_window = np.array(half_window).reshape(-1)

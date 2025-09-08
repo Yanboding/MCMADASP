@@ -4,7 +4,7 @@ import itertools
 import numpy as np
 from scipy.stats import truncnorm
 
-from utils import numpy_shift, RunningStat, integer_partitions_fixed_bins, bounded_compositions
+from utils import numpy_shift, RunningStats, integer_partitions_fixed_bins, bounded_compositions
 
 
 class AdvSchedulingEnv:
@@ -37,8 +37,11 @@ class AdvSchedulingEnv:
         self.decision_epoch = decision_epoch
         self.planning_horizon = decision_epoch + self.num_sessions - 1
 
-    def get_next_regular_bookings(self, regular_bookings, advance_scheduling_decision):
-        new_regular_bookings = regular_bookings + self.convert_action_to_booking_slots(advance_scheduling_decision)
+    def get_next_regular_bookings(self, state, action, is_var):
+        regular_bookings, waitlist = self.get_state(state, is_var)
+        advance_scheduling_decision, overtime_decision = action
+        new_regular_bookings = regular_bookings + self.convert_action_to_booking_slots(
+            advance_scheduling_decision) - overtime_decision
         return new_regular_bookings[1:]
 
     def convert_action_to_booking_slots(self, advance_scheduling_decision):
@@ -52,11 +55,6 @@ class AdvSchedulingEnv:
         idx = np.arange(P) + np.arange(N)[:, None]  # shape (N,P)
         np.add.at(booked_slots, idx.ravel(), appointment_slots.ravel())
         return booked_slots
-
-    def get_state(self, state, is_var=False):
-        if not is_var:
-            return copy.deepcopy(state)
-        return state
 
     def generate_advance_actions(self, waitlist, booking_window_size):
         per_type_generators = [integer_partitions_fixed_bins(w_i, booking_window_size) for w_i in waitlist]
@@ -101,6 +99,11 @@ class AdvSchedulingEnv:
         overtime_cost = sum(self.discount_factor ** j * self.overtime_cost(j) * overtime_decision[j] for j in
                             range(len(overtime_decision)))
         return waiting_cost + overtime_cost
+
+    def get_state(self, state, is_var=False):
+        if not is_var:
+            return copy.deepcopy(state)
+        return state
 
     def post_action_state(self, state, action, is_var=False):
         regular_bookings, waitlist = self.get_state(state, is_var)
@@ -150,7 +153,7 @@ class AdvSchedulingEnv:
         waitlist = np.array(waitlist)
         self.state = (regular_bookings, waitlist)
         # measure of performance
-        self.wait_time_by_type = {j: RunningStat((1,)) for j in range(self.num_types)}
+        self.wait_time_by_type = {j: RunningStats() for j in range(self.num_types)}
         self.overtime = np.array([0] * (self.decision_epoch + self.num_sessions - t))
         return copy.deepcopy(self.state), {'wait_time_by_type': self.wait_time_by_type,
                                            'overtime': self.overtime}
@@ -196,8 +199,16 @@ class AdvSchedulingEnv:
 
 if __name__ =='__main__':
     from experiments import get_config_by_type
-    config = get_config_by_type('adv_default')
+    config = get_config_by_type('base_case')
     env = config.env
-    s = set(str(i) for i in env.generate_state_action_pairs())
-    l = list(env.generate_state_action_pairs())
-    print(len(s), len(l))
+
+    def get_utilization(total_rate):
+        """Modifier function for the demand rate experiment."""
+        config = get_config_by_type('base_case')
+        env = config.env
+        base_case_rate = sum(config.env.arrival_generator.mean_by_type)
+        new_arrival_rates = env.arrival_generator.mean_by_type * (total_rate/base_case_rate)
+        return np.dot(new_arrival_rates,env.treatment_pattern.sum(axis=0))/env.regular_capacity
+    print(get_utilization(12))
+    print(get_utilization(16))
+    print(get_utilization(20))

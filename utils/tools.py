@@ -172,7 +172,7 @@ def get_status_string(status_code):
     return status_map.get(status_code, "UNKNOWN_STATUS")
 
 
-def solve_and_handle_errors(model: gp.Model):
+def solve_and_handle_errors(model: gp.Model, verbose=False):
     """
     Optimizes a Gurobi model and handles non-optimal statuses by saving the model.
 
@@ -185,35 +185,38 @@ def solve_and_handle_errors(model: gp.Model):
 
         # Check the final optimization status
         if model.Status == GRB.OPTIMAL:
-            print(f"Model '{model.ModelName}' solved to optimality.")
-            print(f"Objective value: {model.ObjVal}")
+            if verbose:
+                print(f"Model '{model.ModelName}' solved to optimality.")
+                print(f"Objective value: {model.ObjVal}")
             return True
 
         else:
-            # --- Handle non-optimal cases ---
-            status_string = get_status_string(model.Status)
-            model_name = model.ModelName if model.ModelName.strip() else "unnamed_model"
+            if verbose:
+                # --- Handle non-optimal cases ---
+                status_string = get_status_string(model.Status)
+                model_name = model.ModelName if model.ModelName.strip() else "unnamed_model"
 
-            print(f"\n--- Optimization Failed for model '{model_name}' ---")
-            print(f"Status: {status_string} ({model.Status})")
+                print(f"\n--- Optimization Failed for model '{model_name}' ---")
+                print(f"Status: {status_string} ({model.Status})")
 
-            # Construct filename and save the model as an LP file
-            filename = f"{model_name}_{status_string}.lp"
-            print(f"Saving model to file: {filename}")
-            model.write(filename)
+                # Construct filename and save the model as an LP file
+                filename = f"{model_name}_{status_string}.lp"
+                print(f"Saving model to file: {filename}")
+                model.write(filename)
 
             # If the model is infeasible, compute and save the IIS
             if model.Status == GRB.INFEASIBLE:
-                print("Model is infeasible. Computing Irreducible Inconsistent Subsystem (IIS)...")
-                model.computeIIS()
+                if verbose:
+                    print("Model is infeasible. Computing Irreducible Inconsistent Subsystem (IIS)...")
+                    model.computeIIS()
 
-                # The IIS is a subset of the original model's constraints and bounds
-                # that is still infeasible, but becomes feasible if any single one
-                # of its constraints or bounds is removed.
-                iis_filename = f"{model_name}_infeasible_iis.ilp"
-                print(f"Saving IIS to file: {iis_filename}")
-                model.write(iis_filename)
-                print("Use the .ilp file to identify the conflicting constraints.")
+                    # The IIS is a subset of the original model's constraints and bounds
+                    # that is still infeasible, but becomes feasible if any single one
+                    # of its constraints or bounds is removed.
+                    iis_filename = f"{model_name}_infeasible_iis.ilp"
+                    print(f"Saving IIS to file: {iis_filename}")
+                    model.write(iis_filename)
+                    print("Use the .ilp file to identify the conflicting constraints.")
 
             return False
 

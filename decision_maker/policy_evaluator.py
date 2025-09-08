@@ -44,13 +44,16 @@ class PolicyEvaluator:
         self.V[(state_tuple, t)] = q
         return self.V[(state_tuple, t)]
 
-    def sample_path_evaluate(self, state, t, sample_path):
+    def sample_path_evaluate(self, state, t, sample_path, action=None):
         states = []
         rewards = []
         s, info = self.env.reset(state, t, sample_path)
         for tau in range(len(sample_path)):
             states.append(s)
-            a = self.agent.policy(s, t + tau)
+            if tau == 0 and action:
+                a = action
+            else:
+                a = self.agent.policy(s, t + tau)
             next_state, reward, done, info = self.env.step(a)
             rewards.append(reward)
             s = next_state
@@ -58,10 +61,10 @@ class PolicyEvaluator:
                 break
         return states, rewards
 
-    def simulation_evaluate_helper(self, state, t, sample_paths):
+    def simulation_evaluate_helper(self, state, t, sample_paths, action=None):
         sample_average_V = defaultdict(lambda: RunningStat(1))
         for sample_path in sample_paths:
-            states, rewards = self.sample_path_evaluate(state,t,sample_path)
+            states, rewards = self.sample_path_evaluate(state,t,sample_path, action=action)
             G = 0.0
             for tau in reversed(range(len(states))):
                 G = self.discount_factor * G + rewards[tau]
@@ -84,11 +87,11 @@ class PolicyEvaluator:
         return mean, mean-half_window, mean+half_window
     '''
 
-    def sample_path_optimality_gap_evaluate(self, lower_bound_solver, state, t, sample_path):
+    def sample_path_optimality_gap_evaluate(self, lower_bound_solver, state, t, sample_path, action=None):
         state_tuple = iter_to_tuple(state)
         lower_bound_solver.set_sample_path(sample_path)
-        _, lower_bound, info = lower_bound_solver.solve(state, t)
-        sample_average_V = self.simulation_evaluate_helper(state, t, [sample_path])
+        _, lower_bound, info = lower_bound_solver.solve(state, t, action=action)
+        sample_average_V = self.simulation_evaluate_helper(state, t, [sample_path], action=action)
         upper_bound = sample_average_V[(state_tuple, t)].expect[0]
         opt_gap = max(upper_bound - lower_bound, 0)
         if opt_gap == 0:

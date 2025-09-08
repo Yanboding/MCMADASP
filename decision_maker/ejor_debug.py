@@ -1,99 +1,323 @@
 import gurobipy as gp
 from gurobipy import GRB
+import numpy as np
 
-def solve_master_rmp():
+# --- 1. Problem Data Generation ---
+# We'll create a smaller, illustrative problem instance.
+I = 2  # Number of treatment types
+N = 10  # Total number of periods in the horizon
+H = 5  # Overtime horizon
+L = 1  # Max treatment length
+M = 10  # Number of scenarios
+t = 0  # Current time period (we solve for the decision at t=0)
+CAPACITY = 5  # Daily capacity C
+GAMMA = 0.95  # Discount factor
+
+
+def generate_problem_data():
+    """Generates random data for a runnable example."""
+    np.random.seed(42)
+    data = {}
+    data['c'] = np.random.randint(10, 30, size=(N + 1, I))  # Appointment costs
+    data['o'] = np.random.randint(50, 100, size=(H + 1))  # Overtime costs
+    data['r'] = np.array([[2, 1]])
+
+    # Initial state and current demand
+    data['u_t'] = np.zeros(N - t + 1)
+    data['delta_t'] = np.random.randint(5, 10, size=I)
+
+    # Future demand scenarios
+    data['delta_future'] = {
+        m: np.random.randint(2, 8, size=(N - t - 1, I)) for m in range(M)
+    }
+    return data
+
+
+# --- 2. The Master Problem ---
+def create_master_problem(data):
+    """Creates the Benders master problem."""
+    master = gp.Model("Master")
+
+    # First-stage decision variables
+    x_t = master.addVars(N - t + 1, I, vtype=GRB.INTEGER, name="x_t")
+    y_t = master.addVars(H - t + 1, vtype=GRB.INTEGER, name="y_t")
+    theta = master.addVar(name="theta", lb=0)  # Approximation of future costs
+
+    # Objective: Minimize immediate cost + approximated future cost
+    immediate_cost = gp.quicksum(data['c'][j, i] * x_t[j, i] for j in range(N - t + 1) for i in range(I)) + \
+                     gp.quicksum(data['o'][j] * y_t[j] for j in range(H - t + 1))
+    master.setObjective(immediate_cost + theta, GRB.MINIMIZE)
+
+    # First-stage constraints (only involving t)
+    # Constraint (1d): Fulfill current demand
+    master.addConstrs((x_t.sum('*', i) == data['delta_t'][i] for i in range(I)), name="demand_t")
+
+    # Helper variables for state transition
+    u_bar_t = master.addVars(N - t + 1, name="u_bar_t")
+
+    # Constraint (1a): Post-decision state
+    for j in range(N - t + 1):
+        resource_sum = gp.quicksum(x_t[k, i] * data['r'][j - k, i]
+                                   for i in range(I)
+                                   for k in range(max(j - L + 1, 0), j + 1))
+        # Handle overtime index carefully
+        overtime_term = y_t[j] if j <= H - t else 0
+        master.addConstr(u_bar_t[j] == data['u_t'][j] + resource_sum - overtime_term, name=f"post_state_{j}")
+
+    # Constraint (1c): Capacity
+    master.addConstrs((u_bar_t[j] <= CAPACITY for j in range(N - t + 1)), name="capacity_t")
+
+    master._vars = {'x_t': x_t, 'y_t': y_t, 'theta': theta}
+    master._u_bar_t = u_bar_t  # Expose for use in subproblems
+    return master
+
+
+# --- 3. The Subproblem ---
+def solve_subproblem(data, master_solution, scenario_omega):
     """
-    Sets up and solves the specified linear programming problem using Gurobi.
+    Solves the second-stage problem for a single scenario, given the master's decision.
+    Returns the objective value and duals for the Benders cut.
     """
-    try:
-        # Create a new model
-        m = gp.Model("MasterRMP")
+    subproblem = gp.Model(f"Subproblem_{scenario_omega}")
+    subproblem.setParam('OutputFlag', 0)
 
-        # --- 1. Define Variables ---
-        # The problem statement includes constraints like U^1_0 >= 0.
-        # These are handled by setting the lower bound (lb) of the variables.
-        # The default lower bound is 0, so we only need to specify it for
-        # variables that can be negative.
+    # Calculate the initial state u_t+1 based on the master solution
+    u_t1 = np.zeros(N - (t + 1) + 1)
+    for j in range(len(u_t1)):
+        u_t1[j] = master_solution['u_bar_t'][j + 1]
 
-        # W variables
-        # W^1_0 and W^2_0 appear to be unrestricted (free variables)
-        w10 = m.addVar(name="W^1_0")
-        w20 = m.addVar(name="W^2_0")
-        # constr_8 sets W^3_0 <= 0, which we can set as an upper bound
-        w30 = m.addVar(lb=-GRB.INFINITY, ub=0, name="W^3_0")
+    # --- Subproblem Variables (from t+1 to N) ---
+    x = {}
+    y = {}
+    for tau in range(1, N - t):
+        x[tau] = subproblem.addVars(N - t - tau + 1, I, vtype=GRB.CONTINUOUS, name=f"x_{t + tau}")
+        y[tau] = subproblem.addVars(H - t - tau + 1, vtype=GRB.CONTINUOUS, name=f"y_{t + tau}")
 
-        w11 = m.addVar(lb=0, name="W^1_1")
-        w21 = m.addVar(lb=0, name="W^2_1")
-        w31 = m.addVar(lb=0, name="W^3_1")
+    # --- Subproblem Objective ---
+    future_cost = gp.quicksum(
+        data['c'][j, i] * x[tau][j, i]
+        for tau in range(1, N - t) for j in range(N - t - tau + 1) for i in range(I)
+    ) + gp.quicksum(
+        data['o'][j] * y[tau][j]
+        for tau in range(1, N - t) for j in range(H - t - tau + 1)
+    )
+    subproblem.setObjective((GAMMA / M) * future_cost, GRB.MINIMIZE)
 
-        # U variables (all are non-negative, which is the default)
-        u10 = m.addVar(name="U^1_0")
-        u11 = m.addVar(name="U^1_1")
-        u12 = m.addVar(name="U^1_2")
-        u20 = m.addVar(name="U^2_0")
-        u21 = m.addVar(name="U^2_1")
-        u30 = m.addVar(name="U^3_0")
+    # --- Subproblem Constraints ---
+    u = {tau: subproblem.addVars(N - t - tau + 2, name=f"u_{t + tau}") for tau in range(1, N - t + 1)}
+    u_bar = {tau: subproblem.addVars(N - t - tau + 1, name=f"u_bar_{t + tau}") for tau in range(1, N - t)}
 
-        # --- 2. Set Objective Function ---
-        objective = (w10 + w20 + w30
-                     + 2.5 * (u10 + u11 + u12 + u20 + u21 + u30)
-                     + 3 * (w11 + w21 + w31))
-        m.setObjective(objective, GRB.MAXIMIZE)
+    # Linking constraint (1b): Initialize the state from master's decision
+    # We add this as a constraint to get its dual value for the cut.
+    linking_constrs = subproblem.addConstrs((u[1][j] == u_t1[j] for j in range(N - t)), name="linking")
 
-        # --- 3. Add Constraints ---
-        # Note: Non-negativity constraints and constr_8 (W^3_0 <= 0) were
-        # handled during variable creation.
+    # All future constraints from tau=1 to N-t
+    for tau in range(1, N - t):
+        # Post-decision state (1e)
+        for j in range(N - t - tau + 1):
+            resource_sum = gp.quicksum(x[tau][k, i] * data['r'][j - k, i]
+                                       for i in range(I)
+                                       for k in range(max(j - L + 1, 0), j + 1))
+            overtime_term = y[tau][j] if j <= H - t - tau else 0
+            subproblem.addConstr(u_bar[tau][j] == u[tau][j] + resource_sum - overtime_term)
 
-        m.addConstr(w10 - 0.99*w20 + 5*u10 + 5*u11 + 5*u12 - 4.95*u20 - 4.95*u21 + 9*w11 - 2.97*w21 <= 810, "init_1")
-        m.addConstr(w20 - 0.99*w30 + 5*u20 + 5*u21 - 4.95*u30 + 9*w21 - 2.97*w31 <= 810, "init_2")
-        m.addConstr(w30 + 5*u30 + 9*w31 <= 810, "init_3")
+        # State transition (1f)
+        subproblem.addConstrs((u[tau + 1][j] == u_bar[tau][j + 1] for j in range(N - t - tau)))
 
-        m.addConstr(w20 - 0.99*w30 - 2.97*w31 <= 0, "constr_1")
-        m.addConstr(w10 - 0.99*w20 - 2.97*w21 <= 0, "constr_2")
-        m.addConstr(w10 - 0.99*w20 + 5*u10 - 2.97*w21 <= 0, "constr_3")
-        m.addConstr(w10 - 0.99*w20 + 5*u11 - 2.97*w21 <= 198, "constr_4")
-        m.addConstr(w10 - 0.99*w20 + 5*u12 - 4.95*u21 - 2.97*w21 <= 0, "constr_5")
-        m.addConstr(w10 - 0.99*w20 + 5*u11 + 5*u12 - 4.95*u20 + 3*w11 - 2.97*w21 <= 266.02, "constr_6")
-        m.addConstr(w20 - 0.99*w30 + 5*u20 + 5*u21 - 4.95*u30 - 2.97*w31 <= 0, "constr_7")
-        # constr_8 is handled in variable definition
-        m.addConstr(w30 + 5*u30 <= 0, "constr_9")
-        m.addConstr(w10 - 0.99*w20 - 4.95*u20 - 4.95*u21 + 9*w11 - 2.97*w21 <= 297.607, "constr_10")
-        m.addConstr(w20 - 0.99*w30 - 4.95*u30 + 6*w21 - 2.97*w31 <= 169.3, "constr_11")
-        m.addConstr(w10 - 0.99*w20 + 5*u11 + u12 - 4.95*u21 + 5*w11 - 2.97*w21 <= 327.402, "constr_12")
-        m.addConstr(w10 - 0.99*w20 + 5*u10 + 5*u11 + 5*u12 - 4.95*u20 - 4.95*u21 - 2.97*w21 <= 0, "constr_13")
-        m.addConstr(w30 + 9*w31 <= 610, "constr_14")
-        m.addConstr(w30 + 3*w31 <= 70, "constr_15")
-        m.addConstr(w10 - 0.99*w20 - 3.96*u21 + 4*w11 - 2.97*w21 <= 79.402, "constr_16")
-        m.addConstr(w10 - 0.99*w20 + 5*u12 - 3.96*u20 - 4.95*u21 + 4*w11 - 2.97*w21 <= 59.8, "constr_17")
-        m.addConstr(w10 - 0.99*w20 + 5*u11 - 4.95*u20 + 2*w11 - 2.97*w21 <= 20, "constr_18")
-        m.addConstr(w10 - 0.99*w20 + u10 + u11 - 4.95*u20 - 3.96*u21 + 6*w11 - 2.97*w21 <= 119.202, "constr_19")
-        m.addConstr(w20 - 0.99*w30 + u20 + u21 - 4.95*u30 + 4*w21 - 2.97*w31 <= 59.8, "constr_20")
-        m.addConstr(w30 + 2*w31 <= 20, "constr_21")
-        m.addConstr(w10 - 0.99*w20 + u10 + 5*u12 - 4.95*u21 + 2*w11 - 2.97*w21 <= 20, "constr_22")
-        m.addConstr(w10 - 0.99*w20 + u10 + 5*u11 - 4.95*u20 + 2*w11 - 2.97*w21 <= 20, "constr_23")
-        m.addConstr(w20 - 0.99*w30 + 5*u20 - 3.96*u30 + 2*w21 - 2.97*w31 <= 39.8, "constr_24")
-        m.addConstr(w20 - 0.99*w30 + 5*u20 + u21 - 4.95*u30 + 2*w21 - 2.97*w31 <= 39.8, "constr_25")
+        # Capacity (1g)
+        subproblem.addConstrs((u_bar[tau][j] <= CAPACITY for j in range(N - t - tau + 1)))
 
-        # --- 4. Solve the Model ---
-        m.optimize()
+        # Demand fulfillment (1h)
+        demand = data['delta_future'][scenario_omega][tau - 1]
+        subproblem.addConstrs((x[tau].sum('*', i) == demand[i] for i in range(I)))
 
-        # --- 5. Display Results ---
-        print("-" * 50)
-        if m.Status == GRB.OPTIMAL:
-            print(f"✅ Optimal objective value found: {m.ObjVal:.4f}")
-            print("\nNon-zero variable values:")
-            for v in m.getVars():
-                # Only print variables with a value significantly different from zero
-                if abs(v.X) > 1e-6:
-                    print(f"   {v.VarName:<6} = {v.X:.4f}")
-        else:
-            print(f"❌ Optimization was not successful. Status code: {m.Status}")
-        print("-" * 50)
+    # --- Solve and Get Cut Information ---
+    # To generate a valid Benders cut, we need duals from the LP relaxation.
+    lp_subproblem = subproblem.relax()
+    lp_subproblem.optimize()
 
-    except gp.GurobiError as e:
-        print(f"Error code {e.errno}: {e}")
-    except AttributeError:
-        print("Could not find Gurobi. Please ensure it is installed and licensed.")
+    # Case 1: Subproblem is feasible
+    if lp_subproblem.Status == GRB.OPTIMAL:
+        # We still need the true integer objective for the upper bound calculation
+        subproblem.optimize()
+        if subproblem.Status != GRB.OPTIMAL:
+            # This can happen in rare cases. Treat as infeasible for simplicity.
+            return {'status': 'infeasible', 'farkas_duals': None, 'obj': None}
+        duals = [linking_constrs[j].Pi for j in range(N - t)]
+        return {'status': 'optimal', 'duals': duals, 'obj': subproblem.ObjVal}
 
-# Run the solver
-solve_master_rmp()
+    # Case 2: Subproblem is infeasible
+    elif lp_subproblem.Status == GRB.INFEASIBLE:
+        # Generate a feasibility cut using Farkas duals
+        farkas_duals = [linking_constrs[j].FarkasDual for j in range(N - t)]
+        return {'status': 'infeasible', 'farkas_duals': farkas_duals, 'obj': None}
+    else:
+        # Other statuses (e.g., unbounded) indicate an issue
+        raise Exception(f"Subproblem {scenario_omega} has unhandled status: {lp_subproblem.Status}")
+
+
+# --- 4. The Main Benders Loop ---
+def run_benders_decomposition():
+    """Manages the iterative process of solving master and subproblems."""
+    data = generate_problem_data()
+    master = create_master_problem(data)
+
+    lower_bound = -GRB.INFINITY
+    upper_bound = GRB.INFINITY
+
+    print("--- Starting Benders Decomposition ---")
+    for i in range(50):  # Max iterations
+        print(f"\nIteration {i + 1}:")
+
+        # Solve the master problem
+        master.setParam('OutputFlag', 0)
+        master.optimize()
+
+        if master.Status != GRB.OPTIMAL:
+            print("Master problem could not be solved to optimality. Stopping.")
+            break
+
+        lower_bound = master.ObjVal
+        master_solution = {
+            'x_t': master.getAttr('X', master._vars['x_t']),
+            'y_t': master.getAttr('X', master._vars['y_t']),
+            'theta': master._vars['theta'].X,
+            'u_bar_t': master.getAttr('X', master._u_bar_t)
+        }
+
+        print(f"  Master solved. Lower Bound = {lower_bound:.2f}")
+
+        # Solve subproblems for all scenarios
+        total_subproblem_obj = 0
+        cut_expression = 0
+        infeasibility_found = False
+
+        for m in range(M):
+            result = solve_subproblem(data, master_solution, m)
+
+            if result['status'] == 'infeasible':
+                # Add a feasibility cut
+                print(f"  Scenario {m} is infeasible. Adding a feasibility cut.")
+                duals = result['farkas_duals']
+                u_bar_t = master._u_bar_t
+                # The cut forces the master to a region where this infeasibility is avoided
+                cut = gp.quicksum(duals[j] * u_bar_t[j + 1] for j in range(N - t)) <= gp.quicksum(
+                    duals[j] * master_solution['u_bar_t'][j + 1] for j in range(N - t)) - 1e-4
+                master.addConstr(cut)
+                infeasibility_found = True
+                break  # Go to the next master iteration immediately
+
+            total_subproblem_obj += result['obj']
+            duals = result['duals']
+            u_bar_t = master._u_bar_t
+
+            # Build the optimality cut expression
+            # theta >= E[ duals * (u_bar_t - u_bar_t_val) + subproblem_obj_val ]
+            cut_expression += gp.quicksum(
+                duals[j] * (u_bar_t[j + 1] - master_solution['u_bar_t'][j + 1]) for j in range(N - t)) + result['obj']
+
+        if infeasibility_found:
+            continue
+
+        # Update upper bound
+        immediate_cost_val = master.ObjVal - master_solution['theta']
+        current_upper_bound = immediate_cost_val + total_subproblem_obj
+        upper_bound = min(upper_bound, current_upper_bound)
+
+        print(f"  Subproblems solved. Expected Future Cost = {total_subproblem_obj:.2f}")
+        print(f"  Current Upper Bound = {current_upper_bound:.2f}")
+        print(f"  GAP = {((upper_bound - lower_bound) / (abs(upper_bound) + 1e-6)) * 100:.2f}%")
+
+        # Check for convergence
+        if upper_bound - lower_bound <= 1e-4:
+            print("\n--- Benders has converged! ---")
+            break
+
+        # Add optimality cut
+        master.addConstr(master._vars['theta'] >= cut_expression)
+
+    print("\n--- Benders Final Optimal Solution ---")
+    print(f"Optimal First-Stage Cost: ${master.ObjVal - master._vars['theta'].X:,.2f}")
+    print(f"Expected Total Cost (Upper Bound): ${upper_bound:,.2f}")
+    return data  # Return data for the exact solver
+
+
+# --- 5. The Exact Solution (Extensive Form) ---
+def solve_extensive_form(data):
+    """Solves the problem as a single, large ILP (deterministic equivalent)."""
+    model = gp.Model("ExtensiveForm")
+
+    # --- First-stage variables ---
+    x_t = model.addVars(N - t + 1, I, vtype=GRB.INTEGER, name="x_t")
+    y_t = model.addVars(H - t + 1, vtype=GRB.INTEGER, name="y_t")
+
+    # --- Second-stage variables for ALL scenarios ---
+    x = model.addVars(M, N - t, N - t + 1, I, vtype=GRB.INTEGER, name="x_future")
+    y = model.addVars(M, N - t, H - t + 1, vtype=GRB.INTEGER, name="y_future")
+    u = model.addVars(M, N - t + 1, N - t + 2, name="u_future")
+    u_bar = model.addVars(M, N - t, N - t + 1, name="u_bar_future")
+
+    # --- Objective Function ---
+    immediate_cost = gp.quicksum(data['c'][j, i] * x_t[j, i] for j in range(N - t + 1) for i in range(I)) + \
+                     gp.quicksum(data['o'][j] * y_t[j] for j in range(H - t + 1))
+
+    future_cost = gp.quicksum(
+        (GAMMA / M) * (
+                data['c'][j, i] * x[m, tau, j, i] +
+                data['o'][j] * y[m, tau, j]
+        )
+        for m in range(M)
+        for tau in range(1, N - t)
+        for j in range(N - t - tau + 1) for i in range(I)
+        if j <= H - t - tau
+    )
+    model.setObjective(immediate_cost + future_cost, GRB.MINIMIZE)
+
+    # --- First-stage constraints ---
+    model.addConstrs((x_t.sum('*', i) == data['delta_t'][i] for i in range(I)), name="demand_t")
+    u_bar_t = model.addVars(N - t + 1, name="u_bar_t")
+    for j in range(N - t + 1):
+        resource_sum = gp.quicksum(
+            x_t[k, i] * data['r'][j - k, i] for i in range(I) for k in range(max(j - L + 1, 0), j + 1))
+        overtime_term = y_t[j] if j <= H - t else 0
+        model.addConstr(u_bar_t[j] == data['u_t'][j] + resource_sum - overtime_term)
+    model.addConstrs((u_bar_t[j] <= CAPACITY for j in range(N - t + 1)), name="capacity_t")
+
+    # --- Linking and Second-stage constraints for EACH scenario ---
+    for m in range(M):
+        # Linking constraint (1b)
+        model.addConstrs((u[m, 1, j] == u_bar_t[j + 1] for j in range(N - t)), name=f"linking_{m}")
+
+        for tau in range(1, N - t):
+            # Post-decision state (1e)
+            for j in range(N - t - tau + 1):
+                resource_sum = gp.quicksum(
+                    x[m, tau, k, i] * data['r'][j - k, i] for i in range(I) for k in range(max(j - L + 1, 0), j + 1))
+                overtime_term = y[m, tau, j] if j <= H - t - tau else 0
+                model.addConstr(u_bar[m, tau, j] == u[m, tau, j] + resource_sum - overtime_term)
+
+            # State transition (1f)
+            model.addConstrs((u[m, tau + 1, j] == u_bar[m, tau, j + 1] for j in range(N - t - tau)))
+            # Capacity (1g)
+            model.addConstrs((u_bar[m, tau, j] <= CAPACITY for j in range(N - t - tau + 1)))
+            # Demand fulfillment (1h)
+            demand = data['delta_future'][m][tau - 1]
+            model.addConstrs(
+                (gp.quicksum(x[m, tau, j, i] for j in range(N - t - tau + 1)) == demand[i] for i in range(I)))
+
+    # --- Solve ---
+    print("\n--- Solving with Exact (Extensive Form) Method ---")
+    model.setParam('OutputFlag', 1)
+    model.optimize()
+
+    if model.Status == GRB.OPTIMAL:
+        print("\n--- Exact Form Final Optimal Solution ---")
+        print(f"Expected Total Cost: ${model.ObjVal:,.2f}")
+    else:
+        print("Exact form could not be solved to optimality.")
+
+
+if __name__ == "__main__":
+    #problem_data = run_benders_decomposition()
+    data = generate_problem_data()
+    solve_extensive_form(data)

@@ -15,9 +15,9 @@ class ALPEJORRowGenerationAgent(ALPEJORAgent):
     def __init__(self, env, discount_factor, V=None, Q=None, coefficients=None, pretrain=False):
         super().__init__(env, discount_factor, V, Q)
         self.is_trained = False
-        self.E_u_alpha = [uniform(loc=0, scale=self.env.regular_capacity).mean()*.8] * self.env.planning_horizon
+        self.E_u_alpha = [uniform(loc=0, scale=self.env.regular_capacity).mean()] * self.env.planning_horizon
         self.E_u_alpha[-1] = 0
-        self.E_v_alpha = [uniform(loc=0, scale=self.env.overtime_capacity).mean()*.8] * self.env.planning_horizon
+        self.E_v_alpha = [uniform(loc=0, scale=self.env.overtime_capacity).mean()] * self.env.planning_horizon
         self.E_v_alpha[-1] = 0
         self.E_w_alpha = self.env.arrival_generator.mean_by_type
         if coefficients is not None:
@@ -79,7 +79,7 @@ class ALPEJORRowGenerationAgent(ALPEJORAgent):
 
     def master_builder(self):
         master_model = gp.Model('MasterRMP')
-        BIGM = 10000000
+        BIGM = 1e10
         self.W_0_var = master_model.addVar(vtype=GRB.CONTINUOUS, lb=-GRB.INFINITY, ub=BIGM, name=f"W_0")
         self.U_vars = np.array([master_model.addVar(vtype=GRB.CONTINUOUS, lb=0, ub=BIGM, name=f"U_{j}") for j in range(self.env.planning_horizon)])
         self.V_vars = np.array([master_model.addVar(vtype=GRB.CONTINUOUS, lb=0, ub=BIGM, name=f"V_{j}") for j in range(self.env.planning_horizon)])
@@ -129,19 +129,23 @@ class ALPEJORRowGenerationAgent(ALPEJORAgent):
                                              initial_candidates=initial_candidates)
         self.rg_solver.solve(tol=tol, max_iter=max_iter)
         self.rg_solver.master_model.write('rg.lp')
-        print('Candidates:')
-        pprint(self.rg_solver.candidates_list)
-        print('master obj:', self.rg_solver.master_model.ObjVal)
         final_coefficients = [clean_value(v.X, tol) for v in self.rg_solver.master_model.getVars()]
         self.W_0, self.U, self.V, self.W = self.get_coefficients(final_coefficients)
         self.is_trained = True
         return final_coefficients
 
+    def coeff_C(self, i, n):
+        part1 = sum(self.discount_factor ** k * self.env.holding_cost(k, i) for k in range(n + 1))
+        part2 = sum(self.discount_factor * self.env.treatment_pattern[k+1-n, i] * self.U[k] for k in range(n-1,n-1+self.env.num_sessions))
+        part3 = self.env.postponing_cost(i) - self.discount_factor * self.W[i]
+        return part1 + part2 + part3
+
 if "__main__" == __name__:
     from experiments import get_config_by_type
-    config = get_config_by_type('rt_default', random_seed=1)
+    config = get_config_by_type('ejor_default')
     env = config.env
     init_state = config.init_state
     agent = ALPEJORRowGenerationAgent(env=env, discount_factor=env.discount_factor)
-    coefficients = agent.train(debug=False, max_iter=1000)
-    print(coefficients)
+    print(agent.train(debug=False))
+    #duals = [84.0, 0.0, 0.0, 0.0, 0.0, 1.0]
+    #print(list(agent.separation_callback(duals)))

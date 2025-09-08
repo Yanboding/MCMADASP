@@ -68,14 +68,14 @@ class ALPEJORAgent:
         return model
 
     def get_action_var(self, model, state):
-        x_var = np.array([
-            [model.addVar(vtype=GRB.INTEGER, lb=0, name=f"x_{j},{i}") for i in range(self.env.num_types)]
+        advance_scheduling_decision_vars = np.array([
+            [model.addVar(vtype=GRB.INTEGER, lb=0, name=f"x_{j+1},{i+1}") for i in range(self.env.num_types)]
             for j in range(self.env.booking_window_size)
         ])
-        y_var = np.array(
-            [model.addVar(vtype=GRB.CONTINUOUS, lb=0, name=f"y_{j}") for j in range(self.env.planning_horizon)]
+        overtime_decision_vars = np.array(
+            [model.addVar(vtype=GRB.CONTINUOUS, lb=0, name=f"y_{j+1}") for j in range(self.env.planning_horizon)]
         )
-        action_var = (x_var, y_var)
+        action_var = (advance_scheduling_decision_vars, overtime_decision_vars)
         self.add_action_space_constraints(model, state, action_var)
         return action_var
 
@@ -90,13 +90,14 @@ class ALPEJORAgent:
 
     def get_state_var(self, model):
         maximum_arrival = self.env.arrival_generator.maximum_arrival
-        regular_hour_booking_vars = np.array([model.addVar(vtype=GRB.CONTINUOUS, lb=0, ub=self.env.regular_capacity, name=f'u_{j}') for j in range(self.env.planning_horizon)])
+        regular_hour_booking_vars = np.array([model.addVar(vtype=GRB.CONTINUOUS, lb=0, ub=self.env.regular_capacity, name=f'u_{j+1}') for j in range(self.env.planning_horizon)])
         regular_hour_booking_vars[-1].lb = regular_hour_booking_vars[-1].ub = 0
         overtime_booking_vars = np.array(
-            [model.addVar(vtype=GRB.CONTINUOUS, lb=0, ub=self.env.regular_capacity, name=f'v_{j}') for j in
+            [model.addVar(vtype=GRB.CONTINUOUS, lb=0, ub=self.env.regular_capacity, name=f'v_{j+1}') for j in
              range(self.env.planning_horizon)])
         overtime_booking_vars[-1].lb = overtime_booking_vars[-1].ub = 0
-        waitlist_vars = np.array([model.addVar(vtype=GRB.INTEGER, lb=0, ub=maximum_arrival, name=f'w_{i}') for i in range(self.env.num_types)])
+        # 30 * 5
+        waitlist_vars = np.array([model.addVar(vtype=GRB.INTEGER, lb=0, ub=maximum_arrival*5, name=f'w_{i+1}') for i in range(self.env.num_types)])
         return (regular_hour_booking_vars, overtime_booking_vars, waitlist_vars)
 
     def get_candidate(self, state_var, action_var):
@@ -141,6 +142,7 @@ class ALPEJORAgent:
             # ---------- 1. today’s increments ----------
             action_var = self.get_action_var(m, state)
             if action is not None:
+                print('action:', action)
                 self.set_action(action_var=action_var, action=action)
             # ---------- 1. objective ----------
             imm_cost = self.env.cost_fn(state, action_var)

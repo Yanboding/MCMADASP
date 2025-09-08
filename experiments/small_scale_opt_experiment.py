@@ -4,7 +4,9 @@ import time
 from collections import defaultdict
 from pprint import pprint
 
-from utils import iter_to_tuple, iter_to_list, RunningStat, get_uid
+from decision_maker.alp_cg_ejor_agent import ALPEJORColumnGenerationAgent
+from decision_maker.alp_rg_ejor_agent import ALPEJORRowGenerationAgent
+from utils import iter_to_tuple, iter_to_list, RunningStats, get_uid
 
 import numpy as np
 import pandas as pd
@@ -25,7 +27,7 @@ def action_value_function_compare_experiment(config, agent_configs, plot_labels)
     x = []
     xticks = []
     xticklabels = []
-    action_values = defaultdict(lambda:defaultdict(lambda: RunningStat(1)))
+    action_values = defaultdict(lambda:defaultdict(lambda: RunningStats()))
     agent_best_action = defaultdict(lambda: (float('inf'), None, None))
     for agent_name, agent_instance in agents.items():
         best_action, action_val, info = agent_instance.solve(init_state, 1)
@@ -63,7 +65,7 @@ def action_value_function_compare_experiment(config, agent_configs, plot_labels)
 
 def decision_epoch_experiment(config, agents, decision_epochs, plot_labels, ylabel, replication=1000):
     x = []
-    value_fuc_stats = defaultdict(lambda: defaultdict(lambda: RunningStat(1)))
+    value_fuc_stats = defaultdict(lambda: defaultdict(lambda: RunningStats()))
     env = config.env
     for decision_epoch in decision_epochs:
         print('decision_epoch:', decision_epoch)
@@ -99,7 +101,7 @@ def decision_epoch_experiment(config, agents, decision_epochs, plot_labels, ylab
 
 def coefficient_plot(config, agents, prefix):
     x = []
-    coefficient_fuc_stats = defaultdict(lambda: defaultdict(lambda: RunningStat(1)))
+    coefficient_fuc_stats = defaultdict(lambda: defaultdict(lambda: RunningStats()))
     env = config.env
     for agent_name, (agent, args) in agents.items():
         agent_instant = agent(env=env, discount_factor=env.discount_factor, **args)
@@ -121,6 +123,51 @@ def coefficient_plot(config, agents, prefix):
                                                    is_set_x_color=False)
 
 
+def action_opt_pct_compare_experiment(config, agent_configs, plot_labels, replication=1000):
+    env = config.env
+    init_state = config.init_state
+    new_arrival_t = config.init_state[1]
+    x = set()
+    xticks = []
+    xticklabels = []
+    action_values = defaultdict(lambda: defaultdict(lambda: RunningStats()))
+    agent_best_action = defaultdict(lambda: (None, None))
+    #sample_paths = [env.reset_arrivals(t=1) for _ in range(replication)]
+    agents = {agent_name: agent(env=env, discount_factor=env.discount_factor, **args) for agent_name, (agent, args) in
+              agent_configs.items()}
+    for agent_name, agent_instance in agents.items():
+        best_action, action_val, info = agent_instance.solve(init_state, 1)
+        agent_best_action[agent_name] = (None, best_action)
+    lower_bound_agent = SAAdvanceAgent(env=env, discount_factor=env.discount_factor)
+    for agent_name, agent_instance in agents.items():
+        policy_evaluator = PolicyEvaluator(env, agent_instance, env.discount_factor)
+        for i, action in enumerate(env.valid_actions(init_state, 1)):
+            x.add(i)
+            if agent_best_action[agent_name][1] is not None and np.array_equal(agent_best_action[agent_name][1][0], action[0]):
+                agent_best_action[agent_name] = (i, action[0])
+            for _ in range(replication):
+                sample_path = env.reset_arrivals(t=1)
+                sample_path[0] = new_arrival_t
+                uid = get_uid(sample_path.tolist())
+                pct_gap = policy_evaluator.sample_path_optimality_gap_evaluate(lower_bound_agent, init_state, 1,
+                                                                               sample_path, action)
+                print('sample num:', _, 'uid:', uid, 'pct_gap:', pct_gap)
+                action_values[agent_name][i].record(pct_gap)
+    for agent_name, (i, action) in agent_best_action.items():
+        xticks.append(i)
+        xticklabels.append(str(action))
+    approximate_value_plot_from_running_stats_dict(running_stats_dict=action_values,
+                                                   x_vals=sorted(list(x)),
+                                                   xticks=xticks,
+                                                   xticklabels=xticklabels,
+                                                   xlabel='Best Action',
+                                                   ylabel="Percentage Optimality Gap (%)",
+                                                   plot_labels=plot_labels,
+                                                   title=None,
+                                                   save_file='action_value_comparison_ALP',
+                                                   is_show_text=False,
+                                                   is_set_x_color=True)
+
 if __name__ == '__main__':
     from experiments import get_config_by_type
 
@@ -131,15 +178,12 @@ if __name__ == '__main__':
         'Myopic Policy': (SAAdvanceAgent, {'sample_path_number': 500, 'is_myopic': True}),
         'Heterogeneous ALP Policy': (HeterogeneousALPRowGenerationAgent, {'pretrain': True}),
         'Hindsight Approx Policy': (SAAdvanceAgent, {'sample_path_number': 500}),
-        #'Optimal Policy': (OptimalAgent, {'pretrain':True, 'state':config.init_state, 't':1})
+        'Optimal Policy': (OptimalAgent, {'pretrain':True, 'state':config.init_state, 't':1})
     }
     plot_labels = {key:key for key in agent_configs}
-    '''
-    agent_configs = {
-        'EJOR Agent': (ALPEJORAgent, {'pretrain': True})
-    }
-    '''
+
     #plot_labels = {key: key for key in agent_configs}
-    #action_value_function_compare_experiment(config, agent_configs,  plot_labels)
-    decision_epoch_experiment(config, agent_configs, [decision_epoch for decision_epoch in range(1, 11)], plot_labels, ylabel='Percentage Optimality Gap (%)')
+    action_value_function_compare_experiment(config, agent_configs,  plot_labels)
+    #decision_epoch_experiment(config, agent_configs, [decision_epoch for decision_epoch in range(1, 11)], plot_labels, ylabel='Percentage Optimality Gap (%)')
     #coefficient_plot(config, agent_configs, prefix='type')
+    #action_opt_pct_compare_experiment(config, agent_configs, plot_labels)

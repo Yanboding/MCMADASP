@@ -40,31 +40,38 @@ class ColumnGenerationSolver:
         return True
 
     def initial_columns_solve(self, tol=1e-6, max_iter=3000):
-        iteration = 0
-        while iteration < max_iter:
-            if solve_and_handle_errors(self.master_model):
-                duals = [constr.Pi for constr in self.master_model.getConstrs()]
-                s_val = self.master_model.getVarByName("init_s").X
-                print('S val:', s_val)
-                if s_val < tol:
-                    break
-                #duals = [constr.Pi for constr in self.master_model.getConstrs()]
-                #print('duals:',duals)
-                # 3. Pricing (column generation)
-                for candidate, reduce_cost in self.pricing_callback(duals):
-                    if reduce_cost < -tol and str(candidate) not in self.candidates:
-                        # print(f'iterations: {iteration}, try to add {candidate} with reduce_cost {reduce_cost}')
-                        self.add_column(candidate=candidate, col_name=f"x_{iteration}")
-                        break
-                    else:
-                        print("     No improving column found for Phase‑I (rc≥0).")
-                        break
-                iteration += 1
+        for iteration in range(max_iter):
+            print(f"\n--- Iteration {iteration + 1} ---")
+            if iteration == 0:
+                # 0. add initial columns to the master model
+                for i, candidate in enumerate(self.initial_candidates):
+                    self.add_column(candidate=candidate, col_name=f"init_X({i + 1})")
             else:
-                raise ValueError('no solution')
-        return self.candidates_list
+                duals = [clean_value(constr.Pi, 1e-8) for constr in self.master_model.getConstrs()]
+                print('duals:', duals)
+                is_column_added = False
+                # separation_callback yields the row and violation in decreasing order
+                for candidate, reduce_cost in self.pricing_callback(duals):
+                    print('candidate:', candidate, 'reduce_cost:', reduce_cost, -reduce_cost > tol)
+                    if -reduce_cost > tol and (is_column_added :=self.add_column(candidate=candidate, col_name=f'X({iteration})')):
+                        break
+                print('is_column_added:', is_column_added)
+                if not is_column_added:
+                    print(f"Optimal solution found after {iteration+1} iterations.")
+                    break  # No new, valid, improving column was found
+            # 3. Optimize the current relaxed master model
+            if not solve_and_handle_errors(self.master_model):
+                print("Master problem could not be solved to optimality. Aborting.")
+                break
+            if clean_value(self.master_model.getVarByName("init_s").X, 1e-8) < tol:
+                print([clean_value(constr.Pi, tol) for constr in self.master_model.getConstrs()])
+                return self.candidates_list
+        self.master_model.write('initial_columns_failed.lp')
+        print("Final: ", self.master_model.ObjVal)
+        #return self.candidates_list
+        raise ValueError('Finding feasible columns failed!')
 
-    def solve(self, tol=1e-4, max_iter=3000):
+    def solve(self, tol=1e-6, max_iter=3000):
         for iteration in range(max_iter):
             print(f"\n--- Iteration {iteration + 1} ---")
             if iteration == 0:
@@ -73,7 +80,7 @@ class ColumnGenerationSolver:
                     self.add_column(candidate=candidate, col_name=f"init_X({i + 1})")
             else:
                 # 2. Get dual values
-                duals = [clean_value(constr.Pi, tol) for constr in self.master_model.getConstrs()]
+                duals = [clean_value(constr.Pi, 1e-8) for constr in self.master_model.getConstrs()]
                 is_column_added = False
                 # separation_callback yields the row and violation in decreasing order
                 for candidate, reduce_cost in self.pricing_callback(duals):
