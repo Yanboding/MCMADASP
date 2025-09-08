@@ -182,7 +182,7 @@ class ExperimentConfig:
             'holding_cost_by_day_by_type':([132.5] * 3 + [100] * 3 + [66.25] * 6 + [27.5] * 2 + [25] * 3 + [20] * 1)[:class_num],
             'overtime_cost_by_day': 100,
             'duration':1,
-            'regular_capacity':15,
+            'regular_capacity':120,
             'discount_factor':0.99,
             'reset_params':{
                         'percentage_occupied': 0,

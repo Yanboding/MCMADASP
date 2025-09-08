@@ -265,12 +265,12 @@ class SAAdvanceAgent:
         return np.append(x.reshape(-1), y)
 
     def solve(self, state, t, action=None, tol=1e-6, max_iter=3000, verbose=False):
+        if self.is_myopic or self.sample_path_number <= 10:
+            action, obj_value, info = self.direct_solve(state, t, action=action)
+            return action, obj_value, info
         lower_bound = -GRB.INFINITY
         upper_bound = GRB.INFINITY
         master_model, imm_cost, theta_vars, action_t_var = self.master_problem(state, t)
-        if self.is_myopic:
-            action, obj_value, info = self.direct_solve(state, t, action=action)
-            return action, obj_value, info
         if action is not None:
             self.set_action(action_var=action_t_var, action=action)
         sub_models = [self.subproblem_builder(state=state, t=t, scenario_id=scenario_id) for scenario_id in range(self.sample_path_number)]

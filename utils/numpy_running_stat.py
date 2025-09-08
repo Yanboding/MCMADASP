@@ -21,6 +21,10 @@ class RunningStats:
     @property
     def mean(self) -> float:
         return self._mean if self._n > 0 else 0.0
+    
+    @property
+    def var_sum(self) -> float:
+        return self._m2 if self._n > 0 else 0.0
 
     @property
     def variance(self) -> float:

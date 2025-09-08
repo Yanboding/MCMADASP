@@ -40,9 +40,9 @@ def experiment(experiment_name, param_value, env_args, agent_args, sample_path, 
         wait_time_by_type =[]
         for type_i, running_stat in env.wait_time_by_type.items():
             wait_time_by_type.append({"treatment_type":type_i,
-                                      "expect":running_stat.expect.tolist()[0],
-                                      "varSum":running_stat.varSum.tolist()[0],
-                                      "count":int(running_stat.count)})
+                                      "expect":running_stat.mean,
+                                      "varSum":running_stat.var_sum,
+                                      "count":int(running_stat.n)})
         stats['wait_time_by_type'] = wait_time_by_type
         stats['overtime'] = env.overtime.tolist()
         res['result'].append(stats)

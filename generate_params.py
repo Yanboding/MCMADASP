@@ -240,7 +240,7 @@ if __name__ == '__main__':
     EXPERIMENT_CONFIGS = {
         'decision_epoch': {
             'param_name': 'decision_epoch',
-            'param_values': [20, 30, 40],
+            'param_values': [30, 40, 50],
         },
         'occupancy_level': {
             'param_name': 'reset_params.percentage_occupied',
