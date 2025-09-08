@@ -200,6 +200,7 @@ class SAAdvanceAgent:
         sub_model = gp.Model(f"Subproblem_SA_Advance_{scenario_id}", env=self.grb_env)
         sub_model.setParam('InfUnbdInfo', 1)
         sub_model.setParam('DualReductions', 0)
+        sub_model.setParam("MultiObjPre", 0)
         # get u^t+1 and linking constrs
         action_t_var = self.get_action_var(model=sub_model, t=t, tau=0, advance_scheduling_type=GRB.CONTINUOUS)
         linking_constraints = self.build_linking_constraints(sub_model, action_t_var)
@@ -245,6 +246,8 @@ class SAAdvanceAgent:
     def master_problem(self, state, t):
         master_model = gp.Model(f"SA_Advance_Master", env=self.grb_env)
         master_model.setParam('DualReductions', 0)
+        master_model.setParam("MultiObjPre", 0)
+        master_model.setParam('MIPFocus', 1)
         # create action variables in period t
         action_t_var = self.get_action_var(model=master_model, t=t, tau=0, advance_scheduling_type=GRB.INTEGER)
         # add action constraint
@@ -261,10 +264,13 @@ class SAAdvanceAgent:
         x, y = action
         return np.append(x.reshape(-1), y)
 
-    def solve(self, state, t, action=None, tol=1e-6, max_iter=1000, verbose=False):
+    def solve(self, state, t, action=None, tol=1e-6, max_iter=3000, verbose=False):
         lower_bound = -GRB.INFINITY
         upper_bound = GRB.INFINITY
         master_model, imm_cost, theta_vars, action_t_var = self.master_problem(state, t)
+        if self.is_myopic:
+            action, obj_value, info = self.direct_solve(state, t, action=action)
+            return action, obj_value, info
         if action is not None:
             self.set_action(action_var=action_t_var, action=action)
         sub_models = [self.subproblem_builder(state=state, t=t, scenario_id=scenario_id) for scenario_id in range(self.sample_path_number)]
@@ -311,6 +317,8 @@ class SAAdvanceAgent:
             print('lower_bound:', lower_bound)
 
             print('-'*20)
+        print('Max iterations reached')
+        return action_t, upper_bound, {}
 
 
 

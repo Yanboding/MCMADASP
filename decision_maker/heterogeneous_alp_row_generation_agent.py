@@ -75,8 +75,9 @@ class HeterogeneousALPRowGenerationAgent(ALPAgent):
         for j in range(self.env.planning_horizon):
             for t in range(1, min(self.env.decision_epoch, self.env.planning_horizon - j) + 1):
                 obj += self.E_u_beta[t][j] * self.U_vars[t][j]
+        print(self.E_w_beta.keys())
         for i in range(self.env.num_types):
-            for t in range(1, self.env.planning_horizon + 1):
+            for t in range(1, self.env.decision_epoch + 1):
                 obj += self.E_w_beta[t][i] * self.W_vars[t][i]
         master_model.setObjective(obj, GRB.MAXIMIZE)
         master_model.update()

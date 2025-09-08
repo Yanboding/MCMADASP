@@ -238,18 +238,9 @@ if __name__ == '__main__':
     # --- Central Configuration for All Experiments ---
 
     EXPERIMENT_CONFIGS = {
-        'demand_rate': {
-            'param_name': 'total_arrival_rate',
-            'param_values': [4, 8, 12],
-            'param_modifier_fn': demand_rate_modifier
-        },
         'decision_epoch': {
             'param_name': 'decision_epoch',
-            'param_values': [20, 30],
-        },
-        'overtime_cost_by_day': {
-            'param_name': 'overtime_cost_by_day',
-            'param_values': [100, 150, 200],
+            'param_values': [20, 30, 40],
         },
         'occupancy_level': {
             'param_name': 'reset_params.percentage_occupied',
@@ -280,4 +271,5 @@ if __name__ == '__main__':
         dat_file='table.dat',
         is_reuse=False # Set to True to avoid regenerating files and only create the .dat
     )
+    
     

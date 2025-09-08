@@ -12,7 +12,6 @@ from utils import get_solution_value, ColumnGenerationSolver, solve_and_handle_e
 
 
 class HeterogeneousALPColumnGenerationAgent(ALPAgent):
-    TOKEN_WAIT = 15
 
     def __init__(self, env, discount_factor, V=None, Q=None, coefficients=None, pretrain=False):
         super().__init__(env, discount_factor, V, Q)

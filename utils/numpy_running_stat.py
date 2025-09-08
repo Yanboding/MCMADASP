@@ -46,6 +46,29 @@ class RunningStats:
         self._mean += delta / self._n
         delta2 = value - self._mean
         self._m2 += delta * delta2
+    
+    def record_batch(self, values, counts):
+        """
+        Update the running statistics with `counts[i]` copies of `values[i]`.
+
+        Parameters
+        ----------
+        values : 1‑D array‑like of constants            (e.g. waiting times 0,1,2,…)
+        counts : 1‑D array‑like of non‑negative integers (how many start after that wait)
+
+        The two arrays must have equal length.
+        """
+        m = counts.sum()
+        if m == 0:
+            return
+        batch_mean = (counts*values).sum()/m
+        batch_var_sum = (counts * (values - batch_mean) ** 2).sum()
+        # treat the batch as another RunningStat and merge once
+        tmp = RunningStats()
+        tmp._n = m
+        tmp._mean = batch_mean
+        tmp._m2 = batch_var_sum
+        self += tmp
 
     def half_window(self, confidence):
         half = 0
