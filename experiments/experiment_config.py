@@ -157,9 +157,9 @@ class ExperimentConfig:
 
     @classmethod
     def from_base_case(cls):
-        class_num = 9
+        class_num = 18
         env_args = {
-            'decision_epoch':20,
+            'decision_epoch':40,
             'arrival_rates':[0.19, 0.11, 0.11, 1.43, 0.59, 0.45, 1.42, 1.36, 0.57, 0.38, 0.18, 0.18, 0.29, 0.21, 0.3, 0.29, 0.15, 0.04][:class_num],
             'patterns':['1* 2 + 4 * 1',
                         '1*2',

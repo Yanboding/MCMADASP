@@ -179,6 +179,18 @@ class SAAdvanceAgent:
         action, obj_value, info = self.solve(state, t)
         return action
 
+    def build_linking_constraints(self, model, action_t_var):
+        x_t_var, y_t_var = action_t_var
+        linking_constraints = []
+        for j, row in enumerate(x_t_var):
+            for i, var in enumerate(row):
+                constraint = model.addConstr(var == 0.0, name=f'link_x_{j},{i}')
+                linking_constraints.append(constraint)
+        for j, var in enumerate(y_t_var):
+            constraint = model.addConstr(var == 0.0, name=f'link_y_{j}')
+            linking_constraints.append(constraint)
+        return linking_constraints
+
     def subproblem_builder(self, state, t, scenario_id):
         H = self.env.decision_epoch - t
         P = self.env.planning_horizon - t
@@ -189,15 +201,8 @@ class SAAdvanceAgent:
         sub_model.setParam('InfUnbdInfo', 1)
         sub_model.setParam('DualReductions', 0)
         # get u^t+1 and linking constrs
-        action_t_var = (x_t_var, y_t_var) = self.get_action_var(model=sub_model, t=t, tau=0, advance_scheduling_type=GRB.CONTINUOUS)
-        linking_constraints = []
-        for j, row in enumerate(x_t_var):
-            for i, var in enumerate(row):
-                constraint = sub_model.addConstr(var == 0.0, name=f'link_x_{j},{i}')
-                linking_constraints.append(constraint)
-        for j, var in enumerate(y_t_var):
-            constraint = sub_model.addConstr(var == 0.0, name=f'link_y_{j}')
-            linking_constraints.append(constraint)
+        action_t_var = self.get_action_var(model=sub_model, t=t, tau=0, advance_scheduling_type=GRB.CONTINUOUS)
+        linking_constraints = self.build_linking_constraints(sub_model, action_t_var)
         # Initialize scenario state and action like in direct solution
         u_t_tau_var = self.env.get_next_regular_bookings(state, action_t_var, is_var=True)
         fut_cost = 0
@@ -215,13 +220,17 @@ class SAAdvanceAgent:
         sub_model.setObjective(fut_cost, GRB.MINIMIZE)
         return sub_model, linking_constraints
 
-    def solve_subproblem(self, sub_model, linking_constraints, action_t):
-        # @variable(model, x[i in 1:n, j in 1:n] == x_bar[i, j])
+    def set_linking_constraints_rhs(self, sub_model, linking_constraints, action_t):
+        # Flatten in the same order as self.flatten(action)
         action_flat = self.flatten(action_t)
         for i, constr in enumerate(linking_constraints):
             constr.setAttr("RHS", action_flat[i])
         sub_model.update()
-        if solve_and_handle_errors(sub_model):
+
+    def solve_subproblem(self, sub_model, linking_constraints, action_t, verbose=False):
+        # @variable(model, x[i in 1:n, j in 1:n] == x_bar[i, j])
+        self.set_linking_constraints_rhs(sub_model, linking_constraints, action_t)
+        if solve_and_handle_errors(sub_model, verbose=verbose):
             v = sub_model.ObjVal
             duals = np.array([linking_constraints[j].Pi for j in range(len(linking_constraints))])
             return True, v, duals
@@ -235,7 +244,6 @@ class SAAdvanceAgent:
 
     def master_problem(self, state, t):
         master_model = gp.Model(f"SA_Advance_Master", env=self.grb_env)
-        master_model.setParam('InfUnbdInfo', 1)
         master_model.setParam('DualReductions', 0)
         # create action variables in period t
         action_t_var = self.get_action_var(model=master_model, t=t, tau=0, advance_scheduling_type=GRB.INTEGER)
@@ -244,7 +252,7 @@ class SAAdvanceAgent:
         # set imm_cost and a cost to go lb
         theta_vars = np.array([master_model.addVar(vtype=GRB.CONTINUOUS, name=f"theta_{omega}") for omega in range(len(self.delta))])
         imm_cost = self.env.cost_fn(state, action_t_var, t)
-        z = imm_cost + theta_vars.sum()/len(self.delta)
+        z = imm_cost + theta_vars.sum()/self.sample_path_number
         master_model.setObjective(z, GRB.MINIMIZE)
         master_model.update()
         return master_model, imm_cost, theta_vars, action_t_var
@@ -253,22 +261,22 @@ class SAAdvanceAgent:
         x, y = action
         return np.append(x.reshape(-1), y)
 
-    def solve(self, state, t, action=None, tol=1e-6, max_iter=1000):
+    def solve(self, state, t, action=None, tol=1e-6, max_iter=1000, verbose=False):
         lower_bound = -GRB.INFINITY
         upper_bound = GRB.INFINITY
         master_model, imm_cost, theta_vars, action_t_var = self.master_problem(state, t)
         if action is not None:
             self.set_action(action_var=action_t_var, action=action)
-        sub_models = [self.subproblem_builder(state=state, t=t, scenario_id=scenario_id) for scenario_id in range(len(self.delta))]
+        sub_models = [self.subproblem_builder(state=state, t=t, scenario_id=scenario_id) for scenario_id in range(self.sample_path_number)]
         # for k in 1:MAXIMUM_ITERATIONS
         for iteration in range(max_iter):
             print('Iteration:', iteration+1, 'Start')
             # optimize!(model)
             # assert_is_solved_and_feasible(model)
-            if not solve_and_handle_errors(master_model):
+            if not solve_and_handle_errors(master_model, verbose=verbose):
                 raise RuntimeError("Master model optimal solution not found")
             # lower_bound = objective_value(model)
-            lower_bound = max(master_model.ObjVal, lower_bound)
+            lower_bound = master_model.ObjVal
             # x_k = value.(x)
             action_t = self.get_solution(action_t_var)
             flat_action_t_var = self.flatten(action_t_var)
@@ -277,7 +285,7 @@ class SAAdvanceAgent:
             opt_cuts = []
             for scenario_id in range(len(self.delta)):
                 sub_model, linking_constraints = sub_models[scenario_id]
-                is_feasible, v, duals = self.solve_subproblem(sub_model=sub_model, linking_constraints=linking_constraints, action_t=action_t)
+                is_feasible, v, duals = self.solve_subproblem(sub_model=sub_model, linking_constraints=linking_constraints, action_t=action_t, verbose=verbose)
                 if not is_feasible:
                     cut_expr = v + np.dot(duals, flat_action_t_var - flat_action_t)
 
@@ -294,10 +302,9 @@ class SAAdvanceAgent:
             else:
                 master_model.addConstrs((opt_cuts[i] for i in range(len(opt_cuts))), name="opt_cut_")
                 cost_to_go_estimation = cost_to_go_estimation / self.sample_path_number
-                current_upper_bound = imm_cost.getValue() + cost_to_go_estimation
-                upper_bound = min(upper_bound, current_upper_bound)
+                upper_bound = imm_cost.getValue() + cost_to_go_estimation
                 # Average the future cost across scenarios like in direct solution
-                if abs(upper_bound - lower_bound) < tol:
+                if abs(upper_bound - lower_bound)/abs(upper_bound) < tol:
                     return action_t, master_model.ObjVal, {}
             master_model.update()
             print('upper_bound:', upper_bound)
@@ -310,7 +317,7 @@ class SAAdvanceAgent:
 if __name__ =="__main__":
     from experiments import get_config_by_type
 
-    config = get_config_by_type('base_case')
+    config = get_config_by_type('adv_default')
     env = config.env
     discount_factor = env.discount_factor
     agent = SAAdvanceAgent(env, discount_factor, **{'sample_path_number': 50, 'is_myopic':False})
