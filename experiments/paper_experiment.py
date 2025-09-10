@@ -6,7 +6,7 @@ import pandas as pd
 import numpy as np
 import glob
 
-from utils import RunningStat
+from utils import RunningStats
 from visualization import approximate_value_plot_from_running_stats_dict
 
 
@@ -22,10 +22,10 @@ def plot_experiment_result(directory_path, plot_labels, experiment_lables):
                       with one row per agent per simulation run.
     """
     print('parent_directory', directory_path)
-    pct_opt_gap = defaultdict(lambda:defaultdict(lambda: RunningStat(1)))
-    wait_time_by_type_by_agent = defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: RunningStat(1))))
-    total_average_wait_time = defaultdict(lambda: defaultdict(lambda: RunningStat(1)))
-    total_overtime_by_day_by_agent = defaultdict(lambda: defaultdict(lambda: RunningStat(1)))
+    pct_opt_gap = defaultdict(lambda:defaultdict(lambda: RunningStats()))
+    wait_time_by_type_by_agent = defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: RunningStats())))
+    total_average_wait_time = defaultdict(lambda: defaultdict(lambda: RunningStats()))
+    total_overtime_by_day_by_agent = defaultdict(lambda: defaultdict(lambda: RunningStats()))
     x_values = set()
     treatment_types = set()
     pattern = os.path.join(directory_path, '*.jsonl')
@@ -53,12 +53,12 @@ def plot_experiment_result(directory_path, plot_labels, experiment_lables):
                             for wait_time_by_type in agent_result['wait_time_by_type']:
                                 treatment_type = wait_time_by_type['treatment_type']
                                 treatment_types.add(treatment_type)
-                                wait_time_stats = RunningStat(1)
-                                wait_time_stats.expect = np.array([wait_time_by_type['expect']])
-                                wait_time_stats.varSum = np.array([wait_time_by_type['varSum']])
+                                wait_time_stats = RunningStats()
+                                wait_time_stats.expect = wait_time_by_type['expect']
+                                wait_time_stats.varSum = wait_time_by_type['varSum']
                                 wait_time_stats.count = wait_time_by_type['count']
-                                wait_time_by_type_by_agent[param_value][agent_name][treatment_type].merge(wait_time_stats)
-                                total_average_wait_time[agent_name][param_value].merge(wait_time_stats)
+                                wait_time_by_type_by_agent[param_value][agent_name][treatment_type]+=wait_time_stats
+                                total_average_wait_time[agent_name][param_value]+=wait_time_stats
                             for overtime in agent_result['overtime']:
                                 total_overtime_by_day_by_agent[agent_name][param_value].record(overtime)
                 except (json.JSONDecodeError, KeyError) as e:
@@ -128,7 +128,8 @@ if __name__ == '__main__':
     # Load and process the data
     #plot_experiment_result('results/demand_rate', plot_labels, experiment_lables)
     #plot_experiment_result('results/occupancy_level', plot_labels, experiment_lables)
-    plot_experiment_result('results/higher_demand_rate', plot_labels, experiment_lables)
+    #plot_experiment_result('results/higher_demand_rate', plot_labels, experiment_lables)
+    plot_experiment_result('results/decision_epoch', plot_labels, experiment_lables)
 
     '''
     if not results_df.empty:

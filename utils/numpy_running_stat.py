@@ -1,3 +1,4 @@
+import numpy as np
 import numbers
 from math import sqrt
 import scipy.stats as st
@@ -27,6 +28,10 @@ class RunningStats:
         return self._m2 if self._n > 0 else 0.0
 
     @property
+    def var_sum(self) -> float:
+        return self._m2 if self._n > 0 else 0.0
+
+    @property
     def variance(self) -> float:
         if self._n < 2: return 0.0
         return self._m2 / (self._n - 1)
@@ -51,6 +56,29 @@ class RunningStats:
         delta2 = value - self._mean
         self._m2 += delta * delta2
     
+    def record_batch(self, values, counts):
+        """
+        Update the running statistics with `counts[i]` copies of `values[i]`.
+
+        Parameters
+        ----------
+        values : 1‑D array‑like of constants            (e.g. waiting times 0,1,2,…)
+        counts : 1‑D array‑like of non‑negative integers (how many start after that wait)
+
+        The two arrays must have equal length.
+        """
+        m = counts.sum()
+        if m == 0:
+            return
+        batch_mean = (counts*values).sum()/m
+        batch_var_sum = (counts * (values - batch_mean) ** 2).sum()
+        # treat the batch as another RunningStat and merge once
+        tmp = RunningStats()
+        tmp._n = m
+        tmp._mean = batch_mean
+        tmp._m2 = batch_var_sum
+        self += tmp
+
     def record_batch(self, values, counts):
         """
         Update the running statistics with `counts[i]` copies of `values[i]`.
@@ -141,36 +169,8 @@ class RunningStats:
         return meanDiff, halfWindow
 
 if __name__ == "__main__":
-    import numpy as np
-
     print("--- Example 1: Basic Usage ---")
     rs = RunningStats()
-    for i in [10, 20, 15, 25, 30]:
-        rs += i  # Use the += operator
-
-    print(repr(rs))
-    print(str(rs))
-
-    print("\n--- Example 2: NumPy Vectorized Operation ---")
-    stats_array = np.array([RunningStats() for _ in range(5)])
-    samples = [1, 2, 3, 4, 5]
-    stats_array += samples  # NumPy calls our __iadd__ on each element
-
-    for i, stat in enumerate(stats_array):
-        print(f"Stat[{i}]: {repr(stat)}")
-
-    print("\n--- Example 3: Merging two instances ---")
-    rs1 = RunningStats()
-    rs1 += 1;
-    rs1 += 2
-
-    rs2 = RunningStats()
-    rs2 += 9;
-    rs2 += 10
-
-    # The `+` operator returns a new, combined instance
-    rs_combined = rs1 + rs2
-    print(f"rs1:      {repr(rs1)}")
-    print(f"rs2:      {repr(rs2)}")
-    print(f"Combined: {repr(rs_combined)}")
-    # The combined mean of (1, 2, 9, 10) is 5.5
+    rs.record_batch(np.array([1,2,3]), np.array([10, 1, 2]))
+    print(rs.mean)
+    print(rs.var_sum)

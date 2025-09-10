@@ -158,6 +158,28 @@ class ExperimentConfig:
     @classmethod
     def from_base_case(cls):
         class_num = 18
+        l1_3 = [(0, 1, 0), (1, 5, 100), (5, 100, 150)]
+        l4_6 = [(0, 10, 0), (10, 20, 50), (20, 40, 100), (40, 100, 150)]
+        l7_12 = [(0, 5, 0), (5, 10, 65), (10, 40, 100), (40, 100, 150)]
+        l13_14 = [(0, 5, 0), (5, 10, 80), (10, 100, 150)]
+        l15_17 = [(0, 10, 0), (10, 20, 40), (20, 30, 80), (30, 40, 100), (40, 100, 150)]
+        l18 = [(0, 10, 0), (10, 20, 50), (20, 30, 90), (30, 40, 100), (40, 100, 150)]
+        holding_cost = []
+        for i in range(class_num):
+            if 0 <= i < 3:
+                wait_cost_by_day = wait_time(l1_3)
+            elif 3 <= i < 6:
+                wait_cost_by_day = wait_time(l4_6)
+            elif 6 <= i < 12:
+                wait_cost_by_day = wait_time(l7_12)
+            elif 12 <= i < 14:
+                wait_cost_by_day = wait_time(l13_14)
+            elif 14 <= i < 17:
+                wait_cost_by_day = wait_time(l15_17)
+            elif 17 <= i < 18:
+                wait_cost_by_day = wait_time(l18)
+            holding_cost.append(wait_cost_by_day)
+        holding_cost = np.array(holding_cost).T
         env_args = {
             'decision_epoch':40,
             'arrival_rates':[0.19, 0.11, 0.11, 1.43, 0.59, 0.45, 1.42, 1.36, 0.57, 0.38, 0.18, 0.18, 0.29, 0.21, 0.3, 0.29, 0.15, 0.04][:class_num],
@@ -179,7 +201,7 @@ class ExperimentConfig:
                         '1 * 2 + 36 * 1',
                         '1 * 2 + 21 * 1 + 1 * 2 + 14 * 1',
                         '1 * 2 + 32 * 1'][:class_num],
-            'holding_cost_by_day_by_type':([132.5] * 3 + [100] * 3 + [66.25] * 6 + [27.5] * 2 + [25] * 3 + [20] * 1)[:class_num],
+            'holding_cost_by_day_by_type':holding_cost[:class_num],
             'overtime_cost_by_day': 100,
             'duration':1,
             'regular_capacity':120,
@@ -410,5 +432,5 @@ def get_config_by_type(case_type, args=None):
     return config
 
 if __name__ == '__main__':
-    config = get_config_by_type('ejor_default')
-    print(config.valid_action)
+    config = get_config_by_type('base_case')
+    print(config)

@@ -5,7 +5,7 @@ import numpy as np
 import gurobipy as gp
 from gurobipy import GRB
 
-from utils import get_solution_value, RunningStats, solve_and_handle_errors
+from utils import get_solution_value, solve_and_handle_errors
 
 
 class SAAdvanceAgent:
@@ -317,8 +317,6 @@ class SAAdvanceAgent:
             print('lower_bound:', lower_bound)
 
             print('-'*20)
-        print('Max iterations reached')
-        return action_t, upper_bound, {}
 
 
 
