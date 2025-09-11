@@ -96,7 +96,6 @@ class ExperimentConfig:
                 wait_cost_by_day = wait_time(l18)
             holding_cost.append(wait_cost_by_day)
         holding_cost = np.array(holding_cost).T
-        print(sum([0.19, 0.11, 0.11, 1.43, 0.59, 0.45, 1.42, 1.36, 0.57, 0.38, 0.18, 0.18, 0.29, 0.21, 0.3, 0.29, 0.15, 0.04]))
         env_args = {
             'decision_epoch':50,
             'arrival_rates':[0.19, 0.11, 0.11, 1.43, 0.59, 0.45, 1.42, 1.36, 0.57, 0.38, 0.18, 0.18, 0.29, 0.21, 0.3, 0.29, 0.15, 0.04][:class_num],
@@ -121,7 +120,7 @@ class ExperimentConfig:
             'holding_cost_by_day_by_type': holding_cost[:,:class_num],
             'overtime_cost_by_day': 100,
             'duration':1,
-            'regular_capacity':12,
+            'regular_capacity':120,
             'discount_factor':0.99,
             'reset_params':{
                         'percentage_occupied': 0,

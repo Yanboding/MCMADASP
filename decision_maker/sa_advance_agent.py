@@ -6,33 +6,7 @@ import numpy as np
 import gurobipy as gp
 from gurobipy import GRB
 
-from utils import get_solution_value, solve_and_handle_errors, clean_value
-
-
-def acquire_grb_env(kwargs=None, verbose=False, wait=15):
-    """
-    Try to create and start a gp.Env.  If all tokens are in use,
-    wait <wait> seconds and retry indefinitely.
-    """
-    while True:
-        try:
-            grb_env = gp.Env(empty=True)  # no token yet
-            if kwargs:
-                for key, value in kwargs.items():
-                    grb_env.setParam(key, value)
-            if not verbose:
-                grb_env.setParam("OutputFlag", 0)
-            grb_env.start()  # tries to grab ONE token
-            if verbose:
-                print('Get one token...')
-            return grb_env  # success
-        except gp.GurobiError as e:
-            if "All tokens currently in use" in str(e):
-                if verbose:
-                    print('Waiting...')
-                time.sleep(wait)  # back‑off and try again
-            else:
-                raise  # some other licence error
+from utils import get_solution_value, solve_and_handle_errors, clean_value, acquire_grb_env
 
 # -----------------------------
 # Persistent scenario worker
@@ -447,44 +421,39 @@ class SAAdvanceAgent:
                     futures = {
                         ex.submit(w.solve, action_t, verbose): w.thread_id for w in workers
                     }
-                    cost_to_go_estimation = 0
-                    opt_cuts = []
-
+                    feasibility_cuts = []
+                    optimality_cuts = []
+                    cost_to_go_estimation = 0.0
+                    all_feasible = True
                     for future in concurrent.futures.as_completed(futures):
-                        # how to get scenario_id here?
-                        # how to connect theta_vars[scenario_id] here?
                         scenario_id = futures[future]
-                        print(scenario_id)
                         is_feasible, v, duals = future.result()
                         if not is_feasible:
                             print(f"Iteration {iteration}, scenario {scenario_id} infeasible; adding feasibility cut")
+                            all_feasible = False
                             # Add feasibility cut to master
                             cut_expr = v + np.dot(duals, flat_action_t_var - flat_action_t)
-
-                            master_model.addConstr(cut_expr >= 0,
-                                                   name=f"feasible_cut_{iteration}_{scenario_id}")
-                            for f in futures:
-                                if not f.done():
-                                    print('passing cancel to unfinished subproblems')
-                                    f.cancel()
-                            # An infeasible scenario invalidates the whole solution, so we break and re-solve master
-                            break
-                        # If feasible, generate the strengthened cut using the dynamic method
-                        # duals = self.generate_dynamic_cut_duals(sub_model, linking_constraints, flat_action_t, core_point_flat, mu)
-                        cost_to_go_estimation += v
-                        # cut = @constraint(model, θ >= ret.obj + sum(ret.π .* (x .- x_k)))
-                        cut_rhs = v + np.dot(duals, flat_action_t_var - flat_action_t)
-                        opt_cuts.append(theta_vars[scenario_id] >= cut_rhs)
+                            feasibility_cuts.append(cut_expr >= 0)
+                        else:
+                            # If feasible, generate the strengthened cut using the dynamic method
+                            cost_to_go_estimation += v
+                            # cut = @constraint(model, θ >= ret.obj + sum(ret.π .* (x .- x_k)))
+                            cut_rhs = v + np.dot(duals, flat_action_t_var - flat_action_t)
+                            optimality_cuts.append(theta_vars[scenario_id] >= cut_rhs)
+                    if not all_feasible:
+                        print(f"Iteration {iteration}, adding {len(feasibility_cuts)} feasibility cuts")
+                        # Some scenario infeasible: add feasibility cuts and repeat
+                        master_model.addConstrs((feasibility_cuts[i] for i in range(len(feasibility_cuts))), name="feas_cut_")
                     else:
-                        print(f"Iteration {iteration}, adding {len(opt_cuts)} optimality cuts")
+                        print(f"Iteration {iteration}, adding {len(optimality_cuts)} optimality cuts")
                         # All scenarios feasible: add optimality cuts and continue
-                        master_model.addConstrs((opt_cuts[i] for i in range(len(opt_cuts))), name="opt_cut_")
+                        master_model.addConstrs((optimality_cuts[i] for i in range(len(optimality_cuts))), name="opt_cut_")
                         cost_to_go_estimation = cost_to_go_estimation / self.sample_path_number
                         upper_bound = imm_cost.getValue() + cost_to_go_estimation
                         # Average the future cost across scenarios like in direct solution
                         if abs(upper_bound - lower_bound) < tol:
                             action_t = self.get_solution(action_t_var, is_final=True)
-                            return action_t, master_model.ObjVal, {}
+                            return action_t, upper_bound, {}
                     #master_model.update()
                     print('upper_bound:', upper_bound)
                     print('lower_bound:', lower_bound)
@@ -507,67 +476,9 @@ if __name__ =="__main__":
     agent = SAAdvanceAgent(env, discount_factor, **{'sample_path_number': 10, 'is_myopic':False})
     print('Init State:', config.init_state)
     print('Future arrivals:', agent.delta[0])
-    action = (np.array([
-        [3, 3, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-        [0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-        [0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-        [0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 3, 0, 0, 0, 0, 0, 0],
-        [0, 0, 0, 0, 0, 0, 0, 3, 3, 2, 3, 0, 3, 3, 0, 0, 0, 0],
-        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-        [0, 0, 0, 3, 3, 3, 0, 0, 0, 0, 0, 0, 0, 0, 3, 3, 3, 3],
-        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]]),
-              np.array([6., 0., 0., 0., 29., 9., 9., 8., 6., 48., 27., 27., 27.,
-                        27., 24., 24., 24., 24., 24., 21., 21., 21., 21., 21., 18., 12.,
-                        9., 9., 9., 6., 6., 9., 6., 6., 6., 6., 6., 6., 6.,
-                        0., 0., 0., 6., 0., 0., 0., 0., 0., 0., 0., 0., 0.,
-                        0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.,
-                        0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.,
-                        0., 0., 0., 0., 0., 0., 0., 0.]))
     start = time.time()
     #action = (np.array([[3, 1], [0, 2]]), np.array([2,0]))
-    #action=None
+    action=None
     action, obj_value, info= agent.solve(config.init_state, 1, action=action)
     print(time.time() - start)
     print('bender_decomposition:')
@@ -576,7 +487,6 @@ if __name__ =="__main__":
 
 
     start = time.time()
-
     action = None
     action, obj_value, info = agent.direct_solve(config.init_state, 1, action=action)
     print(time.time() - start)

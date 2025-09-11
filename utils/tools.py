@@ -1,5 +1,6 @@
 import ast
 import math
+import time
 from itertools import combinations, product
 
 import numpy as np
@@ -270,6 +271,31 @@ def read_lines_with_pattern(folder, pattern):
 def clean_value(value: float, tolerance: float) -> float:
     num_digits = int(-math.log10(tolerance)) + 1
     return round(value, num_digits) + 0.0
+
+def acquire_grb_env(kwargs=None, verbose=False, wait=15):
+    """
+    Try to create and start a gp.Env.  If all tokens are in use,
+    wait <wait> seconds and retry indefinitely.
+    """
+    while True:
+        try:
+            grb_env = gp.Env(empty=True)  # no token yet
+            if kwargs:
+                for key, value in kwargs.items():
+                    grb_env.setParam(key, value)
+            if not verbose:
+                grb_env.setParam("OutputFlag", 0)
+            grb_env.start()  # tries to grab ONE token
+            if verbose:
+                print('Get one token...')
+            return grb_env  # success
+        except gp.GurobiError as e:
+            if "All tokens currently in use" in str(e):
+                if verbose:
+                    print('Waiting...')
+                time.sleep(wait)  # back‑off and try again
+            else:
+                raise  # some other licence error
 
 
 if __name__ == '__main__':
