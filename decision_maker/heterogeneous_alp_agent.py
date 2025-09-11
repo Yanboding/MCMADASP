@@ -220,7 +220,7 @@ class HeterogeneousALPColumnGenerationAgent(ALPAgent):
         for column in self.env.generate_state_action_pairs():
             yield column
 
-    def train(self, debug=False, tol=1e-4, max_iter=3000):
+    def train(self, debug=False, tol=1e-4, max_iter=5000):
         if debug == True:
             initial_columns = self.generate_all_columns()
         else:
@@ -231,7 +231,6 @@ class HeterogeneousALPColumnGenerationAgent(ALPAgent):
                                                 get_constr_coefficients=self.get_constr_coefficients,
                                                 get_obj_coefficient=self.get_obj_coefficient)
         self.cg_solver.solve(tol=tol, max_iter=max_iter)
-        self.cg_solver.master_model.write('cg.lp')
         print('Candidates:')
         pprint(self.cg_solver.candidates_list)
         print('master obj:', self.cg_solver.master_model.ObjVal)
