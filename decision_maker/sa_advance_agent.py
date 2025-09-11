@@ -1,12 +1,123 @@
 import time
 from collections import defaultdict
+import concurrent.futures
 
 import numpy as np
 import gurobipy as gp
 from gurobipy import GRB
 
-from utils import get_solution_value, solve_and_handle_errors
+from utils import get_solution_value, solve_and_handle_errors, clean_value
 
+
+def acquire_grb_env(kwargs=None, verbose=False, wait=15):
+    """
+    Try to create and start a gp.Env.  If all tokens are in use,
+    wait <wait> seconds and retry indefinitely.
+    """
+    while True:
+        try:
+            grb_env = gp.Env(empty=True)  # no token yet
+            if kwargs:
+                for key, value in kwargs.items():
+                    grb_env.setParam(key, value)
+            if not verbose:
+                grb_env.setParam("OutputFlag", 0)
+            grb_env.start()  # tries to grab ONE token
+            if verbose:
+                print('Get one token...')
+            return grb_env  # success
+        except gp.GurobiError as e:
+            if "All tokens currently in use" in str(e):
+                if verbose:
+                    print('Waiting...')
+                time.sleep(wait)  # back‑off and try again
+            else:
+                raise  # some other licence error
+
+# -----------------------------
+# Persistent scenario worker
+# -----------------------------
+class SubproblemWorker:
+    """
+    One worker per scenario. Owns its own gp.Env and gp.Model.
+    Build once, then call solve(action) repeatedly.
+    """
+    def __init__(self, builder_fn, builder_args, thread_id:int, verbose:bool=True):
+        self.env = acquire_grb_env({"Threads": 1}, verbose=verbose)
+        if not verbose:
+            self.env.setParam("OutputFlag", 0)
+        # Important: avoid core oversubscription; parallelism is at outer level.
+        self.env.setParam("Threads", 1)
+        self.env.start()
+
+        # Build the model and linking constraints inside THIS env.
+        self.model, self.link_rows = builder_fn(env=self.env, **builder_args)
+        self.thread_id = thread_id
+        # Stash action^t variable tuple for quick flattening of variables when building cuts
+        # (the builder must set this)
+        assert hasattr(self.model, "_action_t_var"), "Builder must set model._action_t_var"
+        self._flat_action_vars_cache = None
+
+    def _flat_action_vars(self):
+        """
+        Returns a flat list of gurobi Var objects corresponding to action at period t.
+        Cached after first call.
+        """
+        if self._flat_action_vars_cache is None:
+            x_t, y_t = self.model._action_t_var
+            # x_t is a 2D array-like of Vars; y_t is 1D array-like
+            flat_x = [v for row in x_t for v in row]
+            flat_y = list(y_t)
+            self._flat_action_vars_cache = flat_x + flat_y
+        return self._flat_action_vars_cache
+
+    def _flatten_action_values(self, action):
+        """
+        Flattens an action=(x,y) value tuple into a 1D numpy array of numbers
+        using the same order as _flat_action_vars().
+        """
+        x, y = action
+        return np.concatenate([x.reshape(-1), y])
+
+    def set_link_rhs(self, action_flat_values):
+        """
+        Update RHS of linking constraints so they enforce: (action vars) == (action values).
+        Assumes link rows were built as equality rows var == 0 initially.
+        """
+        for i, constr in enumerate(self.link_rows):
+            constr.setAttr("RHS", float(action_flat_values[i]))
+        # No explicit update() needed; optimize() will sync.
+
+    def solve(self, action, verbose:bool=False):
+        """
+        Set links to the candidate master action and optimize the subproblem.
+        Return (is_feasible, objective_value, dual_vector_or_ray_on_link_rows).
+        """
+        action_flat = self._flatten_action_values(action)
+        self.set_link_rhs(action_flat)
+
+        if verbose:
+            self.model.Params.OutputFlag = 1
+        else:
+            self.model.Params.OutputFlag = 0
+
+        self.model.optimize()
+
+        if self.model.Status == GRB.OPTIMAL:
+            v = self.model.ObjVal
+            duals = np.array([c.Pi for c in self.link_rows], dtype=float)
+            return True, v, duals
+        else:
+            # Infeasible: use Farkas duals / ray
+            v = sum(c.FarkasDual * c.RHS for c in self.model.getConstrs())
+            ray = np.array([c.FarkasDual for c in self.link_rows], dtype=float)
+            return False, v, ray
+
+    def dispose(self):
+        try:
+            self.model.dispose()
+        finally:
+            self.env.dispose()
 
 class SAAdvanceAgent:
     TOKEN_WAIT = 15
@@ -28,7 +139,7 @@ class SAAdvanceAgent:
             self.Q = defaultdict(lambda: defaultdict(int))
         if V is None:
             self.V = {}
-        self.grb_env = self._acquire_grb_env()
+        self.grb_env = acquire_grb_env({"Threads": 1}, verbose=False, wait=SAAdvanceAgent.TOKEN_WAIT)
 
     def set_sample_paths(self, sample_path_number):
         self.sample_path_number = sample_path_number
@@ -46,28 +157,6 @@ class SAAdvanceAgent:
     def set_sample_path(self, sample_path):
         self.sample_path_number = 1
         self.delta = np.array([sample_path])
-    # ------------------------------------------------------------------
-    # Helper: wait‑until‑token‑free loop
-    # ------------------------------------------------------------------
-    def _acquire_grb_env(self, silent=True, wait=TOKEN_WAIT):
-        """
-        Try to create and start a gp.Env.  If all tokens are in use,
-        wait <wait> seconds and retry indefinitely.
-        """
-        while True:
-            try:
-                grb_env = gp.Env(empty=True)    # no token yet
-                if silent:
-                    grb_env.setParam("OutputFlag", 0)
-                grb_env.start()                 # tries to grab ONE token
-                print('Get one token...')
-                return grb_env                  # success
-            except gp.GurobiError as e:
-                if "All tokens currently in use" in str(e):
-                    print('Waiting...')
-                    time.sleep(wait)            # back‑off and try again
-                else:
-                    raise                       # some other licence error
 
     def add_action_space_constraints(self, model, state_var, action_var, t, tau):
         P = self.env.planning_horizon - t - tau
@@ -102,9 +191,12 @@ class SAAdvanceAgent:
         )
         return (x_var_t, y_var_t)
 
-    def get_solution(self, action_var):
+    def get_solution(self, action_var, is_final=False):
         x_var, y_var = action_var
-        x = get_solution_value(x_var).astype(int)
+        if is_final:
+            x = np.array([[clean_value(var.Xn, tolerance=1e-6) for var in row] for row in x_var]).astype(int)
+        else:
+            x = get_solution_value(x_var).astype(float)
         y = get_solution_value(y_var).astype(float)
         return (x, y)
 
@@ -121,6 +213,9 @@ class SAAdvanceAgent:
         H = self.env.decision_epoch - t
         # ---------- model ----------
         with (gp.Model("SA_Advance", env=self.grb_env) as m):
+            m.setParam('DualReductions', 0)
+            m.setParam("MultiObjPre", 0)
+            m.setParam('MIPFocus', 1)
             # ---------- 1. today’s increments ----------
             action_var_t = self.get_action_var(model=m, t=t, tau=0, advance_scheduling_type=GRB.INTEGER)
             if action is not None:
@@ -169,7 +264,7 @@ class SAAdvanceAgent:
                 print('future_cost:', fut_cost.getValue())
             # ---------- 8. return ----------
             if m.Status == GRB.OPTIMAL:
-                action = self.get_solution(action_var_t)
+                action = self.get_solution(action_var_t, is_final=True)
                 return action, m.ObjVal, {}
             else:
                 m.write('not_optimal.lp')
@@ -221,6 +316,63 @@ class SAAdvanceAgent:
         sub_model.setObjective(fut_cost, GRB.MINIMIZE)
         return sub_model, linking_constraints
 
+    # ---------------------------------------------------
+    # Subproblem builder used by workers
+    # ---------------------------------------------------
+    def _subproblem_build_for_worker(self, env, state, t, scenario_id):
+        H = self.env.decision_epoch - t
+        P = self.env.planning_horizon - t
+        I = self.env.num_types
+
+        sub = gp.Model(f"Subproblem_SA_Advance_{scenario_id}", env=env)
+        sub.Params.InfUnbdInfo = 1
+        sub.Params.DualReductions = 0
+        sub.Params.MultiObjPre = 0
+        sub.Params.OutputFlag = 0
+
+        # action at t (continuous here; we only link its value)
+        action_t_var = self.get_action_var(model=sub, t=t, tau=0, advance_scheduling_type=GRB.CONTINUOUS)
+        link_rows = self.build_linking_constraints(sub, action_t_var)
+
+        # Build future chain for this scenario (fixed arrivals = self.delta[scenario_id, tau])
+        u_t1_var = self.env.get_next_regular_bookings(state, action_t_var, is_var=True)
+        fut_cost = 0.0
+        for tau in range(1, H + 1):
+            s_tau = (u_t1_var, self.delta[scenario_id, tau])
+            x_tau, y_tau = self.get_action_var(model=sub, t=t, tau=tau, advance_scheduling_type=GRB.CONTINUOUS)
+
+            # action feasibility at t+tau; here arrivals are fixed numbers
+            sub.addConstrs(
+                (gp.quicksum(x_tau[j, i] for j in range(x_tau.shape[0])) == self.delta[scenario_id, tau, i]
+                 for i in range(I)),
+                name=f"valid_advance_scheduling_{t + tau}"
+            )
+
+            bar_u_tau, _ = self.env.post_action_state(s_tau, (x_tau, y_tau), is_var=True)
+            sub.addConstrs(
+                (bar_u_tau[m] <= self.env.regular_capacity for m in range(P - tau + 1)),
+                name=f"valid_post_action_regular_bookings_{t + tau}"
+            )
+
+            fut_cost += (self.env.discount_factor ** tau) * self.env.cost_fn(s_tau, (x_tau, y_tau), t + tau)
+
+            # shift bookings: u^{t+tau} := bar_u^{t+tau}[1:]
+            if P - tau > 0:
+                u_t1_var = np.array(
+                    [sub.addVar(vtype=GRB.CONTINUOUS, name=f"u^{t + tau}_{j}") for j in range(P - tau)])
+                sub.addConstrs(
+                    (u_t1_var[j] == bar_u_tau[j + 1] for j in range(P - tau)),
+                    name=f"transit{t + tau}"
+                )
+            else:
+                u_t1_var = np.array([], dtype=object)
+
+        sub.setObjective(fut_cost, GRB.MINIMIZE)
+
+        # Let worker cache these for fast cut construction
+        sub._action_t_var = action_t_var
+        return sub, link_rows
+
     def set_linking_constraints_rhs(self, sub_model, linking_constraints, action_t):
         # Flatten in the same order as self.flatten(action)
         action_flat = self.flatten(action_t)
@@ -257,7 +409,6 @@ class SAAdvanceAgent:
         imm_cost = self.env.cost_fn(state, action_t_var, t)
         z = imm_cost + theta_vars.sum()/self.sample_path_number
         master_model.setObjective(z, GRB.MINIMIZE)
-        master_model.update()
         return master_model, imm_cost, theta_vars, action_t_var
 
     def flatten(self, action):
@@ -265,90 +416,173 @@ class SAAdvanceAgent:
         return np.append(x.reshape(-1), y)
 
     def solve(self, state, t, action=None, tol=1e-6, max_iter=3000, verbose=False):
-        if self.is_myopic or self.sample_path_number <= 10:
+        if self.is_myopic or self.sample_path_number <= 1:
             action, obj_value, info = self.direct_solve(state, t, action=action)
             return action, obj_value, info
         lower_bound = -GRB.INFINITY
         upper_bound = GRB.INFINITY
         master_model, imm_cost, theta_vars, action_t_var = self.master_problem(state, t)
+        flat_action_t_var = self.flatten(action_t_var)
         if action is not None:
             self.set_action(action_var=action_t_var, action=action)
-        sub_models = [self.subproblem_builder(state=state, t=t, scenario_id=scenario_id) for scenario_id in range(self.sample_path_number)]
-        # for k in 1:MAXIMUM_ITERATIONS
-        for iteration in range(max_iter):
-            print('Iteration:', iteration+1, 'Start')
-            # optimize!(model)
-            # assert_is_solved_and_feasible(model)
-            if not solve_and_handle_errors(master_model, verbose=verbose):
-                raise RuntimeError("Master model optimal solution not found")
-            # lower_bound = objective_value(model)
-            lower_bound = master_model.ObjVal
-            # x_k = value.(x)
-            action_t = self.get_solution(action_t_var)
-            flat_action_t_var = self.flatten(action_t_var)
-            flat_action_t = self.flatten(action_t)
-            cost_to_go_estimation = 0
-            opt_cuts = []
-            for scenario_id in range(len(self.delta)):
-                sub_model, linking_constraints = sub_models[scenario_id]
-                is_feasible, v, duals = self.solve_subproblem(sub_model=sub_model, linking_constraints=linking_constraints, action_t=action_t, verbose=verbose)
-                if not is_feasible:
-                    cut_expr = v + np.dot(duals, flat_action_t_var - flat_action_t)
+        # Build one worker per scenario once, then reuse
+        builder_args = [{"state": state, "t": t, "scenario_id": sid} for sid in range(self.sample_path_number)]
+        with concurrent.futures.ThreadPoolExecutor(max_workers=self.sample_path_number) as ex:
+            workers = [
+                ex.submit(SubproblemWorker, self._subproblem_build_for_worker, builder_args[sid], sid, verbose).result()
+                for sid in range(self.sample_path_number)
+            ]
 
-                    master_model.addConstr(cut_expr >= 0,
-                                           name=f"feasible_cut_{iteration}_{scenario_id}")
-                    # An infeasible scenario invalidates the whole solution, so we break and re-solve master
-                    break
-                # If feasible, generate the strengthened cut using the dynamic method
-                #duals = self.generate_dynamic_cut_duals(sub_model, linking_constraints, flat_action_t, core_point_flat, mu)
-                cost_to_go_estimation += v
-                # cut = @constraint(model, θ >= ret.obj + sum(ret.π .* (x .- x_k)))
-                cut_rhs = v + np.dot(duals, flat_action_t_var - flat_action_t)
-                opt_cuts.append(theta_vars[scenario_id] >= cut_rhs)
-            else:
-                master_model.addConstrs((opt_cuts[i] for i in range(len(opt_cuts))), name="opt_cut_")
-                cost_to_go_estimation = cost_to_go_estimation / self.sample_path_number
-                upper_bound = imm_cost.getValue() + cost_to_go_estimation
-                # Average the future cost across scenarios like in direct solution
-                if abs(upper_bound - lower_bound)/abs(upper_bound) < tol:
-                    return action_t, master_model.ObjVal, {}
-            master_model.update()
-            print('upper_bound:', upper_bound)
-            print('lower_bound:', lower_bound)
+            try:
+                for iteration in range(1, max_iter + 1):
+                    if not solve_and_handle_errors(master_model, verbose=verbose):
+                        raise RuntimeError("Master model optimal solution not found")
+                    action_t = self.get_solution(action_t_var)
+                    flat_action_t = self.flatten(action_t)
 
-            print('-'*20)
+                    lower_bound = master_model.ObjVal
+
+                    # Ask all workers to solve for this action
+                    #futures = [ex.submit(w.solve, action_t, verbose) for w in workers]
+                    futures = {
+                        ex.submit(w.solve, action_t, verbose): w.thread_id for w in workers
+                    }
+                    cost_to_go_estimation = 0
+                    opt_cuts = []
+
+                    for future in concurrent.futures.as_completed(futures):
+                        # how to get scenario_id here?
+                        # how to connect theta_vars[scenario_id] here?
+                        scenario_id = futures[future]
+                        print(scenario_id)
+                        is_feasible, v, duals = future.result()
+                        if not is_feasible:
+                            print(f"Iteration {iteration}, scenario {scenario_id} infeasible; adding feasibility cut")
+                            # Add feasibility cut to master
+                            cut_expr = v + np.dot(duals, flat_action_t_var - flat_action_t)
+
+                            master_model.addConstr(cut_expr >= 0,
+                                                   name=f"feasible_cut_{iteration}_{scenario_id}")
+                            for f in futures:
+                                if not f.done():
+                                    print('passing cancel to unfinished subproblems')
+                                    f.cancel()
+                            # An infeasible scenario invalidates the whole solution, so we break and re-solve master
+                            break
+                        # If feasible, generate the strengthened cut using the dynamic method
+                        # duals = self.generate_dynamic_cut_duals(sub_model, linking_constraints, flat_action_t, core_point_flat, mu)
+                        cost_to_go_estimation += v
+                        # cut = @constraint(model, θ >= ret.obj + sum(ret.π .* (x .- x_k)))
+                        cut_rhs = v + np.dot(duals, flat_action_t_var - flat_action_t)
+                        opt_cuts.append(theta_vars[scenario_id] >= cut_rhs)
+                    else:
+                        print(f"Iteration {iteration}, adding {len(opt_cuts)} optimality cuts")
+                        # All scenarios feasible: add optimality cuts and continue
+                        master_model.addConstrs((opt_cuts[i] for i in range(len(opt_cuts))), name="opt_cut_")
+                        cost_to_go_estimation = cost_to_go_estimation / self.sample_path_number
+                        upper_bound = imm_cost.getValue() + cost_to_go_estimation
+                        # Average the future cost across scenarios like in direct solution
+                        if abs(upper_bound - lower_bound) < tol:
+                            action_t = self.get_solution(action_t_var, is_final=True)
+                            return action_t, master_model.ObjVal, {}
+                    #master_model.update()
+                    print('upper_bound:', upper_bound)
+                    print('lower_bound:', lower_bound)
+
+                    print('-' * 20)
+                print('Max iterations reached')
+                return action_t, upper_bound, {}
+            finally:
+                for w in workers:
+                    w.dispose()
 
 
 
 if __name__ =="__main__":
     from experiments import get_config_by_type
 
-    config = get_config_by_type('adv_default')
+    config = get_config_by_type('base_case')
     env = config.env
     discount_factor = env.discount_factor
-    agent = SAAdvanceAgent(env, discount_factor, **{'sample_path_number': 50, 'is_myopic':False})
+    agent = SAAdvanceAgent(env, discount_factor, **{'sample_path_number': 10, 'is_myopic':False})
     print('Init State:', config.init_state)
     print('Future arrivals:', agent.delta[0])
-
+    action = (np.array([
+        [3, 3, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 3, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 3, 3, 2, 3, 0, 3, 3, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 3, 3, 3, 0, 0, 0, 0, 0, 0, 0, 0, 3, 3, 3, 3],
+        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]]),
+              np.array([6., 0., 0., 0., 29., 9., 9., 8., 6., 48., 27., 27., 27.,
+                        27., 24., 24., 24., 24., 24., 21., 21., 21., 21., 21., 18., 12.,
+                        9., 9., 9., 6., 6., 9., 6., 6., 6., 6., 6., 6., 6.,
+                        0., 0., 0., 6., 0., 0., 0., 0., 0., 0., 0., 0., 0.,
+                        0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.,
+                        0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.,
+                        0., 0., 0., 0., 0., 0., 0., 0.]))
     start = time.time()
     #action = (np.array([[3, 1], [0, 2]]), np.array([2,0]))
-    action=None
+    #action=None
     action, obj_value, info= agent.solve(config.init_state, 1, action=action)
     print(time.time() - start)
     print('bender_decomposition:')
-    print(obj_value)
+    print(obj_value) # 423492.46229695214
     print(action)
 
 
     start = time.time()
-    #action = (np.array([[3, 1], [0, 2]]), np.array([2,0]))
+
     action = None
     action, obj_value, info = agent.direct_solve(config.init_state, 1, action=action)
     print(time.time() - start)
     print('direct solve:')
-    print(obj_value)
+    print(obj_value) # 423493.53852545697
     print(action)
-    # 251490.33719727152
 
 
 

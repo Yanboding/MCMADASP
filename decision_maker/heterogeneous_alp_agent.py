@@ -153,8 +153,8 @@ class HeterogeneousALPColumnGenerationAgent(ALPAgent):
                             waitlist_var.lb = waitlist_var.ub = self.env.arrival_generator.maximum_arrival
                         else:
                             waitlist_var.lb = waitlist_var.ub = 0
-                    action_var = (x_var_t, y_var_t) = self.get_action_var(init_columns_model, state_var, t, 0)
-                    next_regular_hour_booking_vars = self.env.get_next_regular_bookings(regular_hour_booking_vars, x_var_t)
+                    action_var = self.get_action_var(init_columns_model, state_var, t, 0)
+                    next_regular_hour_booking_vars = self.env.get_next_regular_bookings(state_var, action_var, is_var=True)
                     maximum_difference_var = init_columns_model.addVar(name='maximum_difference')
                     init_columns_model.addConstrs(
                         (
@@ -253,7 +253,7 @@ if __name__ == "__main__":
     from experiments import get_config_by_type
 
     # 54946.988268116984
-    config = get_config_by_type('adv_default')
+    config = get_config_by_type('base_case')
     env = config.env
     agent = HeterogeneousALPColumnGenerationAgent(env=env, discount_factor=env.discount_factor)
     coefficients = agent.train(debug=False, max_iter=1000)
