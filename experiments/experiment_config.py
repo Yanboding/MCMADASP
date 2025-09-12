@@ -117,7 +117,7 @@ class ExperimentConfig:
                         '1 * 2 + 36 * 1',
                         '1 * 2 + 21 * 1 + 1 * 2 + 14 * 1',
                         '1 * 2 + 32 * 1'][:class_num],
-            'holding_cost_by_day_by_type': holding_cost[:,:class_num],
+            'holding_cost_by_day_by_type': holding_cost[:, :class_num].tolist(),
             'overtime_cost_by_day': 100,
             'duration':1,
             'regular_capacity':120,
@@ -178,7 +178,6 @@ class ExperimentConfig:
                                                               random_seed=arrival_random_seed,
                                                               is_precompute_state=False)
         holding_cost_by_day_by_type = np.array(holding_cost_by_day_by_type)
-        print('holding_cost_by_day_by_type shape:', holding_cost_by_day_by_type.shape)
         holding_cost_fn = HoldingCostCalculator(holding_cost_by_day_by_type)
         overtime_cost = OvertimeCostCalculator(overtime_cost_by_day)
         env_params = {
@@ -280,7 +279,6 @@ class ExperimentConfig:
                                                               type_probs,
                                                               random_seed=arrival_random_seed,
                                                               is_precompute_state=False)
-        print(type(holding_cost_by_day_by_type))
         if callable(holding_cost_by_day_by_type):
             holding_cost_fn = holding_cost_by_day_by_type
         else:

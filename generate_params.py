@@ -1,4 +1,5 @@
 import json
+import math
 from pprint import pprint
 
 import pandas as pd
@@ -69,7 +70,7 @@ def _generate_experiment_parameters(experiment_name, param_name, param_values, t
                 d = d.setdefault(key, {})
             d[keys[-1]] = value
         uid = get_uid(env_args_for_value)
-        #agent_args.append(alp_train_res.get(uid, {'agent_name': 'alp', 'args': {'coefficients': None}}))
+        agent_args.append(alp_train_res.get(uid, {'agent_name': 'alp', 'args': {'coefficients': None}}))
         config_for_train = get_config_by_type('custom', args=env_args_for_value)
         env_for_train = config_for_train.env
         # Generate multiple random trials for each parameter value.
@@ -233,20 +234,42 @@ if __name__ == '__main__':
         
         new_arrival_rates = total_rate * type_probs
         env_args['arrival_rates'] = new_arrival_rates.tolist()
+        env_args['maximum_total_arrival'] = math.ceil(total_rate * 3)
         return env_args
 
     # --- Central Configuration for All Experiments ---
-
+    '''
     EXPERIMENT_CONFIGS = {
+
+        'demand_rate': {
+            'param_name': 'total_arrival_rate',
+            'param_values': [4, 8, 12],
+            'param_modifier_fn': demand_rate_modifier
+        },
+
         'decision_epoch': {
             'param_name': 'decision_epoch',
-            'param_values': [30, 40, 50],
+            'param_values': [20, 30],
         },
+
+        'overtime_cost_by_day': {
+            'param_name': 'overtime_cost_by_day',
+            'param_values': [100, 150, 200],
+        },
+
         'occupancy_level': {
             'param_name': 'reset_params.percentage_occupied',
             'param_values': [0.2, 0.5, 0.8],
             'base_env_args_overrides': {'decision_epoch': 30}
         }
+    }
+    '''
+    EXPERIMENT_CONFIGS = {
+        'demand_rate': {
+            'param_name': 'total_arrival_rate',
+            'param_values': [8.25, 12, 16],
+            'param_modifier_fn': demand_rate_modifier
+        },
     }
     
     # --- Specify the number of trials for each experiment ---
@@ -259,7 +282,6 @@ if __name__ == '__main__':
     }
     
     # --- Run All Experiments ---
-    '''
     generate_alp_train_params(
         experiment_configs=EXPERIMENT_CONFIGS,
         dat_file = 'table.dat',
@@ -271,5 +293,4 @@ if __name__ == '__main__':
         dat_file='table.dat',
         is_reuse=False # Set to True to avoid regenerating files and only create the .dat
     )
-    
-    
+    '''

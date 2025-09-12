@@ -175,6 +175,12 @@ class AdvSchedulingEnv:
         # Step 2: Scale so that the average is exactly 100 * p
         scaled = samples / samples.mean() * capacity_occupied
         return (scaled, self.new_arrivals[0])
+    
+    def convert_state_to_overtime(self, state, advance_scheduling_decision):
+        regular_bookings, waitlist = state
+        new_booking_slots = self.convert_action_to_booking_slots(advance_scheduling_decision)
+        overtime = np.maximum(regular_bookings + new_booking_slots - self.regular_capacity, 0)
+        return overtime
 
     def step(self, action):
         # t+tau
@@ -187,7 +193,9 @@ class AdvSchedulingEnv:
         wait_times = np.arange(advance_scheduling_decision.shape[0])
         for i in range(advance_scheduling_decision.shape[1]):
             self.wait_time_by_type[i].record_batch(wait_times, advance_scheduling_decision[:, i])
-        self.overtime[self.tau:] = self.overtime[self.tau:]+ overtime_decision
+        overtime = self.convert_state_to_overtime(self.state, advance_scheduling_decision)
+        print("overtime:", overtime)
+        self.overtime[self.tau:] = self.overtime[self.tau:]+ overtime
         # update state
         self.tau += 1
         if self.t + self.tau > self.decision_epoch:
