@@ -194,7 +194,6 @@ class AdvSchedulingEnv:
         for i in range(advance_scheduling_decision.shape[1]):
             self.wait_time_by_type[i].record_batch(wait_times, advance_scheduling_decision[:, i])
         overtime = self.convert_state_to_overtime(self.state, advance_scheduling_decision)
-        print("overtime:", overtime)
         self.overtime[self.tau:] = self.overtime[self.tau:]+ overtime
         # update state
         self.tau += 1

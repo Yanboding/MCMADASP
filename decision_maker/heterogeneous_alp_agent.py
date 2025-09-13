@@ -220,7 +220,7 @@ class HeterogeneousALPColumnGenerationAgent(ALPAgent):
         for column in self.env.generate_state_action_pairs():
             yield column
 
-    def train(self, debug=False, tol=1e-4, max_iter=5000):
+    def train(self, debug=False, tol=1e-4, max_iter=500000):
         if debug == True:
             initial_columns = self.generate_all_columns()
         else:
