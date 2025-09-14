@@ -194,7 +194,6 @@ class AdvSchedulingEnv:
         for i in range(advance_scheduling_decision.shape[1]):
             self.wait_time_by_type[i].record_batch(wait_times, advance_scheduling_decision[:, i])
         overtime = self.convert_state_to_overtime(self.state, advance_scheduling_decision)
-        print("overtime:", overtime)
         self.overtime[self.tau:] = self.overtime[self.tau:]+ overtime
         # update state
         self.tau += 1
@@ -207,16 +206,9 @@ class AdvSchedulingEnv:
 
 if __name__ =='__main__':
     from experiments import get_config_by_type
-    config = get_config_by_type('base_case')
+    config = get_config_by_type('adv_default')
     env = config.env
-
-    def get_utilization(total_rate):
-        """Modifier function for the demand rate experiment."""
-        config = get_config_by_type('base_case')
-        env = config.env
-        base_case_rate = sum(config.env.arrival_generator.mean_by_type)
-        new_arrival_rates = env.arrival_generator.mean_by_type * (total_rate/base_case_rate)
-        return np.dot(new_arrival_rates,env.treatment_pattern.sum(axis=0))/env.regular_capacity
-    print(get_utilization(12))
-    print(get_utilization(16))
-    print(get_utilization(20))
+    state, info = env.reset(**config.reset_params)
+    print(state)
+    valid_action = (np.array([[0, 3], [0, 0], [0, 0],[0,0]]), np.array([0, 1, 0,1]))
+    env.step(valid_action)

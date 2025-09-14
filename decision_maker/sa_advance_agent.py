@@ -17,33 +17,10 @@ class SubproblemWorker:
     Build once, then call solve(action) repeatedly.
     """
     def __init__(self, builder_fn, builder_args, thread_id:int, verbose:bool=True):
-        self.env = acquire_grb_env({"Threads": 1}, verbose=verbose)
-        if not verbose:
-            self.env.setParam("OutputFlag", 0)
-        # Important: avoid core oversubscription; parallelism is at outer level.
-        self.env.setParam("Threads", 1)
-        self.env.start()
-
+        self.verbose = verbose
         # Build the model and linking constraints inside THIS env.
-        self.model, self.link_rows = builder_fn(env=self.env, **builder_args)
+        self.model, self.link_rows = builder_fn(**builder_args)
         self.thread_id = thread_id
-        # Stash action^t variable tuple for quick flattening of variables when building cuts
-        # (the builder must set this)
-        assert hasattr(self.model, "_action_t_var"), "Builder must set model._action_t_var"
-        self._flat_action_vars_cache = None
-
-    def _flat_action_vars(self):
-        """
-        Returns a flat list of gurobi Var objects corresponding to action at period t.
-        Cached after first call.
-        """
-        if self._flat_action_vars_cache is None:
-            x_t, y_t = self.model._action_t_var
-            # x_t is a 2D array-like of Vars; y_t is 1D array-like
-            flat_x = [v for row in x_t for v in row]
-            flat_y = list(y_t)
-            self._flat_action_vars_cache = flat_x + flat_y
-        return self._flat_action_vars_cache
 
     def _flatten_action_values(self, action):
         """
@@ -88,10 +65,7 @@ class SubproblemWorker:
             return False, v, ray
 
     def dispose(self):
-        try:
-            self.model.dispose()
-        finally:
-            self.env.dispose()
+        self.model.dispose()
 
 class SAAdvanceAgent:
     TOKEN_WAIT = 15
@@ -113,7 +87,7 @@ class SAAdvanceAgent:
             self.Q = defaultdict(lambda: defaultdict(int))
         if V is None:
             self.V = {}
-        self.grb_env = acquire_grb_env({"Threads": 1}, verbose=False, wait=SAAdvanceAgent.TOKEN_WAIT)
+        self.grb_env = acquire_grb_env({"Threads": 0}, verbose=False, wait=SAAdvanceAgent.TOKEN_WAIT)
 
     def set_sample_paths(self, sample_path_number):
         self.sample_path_number = sample_path_number
@@ -122,7 +96,6 @@ class SAAdvanceAgent:
             new_arrivals = self.env.reset_arrivals(1)
             delta.append(new_arrivals)
         self.delta = np.array(delta)
-        print(self.delta)
 
     def set_real_sample_paths(self, sample_paths):
         self.sample_path_number = len(sample_paths)
@@ -260,13 +233,14 @@ class SAAdvanceAgent:
             linking_constraints.append(constraint)
         return linking_constraints
 
-    def subproblem_builder(self, state, t, scenario_id):
+    def subproblem_builder(self, env, state, t, scenario_id):
         H = self.env.decision_epoch - t
         P = self.env.planning_horizon - t
         I = self.env.num_types
         # model = Model(HiGHS.Optimizer)
         # set_silent(model)
-        sub_model = gp.Model(f"Subproblem_SA_Advance_{scenario_id}", env=self.grb_env)
+        #env = acquire_grb_env({"Threads": 1}, verbose=False, wait=SAAdvanceAgent.TOKEN_WAIT)
+        sub_model = gp.Model(f"Subproblem_SA_Advance_{scenario_id}", env=env)
         sub_model.setParam('InfUnbdInfo', 1)
         sub_model.setParam('DualReductions', 0)
         sub_model.setParam("MultiObjPre", 0)
@@ -289,85 +263,6 @@ class SAAdvanceAgent:
             sub_model.addConstrs((u_t_tau_var[j] == bar_u_t_tau_var[j + 1] for j in range(P - tau)), name=f"transit{t + tau}" )
         sub_model.setObjective(fut_cost, GRB.MINIMIZE)
         return sub_model, linking_constraints
-
-    # ---------------------------------------------------
-    # Subproblem builder used by workers
-    # ---------------------------------------------------
-    def _subproblem_build_for_worker(self, env, state, t, scenario_id):
-        H = self.env.decision_epoch - t
-        P = self.env.planning_horizon - t
-        I = self.env.num_types
-
-        sub = gp.Model(f"Subproblem_SA_Advance_{scenario_id}", env=env)
-        sub.Params.InfUnbdInfo = 1
-        sub.Params.DualReductions = 0
-        sub.Params.MultiObjPre = 0
-        sub.Params.OutputFlag = 0
-
-        # action at t (continuous here; we only link its value)
-        action_t_var = self.get_action_var(model=sub, t=t, tau=0, advance_scheduling_type=GRB.CONTINUOUS)
-        link_rows = self.build_linking_constraints(sub, action_t_var)
-
-        # Build future chain for this scenario (fixed arrivals = self.delta[scenario_id, tau])
-        u_t1_var = self.env.get_next_regular_bookings(state, action_t_var, is_var=True)
-        fut_cost = 0.0
-        for tau in range(1, H + 1):
-            s_tau = (u_t1_var, self.delta[scenario_id, tau])
-            x_tau, y_tau = self.get_action_var(model=sub, t=t, tau=tau, advance_scheduling_type=GRB.CONTINUOUS)
-
-            # action feasibility at t+tau; here arrivals are fixed numbers
-            sub.addConstrs(
-                (gp.quicksum(x_tau[j, i] for j in range(x_tau.shape[0])) == self.delta[scenario_id, tau, i]
-                 for i in range(I)),
-                name=f"valid_advance_scheduling_{t + tau}"
-            )
-
-            bar_u_tau, _ = self.env.post_action_state(s_tau, (x_tau, y_tau), is_var=True)
-            sub.addConstrs(
-                (bar_u_tau[m] <= self.env.regular_capacity for m in range(P - tau + 1)),
-                name=f"valid_post_action_regular_bookings_{t + tau}"
-            )
-
-            fut_cost += (self.env.discount_factor ** tau) * self.env.cost_fn(s_tau, (x_tau, y_tau), t + tau)
-
-            # shift bookings: u^{t+tau} := bar_u^{t+tau}[1:]
-            if P - tau > 0:
-                u_t1_var = np.array(
-                    [sub.addVar(vtype=GRB.CONTINUOUS, name=f"u^{t + tau}_{j}") for j in range(P - tau)])
-                sub.addConstrs(
-                    (u_t1_var[j] == bar_u_tau[j + 1] for j in range(P - tau)),
-                    name=f"transit{t + tau}"
-                )
-            else:
-                u_t1_var = np.array([], dtype=object)
-
-        sub.setObjective(fut_cost, GRB.MINIMIZE)
-
-        # Let worker cache these for fast cut construction
-        sub._action_t_var = action_t_var
-        return sub, link_rows
-
-    def set_linking_constraints_rhs(self, sub_model, linking_constraints, action_t):
-        # Flatten in the same order as self.flatten(action)
-        action_flat = self.flatten(action_t)
-        for i, constr in enumerate(linking_constraints):
-            constr.setAttr("RHS", action_flat[i])
-        sub_model.update()
-
-    def solve_subproblem(self, sub_model, linking_constraints, action_t, verbose=False):
-        # @variable(model, x[i in 1:n, j in 1:n] == x_bar[i, j])
-        self.set_linking_constraints_rhs(sub_model, linking_constraints, action_t)
-        if solve_and_handle_errors(sub_model, verbose=verbose):
-            v = sub_model.ObjVal
-            duals = np.array([linking_constraints[j].Pi for j in range(len(linking_constraints))])
-            return True, v, duals
-        else:
-            #print(self.get_solution(action_t_var), action_t)
-            # dual objective value
-            v = sum(c.FarkasDual * c.RHS for c in sub_model.getConstrs())
-            # Use Farkas duals on LINKING rows only
-            ray = np.array([c.FarkasDual for c in linking_constraints], dtype=float)
-            return False, v, ray
 
     def master_problem(self, state, t):
         master_model = gp.Model(f"SA_Advance_Master", env=self.grb_env)
@@ -400,10 +295,10 @@ class SAAdvanceAgent:
         if action is not None:
             self.set_action(action_var=action_t_var, action=action)
         # Build one worker per scenario once, then reuse
-        builder_args = [{"state": state, "t": t, "scenario_id": sid} for sid in range(self.sample_path_number)]
+        builder_args = [{"env": self.grb_env, "state": state, "t": t, "scenario_id": sid} for sid in range(self.sample_path_number)]
         with concurrent.futures.ThreadPoolExecutor(max_workers=self.sample_path_number) as ex:
             workers = [
-                ex.submit(SubproblemWorker, self._subproblem_build_for_worker, builder_args[sid], sid, verbose).result()
+                ex.submit(SubproblemWorker, self.subproblem_builder, builder_args[sid], sid, verbose).result()
                 for sid in range(self.sample_path_number)
             ]
 
@@ -473,7 +368,7 @@ if __name__ =="__main__":
     config = get_config_by_type('base_case')
     env = config.env
     discount_factor = env.discount_factor
-    agent = SAAdvanceAgent(env, discount_factor, **{'sample_path_number': 2, 'is_myopic':False})
+    agent = SAAdvanceAgent(env, discount_factor, **{'sample_path_number': 100, 'is_myopic':False})
     print('Init State:', config.init_state)
     print('Future arrivals:', agent.delta[0])
     start = time.time()
@@ -482,9 +377,8 @@ if __name__ =="__main__":
     action, obj_value, info= agent.solve(config.init_state, 1, action=action)
     print(time.time() - start)
     print('bender_decomposition:')
-    print(obj_value) # 423492.46229695214
+    print(obj_value) # 423492.46229695214 979.8701978711838 # 127.03160285949707
     print(action)
-
 
     start = time.time()
     action = None
@@ -493,6 +387,3 @@ if __name__ =="__main__":
     print('direct solve:')
     print(obj_value) # 423493.53852545697
     print(action)
-
-
-
