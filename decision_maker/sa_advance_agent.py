@@ -296,69 +296,61 @@ class SAAdvanceAgent:
             self.set_action(action_var=action_t_var, action=action)
         # Build one worker per scenario once, then reuse
         builder_args = [{"env": self.grb_env, "state": state, "t": t, "scenario_id": sid} for sid in range(self.sample_path_number)]
-        with concurrent.futures.ThreadPoolExecutor(max_workers=self.sample_path_number) as ex:
-            workers = [
-                ex.submit(SubproblemWorker, self.subproblem_builder, builder_args[sid], sid, verbose).result()
-                for sid in range(self.sample_path_number)
-            ]
+        workers = [
+            SubproblemWorker(self.subproblem_builder, builder_args[sid], sid, verbose)
+            for sid in range(self.sample_path_number)
+        ]
+        for iteration in range(1, max_iter + 1):
+            if not solve_and_handle_errors(master_model, verbose=verbose):
+                raise RuntimeError("Master model optimal solution not found")
+            action_t = self.get_solution(action_t_var)
+            flat_action_t = self.flatten(action_t)
 
-            try:
-                for iteration in range(1, max_iter + 1):
-                    if not solve_and_handle_errors(master_model, verbose=verbose):
-                        raise RuntimeError("Master model optimal solution not found")
-                    action_t = self.get_solution(action_t_var)
-                    flat_action_t = self.flatten(action_t)
+            lower_bound = master_model.ObjVal
 
-                    lower_bound = master_model.ObjVal
+            # Ask all workers to solve for this action
+            #futures = [ex.submit(w.solve, action_t, verbose) for w in workers]
+            feasibility_cuts = []
+            optimality_cuts = []
+            cost_to_go_estimation = 0.0
+            all_feasible = True
+            for w in workers:
+                scenario_id = w.thread_id
+                is_feasible, v, duals = w.solve(action_t, verbose=verbose)
+                if not is_feasible:
+                    print(f"Iteration {iteration}, scenario {scenario_id} infeasible; adding feasibility cut")
+                    all_feasible = False
+                    # Add feasibility cut to master
+                    cut_expr = v + np.dot(duals, flat_action_t_var - flat_action_t)
+                    feasibility_cuts.append(cut_expr >= 0)
+                    break
+                else:
+                    # If feasible, generate the strengthened cut using the dynamic method
+                    cost_to_go_estimation += v
+                    # cut = @constraint(model, θ >= ret.obj + sum(ret.π .* (x .- x_k)))
+                    cut_rhs = v + np.dot(duals, flat_action_t_var - flat_action_t)
+                    optimality_cuts.append(theta_vars[scenario_id] >= cut_rhs)
+            if not all_feasible:
+                print(f"Iteration {iteration}, adding {len(feasibility_cuts)} feasibility cuts")
+                # Some scenario infeasible: add feasibility cuts and repeat
+                master_model.addConstrs((feasibility_cuts[i] for i in range(len(feasibility_cuts))), name="feas_cut_")
+            else:
+                print(f"Iteration {iteration}, adding {len(optimality_cuts)} optimality cuts")
+                # All scenarios feasible: add optimality cuts and continue
+                master_model.addConstrs((optimality_cuts[i] for i in range(len(optimality_cuts))), name="opt_cut_")
+                cost_to_go_estimation = cost_to_go_estimation / self.sample_path_number
+                upper_bound = imm_cost.getValue() + cost_to_go_estimation
+                # Average the future cost across scenarios like in direct solution
+                if abs(upper_bound - lower_bound) < tol:
+                    action_t = self.get_solution(action_t_var, is_final=True)
+                    return action_t, upper_bound, {}
+            #master_model.update()
+            print('upper_bound:', upper_bound)
+            print('lower_bound:', lower_bound)
 
-                    # Ask all workers to solve for this action
-                    #futures = [ex.submit(w.solve, action_t, verbose) for w in workers]
-                    futures = {
-                        ex.submit(w.solve, action_t, verbose): w.thread_id for w in workers
-                    }
-                    feasibility_cuts = []
-                    optimality_cuts = []
-                    cost_to_go_estimation = 0.0
-                    all_feasible = True
-                    for future in concurrent.futures.as_completed(futures):
-                        scenario_id = futures[future]
-                        is_feasible, v, duals = future.result()
-                        if not is_feasible:
-                            print(f"Iteration {iteration}, scenario {scenario_id} infeasible; adding feasibility cut")
-                            all_feasible = False
-                            # Add feasibility cut to master
-                            cut_expr = v + np.dot(duals, flat_action_t_var - flat_action_t)
-                            feasibility_cuts.append(cut_expr >= 0)
-                        else:
-                            # If feasible, generate the strengthened cut using the dynamic method
-                            cost_to_go_estimation += v
-                            # cut = @constraint(model, θ >= ret.obj + sum(ret.π .* (x .- x_k)))
-                            cut_rhs = v + np.dot(duals, flat_action_t_var - flat_action_t)
-                            optimality_cuts.append(theta_vars[scenario_id] >= cut_rhs)
-                    if not all_feasible:
-                        print(f"Iteration {iteration}, adding {len(feasibility_cuts)} feasibility cuts")
-                        # Some scenario infeasible: add feasibility cuts and repeat
-                        master_model.addConstrs((feasibility_cuts[i] for i in range(len(feasibility_cuts))), name="feas_cut_")
-                    else:
-                        print(f"Iteration {iteration}, adding {len(optimality_cuts)} optimality cuts")
-                        # All scenarios feasible: add optimality cuts and continue
-                        master_model.addConstrs((optimality_cuts[i] for i in range(len(optimality_cuts))), name="opt_cut_")
-                        cost_to_go_estimation = cost_to_go_estimation / self.sample_path_number
-                        upper_bound = imm_cost.getValue() + cost_to_go_estimation
-                        # Average the future cost across scenarios like in direct solution
-                        if abs(upper_bound - lower_bound) < tol:
-                            action_t = self.get_solution(action_t_var, is_final=True)
-                            return action_t, upper_bound, {}
-                    #master_model.update()
-                    print('upper_bound:', upper_bound)
-                    print('lower_bound:', lower_bound)
-
-                    print('-' * 20)
-                print('Max iterations reached')
-                return action_t, upper_bound, {}
-            finally:
-                for w in workers:
-                    w.dispose()
+            print('-' * 20)
+        print('Max iterations reached')
+        return action_t, upper_bound, {}
 
 
 
@@ -368,7 +360,7 @@ if __name__ =="__main__":
     config = get_config_by_type('base_case')
     env = config.env
     discount_factor = env.discount_factor
-    agent = SAAdvanceAgent(env, discount_factor, **{'sample_path_number': 100, 'is_myopic':False})
+    agent = SAAdvanceAgent(env, discount_factor, **{'sample_path_number': 20, 'is_myopic':False})
     print('Init State:', config.init_state)
     print('Future arrivals:', agent.delta[0])
     start = time.time()
