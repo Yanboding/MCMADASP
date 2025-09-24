@@ -39,7 +39,7 @@ class ColumnGenerationSolver:
         self.candidates_list.append(candidate)
         return True
 
-    def initial_columns_solve(self, tol=1e-6, max_iter=3000):
+    def initial_columns_solve(self, tol=1e-6, max_iter=3000, verbose=False):
         for iteration in range(max_iter):
             print(f"\n--- Iteration {iteration + 1} ---")
             if iteration == 0:
@@ -58,13 +58,15 @@ class ColumnGenerationSolver:
                     break  # No new, valid, improving column was found
             # 3. Optimize the current relaxed master model
             if not solve_and_handle_errors(self.master_model):
-                print("Master problem could not be solved to optimality. Aborting.")
+                if verbose:
+                    print("Master problem could not be solved to optimality. Aborting.")
                 break
-            if clean_value(self.master_model.getVarByName("init_s").X, 1e-8) < tol:
-                print([clean_value(constr.Pi, tol) for constr in self.master_model.getConstrs()])
+            if clean_value(self.master_model.ObjVal, 1e-8) < tol:
+                if verbose:
+                    print([clean_value(constr.Pi, tol) for constr in self.master_model.getConstrs()])
                 return self.candidates_list
-        print("Final: ", self.master_model.ObjVal)
-        #return self.candidates_list
+        if verbose:
+            print("Final: ", self.master_model.ObjVal)
         raise ValueError('Finding feasible columns failed!')
 
     def solve(self, tol=1e-6, max_iter=3000):

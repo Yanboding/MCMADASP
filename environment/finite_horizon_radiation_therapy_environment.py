@@ -13,7 +13,7 @@ from utils import numpy_shift, RunningStats, integer_partitions_fixed_bins, gene
 class FiniteRTEnv:
     def __init__(self,
                  treatment_pattern,
-                 decision_epoch, # Note: not useful in the EJOR paper
+                 decision_epoch,
                  arrival_generator,
                  holding_cost,
                  overtime_cost,
@@ -105,11 +105,11 @@ class FiniteRTEnv:
         return (post_action_regular_bookings, post_action_overtimes, post_action_waitlist)
 
     def post_action_state_to_new_state(self, post_action_state, new_arrival, is_var=True):
-        post_action_bookings, post_action_overtimes, post_action_waitlist = self.get_state(post_action_state, is_var)
-        new_bookings = post_action_bookings[1:]
+        post_action_regular_bookings, post_action_overtimes, post_action_waitlist = self.get_state(post_action_state, is_var)
+        new_regular_bookings = post_action_regular_bookings[1:]
         new_overtimes = post_action_overtimes[1:]
         new_waitlist  = post_action_waitlist + new_arrival
-        return (new_bookings, new_overtimes, new_waitlist)
+        return (new_regular_bookings, new_overtimes, new_waitlist)
 
     def get_next_state(self, state, action, new_arrival, is_var=False):
         post_action_state = self.post_action_state(state, action, is_var)

@@ -58,68 +58,31 @@ class RTEnv:
         np.add.at(booked_slots, idx.ravel(), appointment_slots.ravel())
         return booked_slots
 
-    def validation(self, state, action):
-        bookings, overtimes, waitlist = state
-        advance_scheduling_decision, overtime_decision = action
-        # limits the number of bookings for each treatment type to be less than or equal to the number of treatments waiting to be booked
-        if not all(advance_scheduling_decision.sum(axis=0) <= waitlist):
-            raise ValueError('The number of bookings exceeds the number of treatments waiting to be booked')
-        new_bookings = self.convert_action_to_booking_slots(advance_scheduling_decision)
-        # restricts the total number of appointment slots booked today for day m to be less than or equal to the available treatment capacity that day
-        if not all(bookings + new_bookings <= self.regular_capacity + overtime_decision):
-            raise ValueError('The number of overtime slots decision cannot cover new bookings')
-        # limits the total overtime utilization on day m to be less than the overtime capacity
-        if not all(overtimes + overtime_decision <= self.overtime_capacity):
-            raise ValueError('The number of overtime slots used exceeds the the overtime capacity')
-        if not np.all(advance_scheduling_decision == advance_scheduling_decision.astype(int)):
-            raise ValueError("Advance scheduling decision is not all integer")
-        if not np.all(overtime_decision == overtime_decision.astype(int)):
-            raise ValueError("Overtime decision is not all integer")
-
-    def generate_waitlist(self, num_type):
-        """
-        Enumerate all possible arrival vectors (x_1, ..., x_I) and their
-        associated probability. Returns a list of (prob, counts_vector).
-        """
-        # For each possible total arrival from 0..maximum_arrival
-        maximum_number_of_waitlist = self.arrival_generator.maximum_arrival * 5
-        for N in range(maximum_number_of_waitlist + 1):
-            for waitlist in integer_partitions_fixed_bins(total=N, bins=num_type):
-                yield np.array(waitlist)
     def generate_states(self):
+        maximum_number_of_waitlist = self.arrival_generator.maximum_arrival
         for bookings_tuple in itertools.product(range(self.regular_capacity + 1), repeat=self.planning_horizon-1):
             for overtimes_tuple in itertools.product(range(self.overtime_capacity + 1), repeat=self.planning_horizon-1):
-                for waitlist in self.generate_waitlist(self.num_types):
+                for waitlist in bounded_compositions(maximum_number_of_waitlist, self.num_types):
                     yield np.array(bookings_tuple+(0,)), np.array(overtimes_tuple+(0,)), waitlist
 
-    def generate_advance_actions(self, waitlist, booking_window_size):
-        per_type_generators = [bounded_compositions(w_i, booking_window_size) for w_i in waitlist]
-
-        # Cartesian product across types builds a full schedule column-by-column
-        for columns in itertools.product(*per_type_generators):
-            # columns is a tuple of I length-N tuples; convert to N rows
-            yield np.array(columns).T
-
-    def generate_actions(self, state):
-        bookings, overtimes, waitlist = state
-        for advance_scheduling_decision in self.generate_advance_actions(waitlist, self.booking_window_size):
+    def valid_actions(self, state):
+        regular_bookings, overtimes, waitlist = state
+        per_type_generators = [bounded_compositions(w_i, self.booking_window_size) for w_i in waitlist]
+        for advance_scheduling_decision in itertools.product(*per_type_generators):
+            advance_scheduling_decision = np.array(advance_scheduling_decision).T
             new_booking_slots = self.convert_action_to_booking_slots(advance_scheduling_decision)
-            overtime_decision = np.maximum(bookings + new_booking_slots - self.regular_capacity, 0)
+            overtime_decision = np.maximum(regular_bookings + new_booking_slots - self.regular_capacity, 0)
             if any(overtime_decision > self.overtime_capacity):
                 continue
             yield (advance_scheduling_decision, overtime_decision)
 
     def generate_state_action_pairs(self):
         for state in self.generate_states():
-            for action in self.generate_actions(state):
+            for action in self.valid_actions(state):
                 yield (state, action)
 
     def cost_fn(self, state, action):
-        '''
-        bookings = [1,2,3,4,5]
-        action = ([[1,2,3],[4,5,6]], [1,2,3,4])
-        '''
-        bookings, overtimes, waitlist = state
+        regular_bookings, overtimes, waitlist = state
         advance_scheduling_decision, overtime_decision = action
         waiting_cost = sum(sum(self.discount_factor ** k * self.holding_cost(k, i) for k in range(j + 1)) * advance_scheduling_decision[j, i]
                            for j in range(len(advance_scheduling_decision))
@@ -131,21 +94,20 @@ class RTEnv:
         return waiting_cost + overtime_cost + postponing_cost
 
     def post_action_state(self, state, action, is_var=False):
-        # check validation
-        #self.validation(state, action)
-        bookings, overtimes, waitlist = self.get_state(state, is_var)
+        regular_bookings, overtimes, waitlist = self.get_state(state, is_var)
         advance_scheduling_decision, overtime_decision = action
-        new_bookings = bookings + self.convert_action_to_booking_slots(advance_scheduling_decision) - overtime_decision
-        new_overtimes = overtimes + overtime_decision
-        new_waitlist = waitlist - advance_scheduling_decision.sum(axis=0)
-        return (new_bookings, new_overtimes, new_waitlist)
+        post_action_regular_bookings = regular_bookings + self.convert_action_to_booking_slots(
+            advance_scheduling_decision) - overtime_decision
+        post_action_overtimes = overtimes + overtime_decision
+        post_action_waitlist = waitlist - advance_scheduling_decision.sum(axis=0)
+        return (post_action_regular_bookings, post_action_overtimes, post_action_waitlist)
 
     def post_action_state_to_new_state(self, post_action_state, new_arrival, is_var=True):
-        post_action_bookings, post_action_overtimes, post_action_waitlist = self.get_state(post_action_state, is_var)
-        new_bookings = numpy_shift(post_action_bookings, num_places=-1)
+        post_action_regular_bookings, post_action_overtimes, post_action_waitlist = self.get_state(post_action_state, is_var)
+        new_regular_bookings = numpy_shift(post_action_regular_bookings, num_places=-1)
         new_overtimes = numpy_shift(post_action_overtimes, num_places=-1)
         new_waitlist  = post_action_waitlist + new_arrival
-        return (new_bookings, new_overtimes, new_waitlist)
+        return (new_regular_bookings, new_overtimes, new_waitlist)
 
     def get_next_state(self, state, action, new_arrival, is_var=False):
         post_action_state = self.post_action_state(state, action, is_var)
@@ -162,52 +124,12 @@ class RTEnv:
         cost = self.cost_fn(state, action)
         res = []
         for prob, delta in self.arrival_generator.get_system_dynamic():
-            post_action_state = self.post_action_state(state, action)
             if t + 1 > self.decision_epoch:
                 delta = np.zeros(self.num_types, dtype=int)
             done = t == self.decision_epoch
-            next_state = self.post_action_state_to_new_state(post_action_state, delta)
+            next_state = self.get_next_state(state, action, delta)
             res.append([prob, next_state, cost, done])
         return res
-
-    def valid_actions(self, state):
-        bookings, overtimes, waitlist = copy.deepcopy(state)
-        number_days = self.planning_horizon
-        if number_days < 1:
-            raise ValueError('number_days must be at least 1')
-
-        @functools.lru_cache(maxsize=None)
-        def compositions(n, k):
-            # Generate all tuples of k non-negative integers summing to n
-            if k == 1:
-                return [(n,)]
-            results = []
-            for i in range(n + 1):
-                for tail in compositions(n - i, k - 1):
-                    results.append((i,) + tail)
-            return results
-
-        def get_all_class_combinations():
-            res = []
-            for w in waitlist:
-                comp = []
-                for num in range(w+1):
-                    comp += compositions(num, number_days)
-                res.append(comp)
-            return res
-
-        # Cartesian product of all class-level combinations
-        all_class_combinations = get_all_class_combinations()
-        for advance_scheduling_combination in itertools.product(*all_class_combinations):
-            advance_scheduling_decision = np.array(advance_scheduling_combination).T
-            new_bookings = self.convert_action_to_booking_slots(advance_scheduling_decision)
-            overtime_decision = np.maximum(new_bookings + bookings - self.regular_capacity, 0)
-            action = (advance_scheduling_decision, overtime_decision)
-            try:
-                self.validation(state, action)
-                yield action
-            except ValueError:
-                continue
 
     # simulation
     def reset(self, init_state=None, t=1, new_arrivals=None, percentage_occupied=0):
@@ -230,7 +152,7 @@ class RTEnv:
         self.state = (bookings, overtimes, waitlist)
         # measure of performance
         self.wait_time_by_type = {j: RunningStats() for j in range(self.num_types)}
-        self.overtime = np.array([0] * (self.decision_epoch + self.num_sessions - t))
+        self.overtime = np.array([0] * (self.planning_horizon - t + 1))
         return copy.deepcopy(self.state), {'wait_time_by_type': self.wait_time_by_type,
                                            'overtime': self.overtime}
 
@@ -251,14 +173,15 @@ class RTEnv:
         # Step 2: Scale so that the average is exactly 100 * p
         total_bookings = samples / samples.mean() * capacity_occupied
         overtimes = np.maximum(total_bookings - self.regular_capacity, 0)
-        bookings = total_bookings - overtimes
-        return (bookings, overtimes, new_arrivals)
+        regular_bookings = total_bookings - overtimes
+        return (regular_bookings, overtimes, new_arrivals)
 
     def step(self, action):
         advance_scheduling_decision, overtime_decision = action
         # t+tau
         cost = self.cost_fn(self.state, action)
-        post_action_state = (post_action_bookings, post_action_overtimes, post_action_waitlist) = self.post_action_state(self.state, action)
+        post_action_state = self.post_action_state(self.state, action)
+        post_action_regular_bookings, post_action_overtimes, post_action_waitlist = post_action_state
         done = self.t + self.tau == self.decision_epoch
         # record performance metric
         # implement info: include the type-dependent waiting times and overtime use
