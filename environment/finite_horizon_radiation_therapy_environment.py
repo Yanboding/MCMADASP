@@ -165,14 +165,12 @@ class FiniteRTEnv:
     def reset_initial_state(self, percentage_occupied, new_arrivals):
         # find out the average appointment slot required in first period
         capacity_occupied = (self.regular_capacity + self.overtime_capacity) * percentage_occupied
-        # initialize the current booking slots with all zeros
-        booking_horizon = self.planning_horizon + self.num_sessions - 1
         # Step 1: Generate from truncated normal distribution
         mean = 1.0
         std_dev = 0.3
         lower, upper = 0, 2
         a, b = (lower - mean) / std_dev, (upper - mean) / std_dev
-        samples = truncnorm.rvs(a, b, loc=mean, scale=std_dev, size=booking_horizon, random_state=self.rng)
+        samples = truncnorm.rvs(a, b, loc=mean, scale=std_dev, size=self.planning_horizon, random_state=self.rng)
         # Step 2: Scale so that the average is exactly 100 * p
         total_bookings = samples / samples.mean() * capacity_occupied
         overtimes = np.maximum(total_bookings - self.regular_capacity, 0)

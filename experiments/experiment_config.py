@@ -605,6 +605,8 @@ def get_config_by_type(case_type, args=None):
         config = ExperimentConfig.from_finite_default_case()
     elif case_type == 'finite_base_case':
         config = ExperimentConfig.from_finite_base_case()
+    elif case_type == 'finite_custom':
+        config = ExperimentConfig.from_finite_custom_case(**args)
     return config
 
 if __name__ == '__main__':

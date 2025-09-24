@@ -28,7 +28,7 @@ class HindsightSAAgent(FiniteRTAgent):
         self.delta = np.array([sample_path])
 
     def direct_solve(self, state, t, action=None, verbose=False):
-        H = self.env.decision_epoch - t
+        remaining_booking_window_size = self.env.decision_epoch - t + 1
         # ---------- model ----------
         with (gp.Model("SA_Advance", env=self.grb_env) as m):
             m.setParam('DualReductions', 0)
@@ -48,7 +48,7 @@ class HindsightSAAgent(FiniteRTAgent):
             if not self.is_myopic:
                 prev_state_scenario = [state for _ in range(self.sample_path_number)]
                 prev_action_scenario = [action_t_var for _ in range(self.sample_path_number)]
-                for tau in range(1, H + 1):
+                for tau in range(1, remaining_booking_window_size):
                     state_scenario = []
                     action_scenario = []
                     for omega in range(self.sample_path_number):

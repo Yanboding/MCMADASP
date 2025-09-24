@@ -7,3 +7,4 @@ from .finite_rt_agent import FiniteRTAgent
 from .infinite_rt_agent import InfiniteRTAgent
 from .heterogeneous_alp_agent import HeterogeneousALPColumnGenerationAgent
 from .heterogeneous_alp_row_generation_agent import HeterogeneousALPRowGenerationAgent
+from .hindsight_sa_agent import HindsightSAAgent

@@ -36,7 +36,7 @@ def _generate_experiment_parameters(experiment_name, param_name, param_values, t
         dict: A dictionary of the generated parameters, keyed by their UID.
     """
     # Start with a base configuration.
-    base_env_args = get_config_by_type('base_case').args
+    base_env_args = get_config_by_type('finite_base_case').args
     if base_env_args_overrides:
         base_env_args.update(base_env_args_overrides)
 
@@ -70,16 +70,16 @@ def _generate_experiment_parameters(experiment_name, param_name, param_values, t
                 d = d.setdefault(key, {})
             d[keys[-1]] = value
         uid = get_uid(env_args_for_value)
-        agent_args.append(alp_train_res.get(uid, {'agent_name': 'alp', 'args': {'coefficients': None}}))
-        config_for_train = get_config_by_type('custom', args=env_args_for_value)
-        env_for_train = config_for_train.env
+        #agent_args.append(alp_train_res.get(uid, {'agent_name': 'alp', 'args': {'coefficients': None}}))
+        #config_for_train = get_config_by_type('finite_base_case', args=env_args_for_value)
+        #env_for_train = config_for_train.env
         # Generate multiple random trials for each parameter value.
         for command_id in range(test_sample_path_num):
             # 1. Generate the sample path with a specific, isolated random seed.
             sample_gen_args = copy.deepcopy(env_args_for_value)
             sample_gen_args['arrival_random_seed'] = command_id + 1 # Seed for sample path generation
             
-            config_for_sample_path = get_config_by_type('custom', args=sample_gen_args)
+            config_for_sample_path = get_config_by_type('finite_custom', args=sample_gen_args)
             env_for_sample_path = config_for_sample_path.env
             sample_path = env_for_sample_path.reset_arrivals(t=1) if env_for_sample_path else [[]]
 
@@ -184,7 +184,7 @@ def generate_all_experiments(experiment_configs, test_sample_path_num_map, dat_f
 
 def _generate_alp_train_params(experiment_name, param_name, param_values, base_env_args_overrides=None, param_modifier_fn=None):
     # Start with a base configuration.
-    base_env_args = get_config_by_type('base_case').args
+    base_env_args = get_config_by_type('finite_base_case').args
     if base_env_args_overrides:
         base_env_args.update(base_env_args_overrides)
     print(f"Generating parameters for {experiment_name}...")
@@ -282,6 +282,7 @@ if __name__ == '__main__':
     }
     
     # --- Run All Experiments ---
+    '''
     generate_alp_train_params(
         experiment_configs=EXPERIMENT_CONFIGS,
         dat_file = 'table.dat',
@@ -293,4 +294,3 @@ if __name__ == '__main__':
         dat_file='table.dat',
         is_reuse=False # Set to True to avoid regenerating files and only create the .dat
     )
-    '''
