@@ -1,3 +1,4 @@
 from .arrival_generator import MultiClassPoissonArrivalGenerator
 from .radiation_therapy_environment import RTEnv
+from .finite_horizon_radiation_therapy_environment import FiniteRTEnv
 from .advance_scheduling_environment import AdvSchedulingEnv

@@ -3,5 +3,7 @@ from .sa_advance_agent import SAAdvanceAgent
 from .policy_evaluator import PolicyEvaluator
 from .alp_agent import ALPAgent
 from .alp_ejor_agent import ALPEJORAgent
+from .finite_rt_agent import FiniteRTAgent
+from .infinite_rt_agent import InfiniteRTAgent
 from .heterogeneous_alp_agent import HeterogeneousALPColumnGenerationAgent
 from .heterogeneous_alp_row_generation_agent import HeterogeneousALPRowGenerationAgent

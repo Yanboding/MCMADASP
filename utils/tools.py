@@ -299,6 +299,5 @@ def acquire_grb_env(kwargs=None, verbose=False, wait=15):
 
 
 if __name__ == '__main__':
-    for schedule in all_schedules([3,3], 5):
-        print(schedule)
+    print(list(bounded_compositions(3, 10)))
 

@@ -233,10 +233,25 @@ class SAAdvanceAgent:
             linking_constraints.append(constraint)
         return linking_constraints
 
+    def get_next_state(self, model, state, action, new_arrival, t, tau):
+        state_t_tau = self.env.get_next_state(state=state,
+                                              action=action,
+                                              new_arrival=new_arrival, is_var=True)
+        u_t_tau_var, w_t_tau_var = state_t_tau
+        regular_booking_vars = np.array([
+            model.addVar(vtype=GRB.CONTINUOUS, lb=0, name=f"u^{t + tau},{m}") for m in range(len(u_t_tau_var))
+        ])
+        waitlist_vars = np.array([
+            model.addVar(vtype=GRB.CONTINUOUS, lb=0, name=f"w^{t + tau},{i}") for i in range(len(w_t_tau_var))
+        ])
+        model.addConstrs((regular_booking_vars[j] == u_t_tau_var[j] for j in range(len(u_t_tau_var))),
+                             name=f"link_u^{t + tau}")
+        model.addConstrs((waitlist_vars[j] == w_t_tau_var[j] for j in range(len(w_t_tau_var))),
+                         name=f"link_w^{t + tau}")
+        return (regular_booking_vars, waitlist_vars)
+
     def subproblem_builder(self, env, state, t, scenario_id):
         H = self.env.decision_epoch - t
-        P = self.env.planning_horizon - t
-        I = self.env.num_types
         # model = Model(HiGHS.Optimizer)
         # set_silent(model)
         #env = acquire_grb_env({"Threads": 1}, verbose=False, wait=SAAdvanceAgent.TOKEN_WAIT)
@@ -248,19 +263,21 @@ class SAAdvanceAgent:
         action_t_var = self.get_action_var(model=sub_model, t=t, tau=0, advance_scheduling_type=GRB.CONTINUOUS)
         linking_constraints = self.build_linking_constraints(sub_model, action_t_var)
         # Initialize scenario state and action like in direct solution
-        u_t_tau_var = self.env.get_next_regular_bookings(state, action_t_var, is_var=True)
+        previous_state_var = state
+        previous_action_var = action_t_var
         fut_cost = 0
         for tau in range(1, H + 1):
-            state_t_tau_var = (u_t_tau_var, self.delta[scenario_id, tau])
-            action_t_tau_var = (x_t_tau_var, y_t_tau_var)= self.get_action_var(model=sub_model, t=t, tau=tau,
-                                                   advance_scheduling_type=GRB.CONTINUOUS)
-            # action constraints in period t+tau
-            sub_model.addConstrs((x_t_tau_var[:, i].sum() == self.delta[scenario_id, tau, i] for i in range(I)), name=f"valid_advance_scheduling_{t + tau}", )
-            bar_u_t_tau_var, _ = self.env.post_action_state(state_t_tau_var, action_t_tau_var, is_var=True)
-            sub_model.addConstrs((bar_u_t_tau_var[m] <= self.env.regular_capacity for m in range(P - tau + 1) ), name=f"valid_post_action_regular_bookings_{t + tau}", )
+            state_t_tau_var = self.get_next_state(model=sub_model,
+                                                  state=previous_state_var,
+                                                  action=previous_action_var,
+                                                  new_arrival=self.delta[scenario_id, tau],
+                                                  t=t,
+                                                  tau=tau)
+            action_t_tau_var = self.get_action_var(model=sub_model, t=t, tau=tau, advance_scheduling_type=GRB.CONTINUOUS)
+            self.add_action_space_constraints(model=sub_model, state_var=state_t_tau_var, action_var=action_t_tau_var, t=t, tau=tau)
             fut_cost += self.env.discount_factor ** tau * self.env.cost_fn(state_t_tau_var, action_t_tau_var, t + tau)
-            u_t_tau_var = np.array( [sub_model.addVar(vtype=GRB.CONTINUOUS, name=f"u^{t + tau}_{j}") for j in range(P - tau)])
-            sub_model.addConstrs((u_t_tau_var[j] == bar_u_t_tau_var[j + 1] for j in range(P - tau)), name=f"transit{t + tau}" )
+            previous_state_var = state_t_tau_var
+            previous_action_var = action_t_tau_var
         sub_model.setObjective(fut_cost, GRB.MINIMIZE)
         return sub_model, linking_constraints
 
@@ -344,7 +361,6 @@ class SAAdvanceAgent:
                 if abs(upper_bound - lower_bound) < tol:
                     action_t = self.get_solution(action_t_var, is_final=True)
                     return action_t, upper_bound, {}
-            #master_model.update()
             print('upper_bound:', upper_bound)
             print('lower_bound:', lower_bound)
 
@@ -360,7 +376,7 @@ if __name__ =="__main__":
     config = get_config_by_type('base_case')
     env = config.env
     discount_factor = env.discount_factor
-    agent = SAAdvanceAgent(env, discount_factor, **{'sample_path_number': 20, 'is_myopic':False})
+    agent = SAAdvanceAgent(env, discount_factor, **{'sample_path_number': 10, 'is_myopic':False})
     print('Init State:', config.init_state)
     print('Future arrivals:', agent.delta[0])
     start = time.time()

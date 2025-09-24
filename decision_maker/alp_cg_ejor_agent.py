@@ -15,14 +15,13 @@ from utils import get_solution_value, ColumnGenerationSolver, generate_state_act
 
 
 class ALPEJORColumnGenerationAgent(ALPEJORAgent):
-    TOKEN_WAIT = 15
 
     def __init__(self, env, discount_factor, V=None, Q=None, coefficients=None, pretrain=False):
         super().__init__(env, discount_factor, V, Q)
         self.is_trained = False
-        self.E_u_alpha = [uniform(loc=0, scale=self.env.regular_capacity).mean() for i in range(self.env.planning_horizon)]
+        self.E_u_alpha = [self.env.regular_capacity * 0.94 ** (i+1) for i in range(self.env.planning_horizon)]
         self.E_u_alpha[-1] = 0
-        self.E_v_alpha = [uniform(loc=0, scale=self.env.overtime_capacity).mean() for i in range(self.env.planning_horizon)]
+        self.E_v_alpha = [self.env.overtime_capacity * 0.9 ** (i+1) for i in range(self.env.planning_horizon)]
         self.E_v_alpha[-1] = 0
         #self.E_w_alpha = self.env.arrival_generator.mean_by_type
         self.E_w_alpha = [1 for i in range(self.env.num_types)]

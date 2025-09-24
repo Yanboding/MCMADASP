@@ -6,6 +6,7 @@ from pprint import pprint
 
 from decision_maker.alp_cg_ejor_agent import ALPEJORColumnGenerationAgent
 from decision_maker.alp_rg_ejor_agent import ALPEJORRowGenerationAgent
+from decision_maker.hindsight_sa_agent import HindsightSAAgent
 from utils import iter_to_tuple, iter_to_list, RunningStats, get_uid
 
 import numpy as np
@@ -63,7 +64,7 @@ def action_value_function_compare_experiment(config, agent_configs, plot_labels)
     action_value_df = pd.DataFrame(df)
     action_value_df.to_excel('action_value.xlsx')
 
-def decision_epoch_experiment(config, agents, decision_epochs, plot_labels, ylabel, replication=1000):
+def decision_epoch_experiment(config, agents, decision_epochs, plot_labels, ylabel, replication=500):
     x = []
     value_fuc_stats = defaultdict(lambda: defaultdict(lambda: RunningStats()))
     env = config.env
@@ -72,16 +73,17 @@ def decision_epoch_experiment(config, agents, decision_epochs, plot_labels, ylab
         x.append(decision_epoch)
         env.set_decision_epoch(decision_epoch)
         init_state, info = env.reset(**config.reset_params)
-        lower_bound_agent = SAAdvanceAgent(env=env, discount_factor=env.discount_factor)
+        #lower_bound_agent = SAAdvanceAgent(env=env, discount_factor=env.discount_factor)
+        lower_bound_agent = HindsightSAAgent(env=env, discount_factor=env.discount_factor)
         sample_paths = [env.reset_arrivals(t=1) for _ in range(replication)]
         for agent_name, (agent, args) in agents.items():
             agent_instant = agent(env=env, discount_factor=env.discount_factor, **args)
             policy_evaluator = PolicyEvaluator(env, agent_instant, env.discount_factor)
-            for sample_path in sample_paths:
+            for sid, sample_path in enumerate(sample_paths):
                 uid = get_uid(sample_path.tolist())
                 pct_gap = policy_evaluator.sample_path_optimality_gap_evaluate(lower_bound_agent, init_state, 1,
                                                                                sample_path)
-                print(f'decision_epoch {decision_epoch}, agent_name {agent_name}, sample path id {uid}', pct_gap)
+                print(f'decision_epoch {decision_epoch}, agent_name {agent_name}, sample path id {uid} - {sid}', pct_gap)
                 value_fuc_stats[agent_name][decision_epoch].record(pct_gap)
     approximate_value_plot_from_running_stats_dict(running_stats_dict=value_fuc_stats,
                                                    x_vals=sorted(x),
@@ -171,19 +173,18 @@ def action_opt_pct_compare_experiment(config, agent_configs, plot_labels, replic
 if __name__ == '__main__':
     from experiments import get_config_by_type
 
-    config = get_config_by_type('adv_default')
+    config = get_config_by_type('finite_default')
     #action_value_function_compare_experiment(config)
 
     agent_configs = {
-        'Myopic Policy': (SAAdvanceAgent, {'sample_path_number': 500, 'is_myopic': True}),
-        'Heterogeneous ALP Policy': (HeterogeneousALPRowGenerationAgent, {'pretrain': True}),
-        'Hindsight Approx Policy': (SAAdvanceAgent, {'sample_path_number': 500}),
-        'Optimal Policy': (OptimalAgent, {'pretrain':True, 'state':config.init_state, 't':1})
+        'Myopic Policy': (HindsightSAAgent, {'sample_path_number': 500, 'is_myopic': True}),
+        'Hindsight Approx Policy': (HindsightSAAgent, {'sample_path_number': 500}),
+        #'Optimal Policy': (OptimalAgent, {'pretrain':True, 'state':config.init_state, 't':1})
     }
     plot_labels = {key:key for key in agent_configs}
 
     #plot_labels = {key: key for key in agent_configs}
-    action_value_function_compare_experiment(config, agent_configs,  plot_labels)
-    #decision_epoch_experiment(config, agent_configs, [decision_epoch for decision_epoch in range(1, 11)], plot_labels, ylabel='Percentage Optimality Gap (%)')
+    #action_value_function_compare_experiment(config, agent_configs,  plot_labels)
+    decision_epoch_experiment(config, agent_configs, [decision_epoch for decision_epoch in range(1, 11)], plot_labels, ylabel='Percentage Optimality Gap (%)')
     #coefficient_plot(config, agent_configs, prefix='type')
     #action_opt_pct_compare_experiment(config, agent_configs, plot_labels)

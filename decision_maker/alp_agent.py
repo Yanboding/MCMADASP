@@ -198,6 +198,78 @@ class ALPAgent:
             else:
                 raise RuntimeError("Optimal solution not found")
 
+    def get_simplified_approx_value_fn(self, model, state, t, W_0, U, W):
+        """
+        Returns a gp.LinExpr for the approximate value:
+            W_0[t] + sum_j U[t][j] * u[j] + sum_i W[t][i] * w[i]
+        and adds simple non-negativity constraints on those contributions.
+        """
+        u, w = state  # arrays/MVars of gp.Var
+        n_u = len(u)
+
+        # Build linear expressions with Gurobi, not NumPy
+        expr_u = gp.quicksum(U[t][j] * u[j] for j in range(n_u))
+        approximate_V = expr_u
+
+        return approximate_V
+
+    def simplified_solve(self,state, t, action=None):
+        # ---------- shortcuts ----------
+        N = self.env.decision_epoch
+        gamma = self.discount_factor
+
+        mu = self.env.arrival_generator.mean_by_type
+        # assume I know the
+        with (gp.Model("ALP_Advance", env=self.grb_env) as m):
+            # m.setParam("OutputFlag", 0)
+            # m.setParam("LogToConsole", 0)
+            # m.setParam("MIPFocus", 1)
+            # ---------- 1. today’s increments ----------
+            action_var = self.get_action_var(m, state, t, 0)
+            if action is not None:
+                self.set_action(action_var=action_var, action=action)
+            # ---------- 1. objective ----------
+            imm_cost = self.env.cost_fn(state, action_var, t)
+            fut_cost = 0
+            if t < N:
+                new_state_var = self.env.get_next_state(state=state,
+                                                       action=action_var,
+                                                       new_arrival=self.env.arrival_generator.mean_by_type,
+                                                       is_var=True)
+                print('new_state_var:', new_state_var)
+                fut_cost += gamma * self.get_simplified_approx_value_fn(model=m,
+                                                             state=new_state_var,
+                                                             t=t+1,
+                                                             W_0=self.W_0,
+                                                             U=self.U,
+                                                             W=self.W)
+            m.setObjective(imm_cost + fut_cost, GRB.MINIMIZE)
+            # ---------- 7. solve ----------
+            m.setParam("Presolve", 2)
+            m.setParam("Threads", 0)
+            m.optimize()
+            m.write('column_solver.lp')
+            print('imm_cost:', imm_cost.getValue())
+            if t < N:
+                print('future_cost:', fut_cost.getValue())
+            else:
+                print('future_cost:', fut_cost)
+            if t < N:
+                get_val = np.vectorize(lambda e: e.getValue())
+                regular_hour_bookings = get_val(new_state_var[0])
+                info = {'W_0': self.W_0[t + 1],
+                        'new_state': regular_hour_bookings,
+                        'Uu': np.dot(self.U[t+1], regular_hour_bookings),
+                        'Wmu': np.dot(self.W[t], mu)}
+            else:
+                info = {}
+            # ---------- 8. return ----------
+            if m.Status == GRB.OPTIMAL:
+                action = self.get_action_solution(action_var)
+                return action, m.ObjVal, info
+            else:
+                raise RuntimeError("Optimal solution not found")
+
     def policy(self, state, t):
         action, obj_value, info = self.solve(state, t)
         return action

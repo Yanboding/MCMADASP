@@ -28,7 +28,7 @@ def plot_experiment_result(directory_path, plot_labels, experiment_lables):
     total_overtime_by_day_by_agent = defaultdict(lambda: defaultdict(lambda: RunningStats()))
     x_values = set()
     treatment_types = set()
-    pattern = os.path.join(directory_path, '*.jsonl')
+    pattern = os.path.join(directory_path, '[0-9]*.jsonl')
     jsonl_files = glob.glob(pattern)
     count = 0
     uids = set()
@@ -49,19 +49,18 @@ def plot_experiment_result(directory_path, plot_labels, experiment_lables):
                         for agent_result in data.get('result', []):
                             agent_name = agent_result['agent_name']
                             pct_opt_gap_val = agent_result['opt_gap']
+                            if pct_opt_gap_val == float('inf'):
+                                continue
                             pct_opt_gap[agent_name][param_value].record(pct_opt_gap_val)
                             for wait_time_by_type in agent_result['wait_time_by_type']:
                                 treatment_type = wait_time_by_type['treatment_type']
                                 treatment_types.add(treatment_type)
-                                wait_time_stats = RunningStats()
-                                wait_time_stats.expect = wait_time_by_type['expect']
-                                wait_time_stats.varSum = wait_time_by_type['varSum']
-                                wait_time_stats.count = wait_time_by_type['count']
+                                wait_time_stats = RunningStats(wait_time_by_type['count'], wait_time_by_type['expect'], wait_time_by_type['varSum'])
                                 wait_time_by_type_by_agent[param_value][agent_name][treatment_type]+=wait_time_stats
                                 total_average_wait_time[agent_name][param_value]+=wait_time_stats
                             for overtime in agent_result['overtime']:
                                 total_overtime_by_day_by_agent[agent_name][param_value].record(overtime)
-                except (json.JSONDecodeError, KeyError) as e:
+                except Exception as e:
                     print(f"Skipping malformed or incomplete line: {line.strip()} - Error: {e}")
     print("Sample path number:", count)
     x_values = sorted(list(x_values))
@@ -120,7 +119,7 @@ def plot_experiment_result(directory_path, plot_labels, experiment_lables):
 
 if __name__ == '__main__':
     # Define the path to your results file
-    plot_labels = {'hindsight_approx': 'Hindsight Approx Policy', 'myopic': 'Myopic Policy'}
+    plot_labels = {'alp': 'ALP Policy'}
     experiment_lables = {'demand_rate': 'Arrival Rate',
                          'decision_epoch': 'Decision Epoch',
                          'overtime_cost_by_day':'Overtime Cost',
@@ -128,8 +127,8 @@ if __name__ == '__main__':
     # Load and process the data
     #plot_experiment_result('results/demand_rate', plot_labels, experiment_lables)
     #plot_experiment_result('results/occupancy_level', plot_labels, experiment_lables)
-    #plot_experiment_result('results/higher_demand_rate', plot_labels, experiment_lables)
-    plot_experiment_result('results/decision_epoch', plot_labels, experiment_lables)
+    plot_experiment_result('results/demand_rate', plot_labels, experiment_lables)
+    #plot_experiment_result('results/decision_epoch', plot_labels, experiment_lables)
 
     '''
     if not results_df.empty:

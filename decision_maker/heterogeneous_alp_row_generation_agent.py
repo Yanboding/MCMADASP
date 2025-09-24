@@ -42,7 +42,7 @@ class HeterogeneousALPRowGenerationAgent(ALPAgent):
                             waitlist_var.lb = waitlist_var.ub = self.env.arrival_generator.maximum_arrival
                         else:
                             waitlist_var.lb = waitlist_var.ub = 0
-                    action_var = (x_var_t, y_var_t) = self.get_action_var(init_columns_model, state_var, t, 0)
+                    action_var = self.get_action_var(init_columns_model, state_var, t, 0)
                     next_regular_hour_booking_vars = self.env.get_next_regular_bookings(state_var, action_var, is_var=True)
                     maximum_difference_var = init_columns_model.addVar(name='maximum_difference')
                     init_columns_model.addConstrs(
@@ -144,7 +144,7 @@ class HeterogeneousALPRowGenerationAgent(ALPAgent):
         approx_V_next = 0
         if t < self.env.decision_epoch:
             new_state = self.env.get_next_state(state, action, self.env.arrival_generator.mean_by_type,
-                                                is_var=False)
+                                                is_var=True)
             approx_V_next += self.get_approx_value_fn(model=model,
                                                       state=new_state,
                                                       t=t + 1,
@@ -153,7 +153,7 @@ class HeterogeneousALPRowGenerationAgent(ALPAgent):
                                                       W=self.W_vars)
         return approx_V_t - self.env.discount_factor * approx_V_next <= candidate_cost
 
-    def train(self, debug, tol=1e-6, max_iter=1000):
+    def train(self, debug, tol=1e-6, max_iter=10000):
         if debug == True:
             initial_candidates = self.generate_all_candidates()
         else:
@@ -164,11 +164,13 @@ class HeterogeneousALPRowGenerationAgent(ALPAgent):
                                              initial_candidates=initial_candidates)
         self.rg_solver.solve(tol=tol, max_iter=max_iter)
         self.rg_solver.master_model.write('rg.lp')
-        print('Candidates:')
-        pprint(self.rg_solver.candidates_list)
         print('master obj:', self.rg_solver.master_model.ObjVal)
         final_coefficients = [clean_value(v.X, tol) for v in self.rg_solver.master_model.getVars()]
         self.W_0, self.U, self.W = self.get_coefficients(final_coefficients)
+        print('W_0:', self.W_0)
+        print('W:', self.W)
+        print('U:', self.U)
+
         self.is_trained = True
         return final_coefficients
 
@@ -183,7 +185,10 @@ if __name__ == "__main__":
     init_state = config.init_state
     agent = HeterogeneousALPRowGenerationAgent(env=env, discount_factor=env.discount_factor)
     coefficients = agent.train(debug=False, max_iter=1000)
-    print(agent.solve(config.init_state, 1))
+    print('init_state:', init_state)
+    #action = (np.array([[3, 3],[0, 0],[0, 0]]), np.array([ 4.,  0., 0.]))
+    action = None
+    print(agent.simplified_solve(config.init_state, 1, action=action))
     # 1344.6
 
     #print(coefficients)

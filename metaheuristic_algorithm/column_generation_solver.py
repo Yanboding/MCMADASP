@@ -48,11 +48,9 @@ class ColumnGenerationSolver:
                     self.add_column(candidate=candidate, col_name=f"init_X({i + 1})")
             else:
                 duals = [clean_value(constr.Pi, 1e-8) for constr in self.master_model.getConstrs()]
-                print('duals:', duals)
                 is_column_added = False
                 # separation_callback yields the row and violation in decreasing order
                 for candidate, reduce_cost in self.pricing_callback(duals):
-                    print('candidate:', candidate, 'reduce_cost:', reduce_cost, -reduce_cost > tol)
                     if -reduce_cost > tol and (is_column_added :=self.add_column(candidate=candidate, col_name=f'X({iteration})')):
                         break
                 if not is_column_added:
@@ -65,7 +63,6 @@ class ColumnGenerationSolver:
             if clean_value(self.master_model.getVarByName("init_s").X, 1e-8) < tol:
                 print([clean_value(constr.Pi, tol) for constr in self.master_model.getConstrs()])
                 return self.candidates_list
-        self.master_model.write('initial_columns_failed.lp')
         print("Final: ", self.master_model.ObjVal)
         #return self.candidates_list
         raise ValueError('Finding feasible columns failed!')

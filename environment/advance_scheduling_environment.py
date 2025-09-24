@@ -4,7 +4,7 @@ import itertools
 import numpy as np
 from scipy.stats import truncnorm
 
-from utils import numpy_shift, RunningStats, integer_partitions_fixed_bins, bounded_compositions
+from utils import numpy_shift, RunningStats, integer_partitions_fixed_bins
 
 
 class AdvSchedulingEnv:
@@ -79,6 +79,7 @@ class AdvSchedulingEnv:
         for N in range(self.arrival_generator.maximum_arrival + 1):
             for arrivals in integer_partitions_fixed_bins(total=N, bins=self.num_types):
                 yield np.array(arrivals)
+
     def generate_states(self):
         for t in range(1, self.decision_epoch+1):
             for regular_hour_bookings in self.generate_regular_hour_bookings(t):
@@ -108,7 +109,11 @@ class AdvSchedulingEnv:
     def post_action_state(self, state, action, is_var=False):
         regular_bookings, waitlist = self.get_state(state, is_var)
         advance_scheduling_decision, overtime_decision = action
-        new_regular_bookings = regular_bookings + self.convert_action_to_booking_slots(advance_scheduling_decision) - overtime_decision
+        if is_var:
+            new_regular_bookings = regular_bookings + self.convert_action_to_booking_slots(advance_scheduling_decision) - overtime_decision
+        else:
+            new_regular_bookings = np.minimum(regular_bookings + self.convert_action_to_booking_slots(advance_scheduling_decision), self.regular_capacity)
+            #new_regular_bookings = regular_bookings + self.convert_action_to_booking_slots(advance_scheduling_decision) - overtime_decision
         new_waitlist = waitlist - advance_scheduling_decision.sum(axis=0)
         return (new_regular_bookings, new_waitlist)
 
@@ -204,11 +209,13 @@ class AdvSchedulingEnv:
         self.state = self.post_action_state_to_new_state(post_action_state, delta)
         return self.state, cost, done, {'wait_time_by_type': self.wait_time_by_type, 'overtime': self.overtime}
 
+    def get_utility(self, arrival_rate):
+        print((self.arrival_generator.type_probs * arrival_rate * self.treatment_pattern).sum()/self.regular_capacity)
+
+
 if __name__ =='__main__':
     from experiments import get_config_by_type
-    config = get_config_by_type('adv_default')
-    env = config.env
-    state, info = env.reset(**config.reset_params)
-    print(state)
-    valid_action = (np.array([[0, 3], [0, 0], [0, 0],[0,0]]), np.array([0, 1, 0,1]))
-    env.step(valid_action)
+    config = get_config_by_type('base_case')
+    config.env.get_utility(8.25)
+    config.env.get_utility(12)
+    config.env.get_utility(16)
