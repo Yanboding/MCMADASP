@@ -9,7 +9,7 @@ import os
 
 from decision_maker.approx_allocation_to_advance_agent import ApproxAllocationAdvanceAgent
 from decision_maker.myopic_allocation_to_advance_agent import MyopicAllocationAdvanceAgent
-from decision_maker.policy_evaluator import PolicyEvaluator
+from policy_evaluator.policy_evaluator import PolicyEvaluator
 from decision_maker.so_allocation_to_advance_agent import SAAllocationAdvanceAgent
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))

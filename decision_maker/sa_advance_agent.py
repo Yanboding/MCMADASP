@@ -199,11 +199,11 @@ class SAAdvanceAgent:
             m.setParam("Presolve", 2)
             m.setParam("Threads", 0)
             m.optimize()
-            '''
+
             cur_mem = m.getAttr(GRB.Attr.MemUsed)  # current RAM in GB
             peak_mem = m.getAttr(GRB.Attr.MaxMemUsed)  # peak RAM in GB
             print(f"Memory now: {cur_mem:.2f} GB  (peak {peak_mem:.2f} GB)")
-            '''
+
             print('imm_cost:', imm_cost.getValue())
             if t >= self.env.decision_epoch or self.is_myopic:
                 print('future_cost:', fut_cost)
@@ -376,7 +376,7 @@ if __name__ =="__main__":
     config = get_config_by_type('base_case')
     env = config.env
     discount_factor = env.discount_factor
-    agent = SAAdvanceAgent(env, discount_factor, **{'sample_path_number': 10, 'is_myopic':False})
+    agent = SAAdvanceAgent(env, discount_factor, **{'sample_path_number': 1, 'is_myopic':False})
     print('Init State:', config.init_state)
     print('Future arrivals:', agent.delta[0])
     start = time.time()

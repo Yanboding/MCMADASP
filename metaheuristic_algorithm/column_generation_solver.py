@@ -65,6 +65,8 @@ class ColumnGenerationSolver:
                 if verbose:
                     print([clean_value(constr.Pi, tol) for constr in self.master_model.getConstrs()])
                 return self.candidates_list
+            if verbose:
+                print('objective:', self.master_model.ObjVal, 'dual:', [clean_value(constr.Pi, tol) for constr in self.master_model.getConstrs()])
         if verbose:
             print("Final: ", self.master_model.ObjVal)
         raise ValueError('Finding feasible columns failed!')

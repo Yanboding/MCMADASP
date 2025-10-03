@@ -173,18 +173,20 @@ def action_opt_pct_compare_experiment(config, agent_configs, plot_labels, replic
 if __name__ == '__main__':
     from experiments import get_config_by_type
 
-    config = get_config_by_type('finite_default')
+    config = get_config_by_type('ejor_default')
     #action_value_function_compare_experiment(config)
-
+    '''
     agent_configs = {
         'Myopic Policy': (HindsightSAAgent, {'sample_path_number': 500, 'is_myopic': True}),
         'Hindsight Approx Policy': (HindsightSAAgent, {'sample_path_number': 500}),
         #'Optimal Policy': (OptimalAgent, {'pretrain':True, 'state':config.init_state, 't':1})
     }
+    '''
+    agent_configs = {'ALP CG': (ALPEJORColumnGenerationAgent, {'pretrain': True})}
     plot_labels = {key:key for key in agent_configs}
 
     #plot_labels = {key: key for key in agent_configs}
     #action_value_function_compare_experiment(config, agent_configs,  plot_labels)
-    decision_epoch_experiment(config, agent_configs, [decision_epoch for decision_epoch in range(1, 11)], plot_labels, ylabel='Percentage Optimality Gap (%)')
-    #coefficient_plot(config, agent_configs, prefix='type')
+    #decision_epoch_experiment(config, agent_configs, [decision_epoch for decision_epoch in range(1, 11)], plot_labels, ylabel='Percentage Optimality Gap (%)')
+    coefficient_plot(config, agent_configs, prefix='type')
     #action_opt_pct_compare_experiment(config, agent_configs, plot_labels)

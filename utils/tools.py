@@ -183,7 +183,10 @@ def solve_and_handle_errors(model: gp.Model, verbose=False):
     try:
         # Optimize the model
         model.optimize()
-
+        if verbose:
+            cur_mem = model.getAttr("MemUsed")  # current RAM in GB
+            peak_mem = model.getAttr("MaxMemUsed")  # peak RAM in GB
+            print(f"Memory now: {cur_mem:.2f} GB  (peak {peak_mem:.2f} GB)")
         # Check the final optimization status
         if model.Status == GRB.OPTIMAL:
             if verbose:

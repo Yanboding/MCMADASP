@@ -8,7 +8,8 @@ import gurobipy as gp
 from gurobipy import GRB
 
 from decision_maker import ALPAgent
-from utils import get_solution_value, ColumnGenerationSolver, solve_and_handle_errors, clean_value
+from metaheuristic_algorithm import ColumnGenerationSolver
+from utils import get_solution_value, solve_and_handle_errors, clean_value
 
 
 class HeterogeneousALPColumnGenerationAgent(ALPAgent):

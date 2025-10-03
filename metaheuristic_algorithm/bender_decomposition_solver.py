@@ -158,7 +158,6 @@ class BenderDecompositionSolver:
                 if abs(upper_bound - lower_bound) < tol:
                     action_t = self.get_solution(action_t_var, is_final=True)
                     return action_t, upper_bound, {}
-            # master_model.update()
             print('upper_bound:', upper_bound)
             print('lower_bound:', lower_bound)
 

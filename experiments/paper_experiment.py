@@ -49,9 +49,14 @@ def plot_experiment_result(directory_path, plot_labels, experiment_lables):
                         for agent_result in data.get('result', []):
                             agent_name = agent_result['agent_name']
                             pct_opt_gap_val = agent_result['opt_gap']
-                            if pct_opt_gap_val == float('inf'):
+                            if pct_opt_gap_val > 1e5 or pct_opt_gap_val < 0:
+                                #print('passed pct_opt_gap_val', pct_opt_gap_val)
                                 continue
-                            pct_opt_gap[agent_name][param_value].record(pct_opt_gap_val)
+                            if agent_name == 'hindsight_approx':
+                                print('add pct_opt_gap_val', agent_name, pct_opt_gap_val, pct_opt_gap[agent_name][param_value])
+                            pct_opt_gap[agent_name][param_value] += pct_opt_gap_val
+                            if agent_name == 'hindsight_approx':
+                                print('after add agent_name:', pct_opt_gap[agent_name][param_value].mean)
                             for wait_time_by_type in agent_result['wait_time_by_type']:
                                 treatment_type = wait_time_by_type['treatment_type']
                                 treatment_types.add(treatment_type)
@@ -63,6 +68,7 @@ def plot_experiment_result(directory_path, plot_labels, experiment_lables):
                 except Exception as e:
                     print(f"Skipping malformed or incomplete line: {line.strip()} - Error: {e}")
     print("Sample path number:", count)
+    print(pct_opt_gap)
     x_values = sorted(list(x_values))
     os.path.join(directory_path, f'percentage_optimality_gap_by_{experiment_name}')
     approximate_value_plot_from_running_stats_dict(running_stats_dict=pct_opt_gap,
@@ -119,7 +125,8 @@ def plot_experiment_result(directory_path, plot_labels, experiment_lables):
 
 if __name__ == '__main__':
     # Define the path to your results file
-    plot_labels = {'alp': 'ALP Policy'}
+    plot_labels = {'hindsight_approx': 'Hindsight Approx Policy',
+                   'myopic': 'Myopic Policy',}
     experiment_lables = {'demand_rate': 'Arrival Rate',
                          'decision_epoch': 'Decision Epoch',
                          'overtime_cost_by_day':'Overtime Cost',

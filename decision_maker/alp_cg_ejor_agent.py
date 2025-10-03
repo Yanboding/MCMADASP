@@ -13,18 +13,21 @@ class ALPEJORColumnGenerationAgent(InfiniteRTAgent):
     def __init__(self, env, discount_factor, V=None, Q=None, coefficients=None, pretrain=False):
         super().__init__(env, discount_factor, V, Q)
         self.is_trained = False
-        self.E_u_alpha = [self.env.regular_capacity * 0.99 ** (i+1) for i in range(self.env.planning_horizon)]
+        self.E_u_alpha = [self.env.regular_capacity * 0.95 ** (i) for i in range(self.env.planning_horizon)]
         self.E_u_alpha[-1] = 0
-        self.E_v_alpha = [self.env.overtime_capacity * 0.99 ** (i+1) for i in range(self.env.planning_horizon)]
+        self.E_v_alpha = [self.env.overtime_capacity * 0.5 ** (i+1) for i in range(self.env.planning_horizon)]
         self.E_v_alpha[-1] = 0
-        #self.E_w_alpha = self.env.arrival_generator.mean_by_type
-        self.E_w_alpha = [1 for i in range(self.env.num_types)]
+        self.E_w_alpha = self.env.arrival_generator.mean_by_type
+        #self.E_w_alpha = [1 for i in range(self.env.num_types)]
         if coefficients is not None:
             final_duals = coefficients
             self.is_trained = True
             self.W_0, self.U, self.V, self.W = self.get_coefficients(final_duals)
         if pretrain:
             self.train(debug=False)
+            print("U*:", self.U)
+            print("V*:", self.V)
+            print("W*:", self.W)
 
     def train(self, debug=False, verbose=False):
         if debug == True:
@@ -123,11 +126,10 @@ class ALPEJORColumnGenerationAgent(InfiniteRTAgent):
         reduced_cost = candidate_cost + self.env.discount_factor * self.get_approx_value_fn(next_state_var, W_0, U, V, W) - approx_V
         pricing_model.setObjective(reduced_cost, GRB.MINIMIZE)
         if solve_and_handle_errors(pricing_model):
-            pricing_model.write('positive_pricing.lp')
             candidate = self.get_candidate(state_var, action_var)
             yield candidate, pricing_model.ObjVal
 
-    def generate_initial_state_action_pairs(self):
+    def generate_initial_state_action_pairs(self, verbose=False):
         for i in range(self.env.num_types):
             with (gp.Model("init_columns", env=self.grb_env) as init_columns_model):
                 state_var = self.get_state_var(init_columns_model)
@@ -164,12 +166,12 @@ class ALPEJORColumnGenerationAgent(InfiniteRTAgent):
                 )
                 init_columns_model.addConstrs(
                     (
-                        waitlist_vars[k] == self.env.arrival_generator.maximum_arrival if k == i else 0
+                        waitlist_vars[k] == (self.env.arrival_generator.maximum_arrival if k == i else 0)
                         for k in range(self.env.num_types)
                     ),
                     name="waitlist_initialization",
                 )
-                if not solve_and_handle_errors(init_columns_model):
+                if not solve_and_handle_errors(init_columns_model, verbose=verbose):
                     raise ValueError("initial set of columns is infeasible.")
                 candidate = self.get_candidate(state_var, action_var)
                 yield candidate
@@ -251,23 +253,71 @@ class ALPEJORColumnGenerationAgent(InfiniteRTAgent):
         return self.env.cost_fn(state, action)
 
     def coeff_C(self, i, n):
-        part1 = sum(self.discount_factor ** k * self.env.holding_cost(k, i) for k in range(n + 1))
+        part1 = sum((self.discount_factor ** k) * self.env.holding_cost(k, i) for k in range(n + 1))
         part2 = sum(self.discount_factor * self.env.treatment_pattern[k+1-n, i] * self.U[k] for k in range(n-1,n-1+self.env.num_sessions))
-        part3 = self.env.postponing_cost(i) - self.discount_factor * self.W[i]
-        return part1 + part2 + part3
+        part3 = self.env.postponing_cost(i) + self.discount_factor * self.W[i]
+        return part1 + part2 - part3
 
     def generate_all_columns(self):
         for column in self.env.generate_state_action_pairs():
             yield column
+
+    def solve(self, state, action=None):
+        # ---------- shortcuts ----------
+        gamma = self.discount_factor
+
+        mu = self.env.arrival_generator.mean_by_type
+        # assume I know the
+        with (gp.Model("ALP_Advance", env=self.grb_env) as m):
+            # m.setParam("OutputFlag", 0)
+            # m.setParam("LogToConsole", 0)
+            # m.setParam("MIPFocus", 1)
+            # ---------- 1. today’s increments ----------
+            action_var = self.get_action_var(m, state)
+            if action is not None:
+                print('action:', action)
+                self.set_action(action_var=action_var, action=action)
+            # ---------- 1. objective ----------
+            imm_cost = self.env.cost_fn(state, action_var)
+            new_state_var = self.env.get_next_state(state=state,
+                                                    action=action_var,
+                                                    new_arrival=self.env.arrival_generator.mean_by_type,
+                                                    is_var=True)
+            fut_cost = gamma * self.get_approx_value_fn(state=new_state_var,
+                                                         W_0=self.W_0,
+                                                         U=self.U,
+                                                         V=self.V,
+                                                         W=self.W)
+            m.setObjective(imm_cost + fut_cost, GRB.MINIMIZE)
+            # ---------- 7. solve ----------
+            m.setParam("Presolve", 2)
+            m.setParam("Threads", 0)
+            m.optimize()
+            m.write('column_solver.lp')
+            print('imm_cost:', imm_cost.getValue())
+            print('future_cost:', fut_cost.getValue())
+            get_val = np.vectorize(lambda e: e.getValue())
+            regular_hour_bookings = get_val(new_state_var[0])
+            info = {'W_0': self.W_0,
+                    'new_state': regular_hour_bookings,
+                    'Uu': np.dot(self.U, regular_hour_bookings),
+                    'Wmu': np.dot(self.W, mu)}
+            # ---------- 8. return ----------
+            if m.Status == GRB.OPTIMAL:
+                action = get_solution_value(action_var)
+                return action, m.ObjVal, info
+            else:
+                raise RuntimeError("Optimal solution not found")
 
 
 if "__main__" == __name__:
     config = get_config_by_type('ejor_default')
     env = config.env
     init_state = config.init_state
-    agent = ALPEJORColumnGenerationAgent(env=env, discount_factor=env.discount_factor)
+    agent = ALPEJORColumnGenerationAgent(env=env, discount_factor=env.discount_factor, pretrain=True)
     #print(list(agent.generate_initial_state_action_pairs()))
-    print(agent.train(debug=False, verbose=True))
+    #agent.train(verbose=False)
+    #print(agent.coeff_C(0,1))
     '''
     duals = [-21.5852964, 0.0319991, 0.0316791, 0.0313623, 0.0310487, 0.0323223, 0.0319991, 0.0316791, 0.0318956, 0.0315767, 0.0312609, 0.0325143, 0.0321891, 0.0318673, 0.0305981, 0.0302921, 0.0299892, 0.0296893, 0.0293924, 0.0290985, 0.0288075, 0.0285194, 0.0282342, 0.0279519, 0.0276724, 0.0273957, 0.0271217, 0.0268505, 0.026582, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.1584114]
 

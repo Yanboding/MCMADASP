@@ -66,17 +66,16 @@ class ExperimentConfig:
 
     @classmethod
     def from_ejor_default_case(cls):
-        l = [(0, 10, 0), (10, 100, 50)]
+        l = [(0, 11, 0), (11, 100, 50)]
         holding_cost =[wait_time(l)]
         holding_cost = np.array(holding_cost).T
         env_args = {
-            "decision_epoch": 100,
             "booking_window_size":25,
             "arrival_rates": [10],
             "patterns": ["5 * 1"],
             "holding_cost_by_day_by_type": holding_cost.tolist(),
-            "overtime_cost_by_day": 100,
-            "postponing_cost": 5000,
+            "overtime_cost_by_day": 200,
+            "postponing_cost": 100,
             "duration": 1,
             "regular_capacity": 50,
             "overtime_capacity": 6,
@@ -89,13 +88,14 @@ class ExperimentConfig:
             "init_state": None,
             "valid_action": None,
             "env_random_seed": 0,
+            "stop_time_random_seed": 1,
             "arrival_random_seed": 42,
         }
         return cls.from_ejor_custom_case(**env_args)
 
     @classmethod
     def from_ejor_base_case(cls):
-        class_num = 18
+        class_num = 2
         l1_3 = [(0, 1, 0), (1, 5, 100), (5, 100, 150)]
         l4_6 = [(0, 10, 0), (10, 20, 50), (20, 40, 100), (40, 100, 150)]
         l7_12 = [(0, 5, 0), (5, 10, 65), (10, 40, 100), (40, 100, 150)]
@@ -122,8 +122,7 @@ class ExperimentConfig:
                          0.29, 0.15, 0.04][:class_num]
         total_arrival_rate = sum(arrival_rates)
         env_args = {
-            'decision_epoch': 1500,
-            "booking_window_size": 100,
+            "booking_window_size": 50,
             'arrival_rates': arrival_rates,
             'patterns': ['1 * 2 + 4 * 1',
                          '1 * 2',
@@ -162,7 +161,7 @@ class ExperimentConfig:
         }
         return cls.from_ejor_custom_case(**env_args)
     @classmethod
-    def from_ejor_custom_case(cls, decision_epoch,
+    def from_ejor_custom_case(cls,
                               booking_window_size,
                               arrival_rates,
                               patterns,
@@ -178,10 +177,10 @@ class ExperimentConfig:
                               init_state=None,
                               valid_action=None,
                               env_random_seed=None,
+                              stop_time_random_seed=None,
                               arrival_random_seed=None,
                               ):
         args = {
-            'decision_epoch': decision_epoch,
             'booking_window_size': booking_window_size,
             'arrival_rates': arrival_rates,
             'patterns': patterns,
@@ -197,6 +196,7 @@ class ExperimentConfig:
             'init_state': init_state,
             'valid_action': valid_action,
             'env_random_seed': env_random_seed,
+            'stop_time_random_seed': stop_time_random_seed,
             'arrival_random_seed': arrival_random_seed
         }
         treatment_pattern = str2treatment_patterns(patterns)
@@ -215,7 +215,6 @@ class ExperimentConfig:
         postponing_cost_fn = PostponingCostCalculator(postponing_cost)
         env_params = {
             'treatment_pattern': treatment_pattern,
-            'decision_epoch': decision_epoch,
             'booking_window_size': booking_window_size,
             'arrival_generator': arrival_generator,
             'holding_cost': holding_cost_fn,
@@ -225,7 +224,8 @@ class ExperimentConfig:
             'regular_capacity': regular_capacity,
             'overtime_capacity': overtime_capacity,
             'discount_factor': discount_factor,
-            'random_seed': env_random_seed
+            'init_state_random_seed': env_random_seed,
+            'stop_time_random_seed': stop_time_random_seed
         }
         env = RTEnv(**env_params)
         if init_state == None:
@@ -233,7 +233,7 @@ class ExperimentConfig:
             overtimes = np.array([0] * env.planning_horizon)
             waitlists = np.array([1] * env.num_types)
             advance_scheduling_decision = np.array(
-                [waitlists] + [[0] * env.num_types for _ in range(env.booking_window_size - 1)])
+                [[0] * env.num_types for _ in range(env.booking_window_size - 1)]+[waitlists])
             overtime_decision = np.maximum(
                 np.minimum(
                     bookings + env.convert_action_to_booking_slots(advance_scheduling_decision) - regular_capacity,
