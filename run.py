@@ -10,7 +10,8 @@ from gurobipy import GRB
 
 from experiments.experiment_config import get_config_by_type
 from utils import iter_to_tuple, get_uid, safe_open
-from decision_maker import SAAdvanceAgent, PolicyEvaluator, HeterogeneousALPColumnGenerationAgent, HindsightSAAgent
+from decision_maker import ALPEJORColumnGenerationAgent, InfiniteSAAAgent
+from policy_evaluator import PolicyEvaluator
 
 
 def experiment(experiment_name, param_value, env_args, agent_args, sample_path, uid, job_id):
@@ -27,13 +28,13 @@ def experiment(experiment_name, param_value, env_args, agent_args, sample_path, 
         stats = {'agent_name': agent_name}
         state, info = env.reset(**config.reset_params)
         if agent_name == "hindsight_approx":
-            agent_instance = HindsightSAAgent(env, discount_factor=env.discount_factor, **args)
+            agent_instance = InfiniteSAAAgent(env, discount_factor=env.discount_factor, **args)
         elif agent_name == "myopic":
-            agent_instance = HindsightSAAgent(env, discount_factor=env.discount_factor, **args)
+            agent_instance = InfiniteSAAAgent(env, discount_factor=env.discount_factor, **args)
         elif agent_name == 'alp':
-            agent_instance = HeterogeneousALPColumnGenerationAgent(env, discount_factor=env.discount_factor, **args)
+            agent_instance = ALPEJORColumnGenerationAgent(env, discount_factor=env.discount_factor, **args)
         evaluator = PolicyEvaluator(env, agent_instance, env.discount_factor)
-        lower_bound_solver = HindsightSAAgent(env, discount_factor=env.discount_factor,current_decision_var_type=GRB.INTEGER,
+        lower_bound_solver = InfiniteSAAAgent(env, discount_factor=env.discount_factor,current_decision_var_type=GRB.INTEGER,
                                             future_decision_var_type=GRB.INTEGER)
         opt_gap = evaluator.sample_path_optimality_gap_evaluate(lower_bound_solver, state, t, sample_path)
         stats['opt_gap'] = opt_gap
@@ -54,9 +55,9 @@ def experiment(experiment_name, param_value, env_args, agent_args, sample_path, 
 
 def alp_train(env_args, experiment_name, job_id=None):
     print('Training ALP agent with args:', env_args)
-    config_for_train = get_config_by_type(case_type='custom',args=env_args)
+    config_for_train = get_config_by_type(case_type='infinite_custom',args=env_args)
     env_for_train = config_for_train.env
-    agent = HeterogeneousALPColumnGenerationAgent(env=env_for_train, discount_factor=env_for_train.discount_factor)
+    agent = ALPEJORColumnGenerationAgent(env=env_for_train, discount_factor=env_for_train.discount_factor)
     coefficients = agent.train(debug=False)
     output_file = os.path.join('experiments','results',experiment_name, f'alp_train{job_id}.jsonl' if job_id else 'alp_train.jsonl')
     with safe_open(output_file, 'a') as f:  # 'a' will create the file if not present
@@ -68,6 +69,6 @@ if __name__ == '__main__':
     parser.add_argument('--job_id', help='Input METAJOB_ID', type=str)
     args = parser.parse_args()
     params = json.loads(args.params)
-    #alp_train(**params, job_id=args.job_id)
-    experiment(**params, job_id=args.job_id)
+    alp_train(**params, job_id=args.job_id)
+    #experiment(**params, job_id=args.job_id)
     

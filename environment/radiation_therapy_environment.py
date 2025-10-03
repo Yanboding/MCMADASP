@@ -82,7 +82,7 @@ class RTEnv:
             for action in self.valid_actions(state):
                 yield (state, action)
 
-    def cost_fn(self, state, action):
+    def cost_fn(self, state, action, is_var=False):
         regular_bookings, overtimes, waitlist = state
         advance_scheduling_decision, overtime_decision = action
         waiting_cost = gp.quicksum(
@@ -93,7 +93,10 @@ class RTEnv:
         overtime_cost = gp.quicksum(self.discount_factor ** j * self.overtime_cost(j) * overtime_decision[j] for j in range(len(overtime_decision)))
         remaining_treatments = waitlist - advance_scheduling_decision.sum(axis=0)
         postponing_cost = gp.quicksum(self.postponing_cost(i) * remaining_treatments[i] for i in range(self.num_types))
-        return waiting_cost + overtime_cost + postponing_cost
+        cost = waiting_cost + overtime_cost + postponing_cost
+        if not is_var:
+            cost = cost.getValue()
+        return cost
 
     def post_action_state(self, state, action, is_var=False):
         regular_bookings, overtimes, waitlist = self.get_state(state, is_var)

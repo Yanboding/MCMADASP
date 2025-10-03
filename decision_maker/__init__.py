@@ -5,3 +5,5 @@ from .alp_ejor_agent import ALPEJORAgent
 from .finite_rt_agent import FiniteRTAgent
 from .infinite_rt_agent import InfiniteRTAgent
 from .hindsight_sa_agent import HindsightSAAgent
+from .infinite_saa_agent import InfiniteSAAAgent
+from .alp_cg_ejor_agent import ALPEJORColumnGenerationAgent

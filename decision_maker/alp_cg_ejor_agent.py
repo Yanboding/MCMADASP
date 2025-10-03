@@ -15,7 +15,7 @@ class ALPEJORColumnGenerationAgent(InfiniteRTAgent):
         self.is_trained = False
         self.E_u_alpha = [self.env.regular_capacity * 0.95 ** (i) for i in range(self.env.planning_horizon)]
         self.E_u_alpha[-1] = 0
-        self.E_v_alpha = [self.env.overtime_capacity * 0.5 ** (i+1) for i in range(self.env.planning_horizon)]
+        self.E_v_alpha = [self.env.overtime_capacity * 0.3 ** (i+1) for i in range(self.env.planning_horizon)]
         self.E_v_alpha[-1] = 0
         self.E_w_alpha = self.env.arrival_generator.mean_by_type
         #self.E_w_alpha = [1 for i in range(self.env.num_types)]
@@ -25,9 +25,6 @@ class ALPEJORColumnGenerationAgent(InfiniteRTAgent):
             self.W_0, self.U, self.V, self.W = self.get_coefficients(final_duals)
         if pretrain:
             self.train(debug=False)
-            print("U*:", self.U)
-            print("V*:", self.V)
-            print("W*:", self.W)
 
     def train(self, debug=False, verbose=False):
         if debug == True:
@@ -74,6 +71,7 @@ class ALPEJORColumnGenerationAgent(InfiniteRTAgent):
         master_model = gp.Model("MasterRMP")
         master_model.ModelSense = GRB.MINIMIZE
         master_model.setParam('OutputFlag', 0)
+        master_model.setParam("MultiObjPre", 0)
         master_model.addConstr(
             (
                     gp.LinExpr() == 1
@@ -113,6 +111,7 @@ class ALPEJORColumnGenerationAgent(InfiniteRTAgent):
 
         pricing_model = gp.Model(f"Pricing_Problem", env=self.grb_env)
         pricing_model.setParam('OutputFlag', 0)
+        pricing_model.setParam("MultiObjPre", 0)
 
         state_var = self.get_state_var(pricing_model)
         action_var = self.get_action_var(pricing_model, advance_scheduling_type=GRB.INTEGER)
@@ -121,7 +120,7 @@ class ALPEJORColumnGenerationAgent(InfiniteRTAgent):
         next_state_var = self.get_next_state(pricing_model, state_var, action_var, self.env.arrival_generator.mean_by_type)
 
         # --- Objective ---
-        candidate_cost = self.env.cost_fn(state_var, action_var)
+        candidate_cost = self.env.cost_fn(state_var, action_var, is_var=True)
         approx_V = self.get_approx_value_fn(state_var, W_0, U, V, W)
         reduced_cost = candidate_cost + self.env.discount_factor * self.get_approx_value_fn(next_state_var, W_0, U, V, W) - approx_V
         pricing_model.setObjective(reduced_cost, GRB.MINIMIZE)
@@ -132,6 +131,7 @@ class ALPEJORColumnGenerationAgent(InfiniteRTAgent):
     def generate_initial_state_action_pairs(self, verbose=False):
         for i in range(self.env.num_types):
             with (gp.Model("init_columns", env=self.grb_env) as init_columns_model):
+                init_columns_model.setParam("MultiObjPre", 0)
                 state_var = self.get_state_var(init_columns_model)
                 action_var = self.get_action_var(init_columns_model, advance_scheduling_type=GRB.INTEGER)
                 self.add_action_space_constraints(init_columns_model, state_var, action_var)
@@ -192,6 +192,7 @@ class ALPEJORColumnGenerationAgent(InfiniteRTAgent):
     def initial_columns_builder(self):
         master_model = gp.Model("InitMasterRMP")
         master_model.setParam('OutputFlag', 0)
+        master_model.setParam("MultiObjPre", 0)
         # Artificial variable for W_0 constraint
         s_W0 = master_model.addVar(vtype=GRB.CONTINUOUS, lb=0, name='art_W0')
         # Artificial variables for U constraints (planning horizon)
@@ -246,11 +247,12 @@ class ALPEJORColumnGenerationAgent(InfiniteRTAgent):
         # W_i coefficients
         W = (waitlist - gamma * new_waitlist).tolist()
         coefficients = [W_0] + U + V + W
+        coefficients = [clean_value(c, 1e-12) for c in coefficients]
         return coefficients
 
     def get_obj_coefficient(self, candidate):
         state, action = candidate
-        return self.env.cost_fn(state, action)
+        return self.env.cost_fn(state, action, is_var=False)
 
     def coeff_C(self, i, n):
         part1 = sum((self.discount_factor ** k) * self.env.holding_cost(k, i) for k in range(n + 1))
@@ -262,52 +264,35 @@ class ALPEJORColumnGenerationAgent(InfiniteRTAgent):
         for column in self.env.generate_state_action_pairs():
             yield column
 
-    def solve(self, state, action=None):
+    def solve(self, state, action=None, verbose=False):
         # ---------- shortcuts ----------
-        gamma = self.discount_factor
-
-        mu = self.env.arrival_generator.mean_by_type
-        # assume I know the
-        with (gp.Model("ALP_Advance", env=self.grb_env) as m):
+        with (gp.Model("ALP_policy", env=self.grb_env) as policy_model):
+            policy_model.setParam("MultiObjPre", 0)
             # m.setParam("OutputFlag", 0)
             # m.setParam("LogToConsole", 0)
             # m.setParam("MIPFocus", 1)
             # ---------- 1. today’s increments ----------
-            action_var = self.get_action_var(m, state)
+            action_var = self.get_action_var(policy_model, advance_scheduling_type=GRB.INTEGER)
+            self.add_action_space_constraints(policy_model, state, action_var)
             if action is not None:
-                print('action:', action)
                 self.set_action(action_var=action_var, action=action)
             # ---------- 1. objective ----------
-            imm_cost = self.env.cost_fn(state, action_var)
+            imm_cost = self.env.cost_fn(state, action_var, is_var=True)
             new_state_var = self.env.get_next_state(state=state,
                                                     action=action_var,
                                                     new_arrival=self.env.arrival_generator.mean_by_type,
                                                     is_var=True)
-            fut_cost = gamma * self.get_approx_value_fn(state=new_state_var,
-                                                         W_0=self.W_0,
-                                                         U=self.U,
-                                                         V=self.V,
-                                                         W=self.W)
-            m.setObjective(imm_cost + fut_cost, GRB.MINIMIZE)
-            # ---------- 7. solve ----------
-            m.setParam("Presolve", 2)
-            m.setParam("Threads", 0)
-            m.optimize()
-            m.write('column_solver.lp')
-            print('imm_cost:', imm_cost.getValue())
-            print('future_cost:', fut_cost.getValue())
-            get_val = np.vectorize(lambda e: e.getValue())
-            regular_hour_bookings = get_val(new_state_var[0])
-            info = {'W_0': self.W_0,
-                    'new_state': regular_hour_bookings,
-                    'Uu': np.dot(self.U, regular_hour_bookings),
-                    'Wmu': np.dot(self.W, mu)}
+            fut_cost = self.discount_factor * self.get_approx_value_fn(state=new_state_var,
+                                                                         W_0=self.W_0,
+                                                                         U=self.U,
+                                                                         V=self.V,
+                                                                         W=self.W)
+            policy_model.setObjective(imm_cost + fut_cost, GRB.MINIMIZE)
+            if not solve_and_handle_errors(policy_model, verbose=verbose):
+                raise RuntimeError("Master model optimal solution not found")
             # ---------- 8. return ----------
-            if m.Status == GRB.OPTIMAL:
-                action = get_solution_value(action_var)
-                return action, m.ObjVal, info
-            else:
-                raise RuntimeError("Optimal solution not found")
+            action = self.get_solution(action_var, is_final=True)
+            return action, policy_model.ObjVal, {}
 
 
 if "__main__" == __name__:
@@ -318,6 +303,8 @@ if "__main__" == __name__:
     #print(list(agent.generate_initial_state_action_pairs()))
     #agent.train(verbose=False)
     #print(agent.coeff_C(0,1))
+    print(init_state)
+    print(agent.solve(init_state))
     '''
     duals = [-21.5852964, 0.0319991, 0.0316791, 0.0313623, 0.0310487, 0.0323223, 0.0319991, 0.0316791, 0.0318956, 0.0315767, 0.0312609, 0.0325143, 0.0321891, 0.0318673, 0.0305981, 0.0302921, 0.0299892, 0.0296893, 0.0293924, 0.0290985, 0.0288075, 0.0285194, 0.0282342, 0.0279519, 0.0276724, 0.0273957, 0.0271217, 0.0268505, 0.026582, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.1584114]
 

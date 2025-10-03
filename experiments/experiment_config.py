@@ -75,7 +75,7 @@ class ExperimentConfig:
             "patterns": ["5 * 1"],
             "holding_cost_by_day_by_type": holding_cost.tolist(),
             "overtime_cost_by_day": 200,
-            "postponing_cost": 100,
+            "postponing_cost": 5000,
             "duration": 1,
             "regular_capacity": 50,
             "overtime_capacity": 6,
@@ -95,7 +95,7 @@ class ExperimentConfig:
 
     @classmethod
     def from_ejor_base_case(cls):
-        class_num = 2
+        class_num = 18
         l1_3 = [(0, 1, 0), (1, 5, 100), (5, 100, 150)]
         l4_6 = [(0, 10, 0), (10, 20, 50), (20, 40, 100), (40, 100, 150)]
         l7_12 = [(0, 5, 0), (5, 10, 65), (10, 40, 100), (40, 100, 150)]
@@ -144,7 +144,7 @@ class ExperimentConfig:
                          '1 * 2 + 32 * 1'][:class_num],
             'holding_cost_by_day_by_type': holding_cost[:, :class_num].tolist(),
             'overtime_cost_by_day': 100,
-            "postponing_cost": 1000,
+            "postponing_cost": 5000,
             'duration': 1,
             'regular_capacity': 120,
             "overtime_capacity": 6,
@@ -231,7 +231,7 @@ class ExperimentConfig:
         if init_state == None:
             bookings = np.array([0] * env.planning_horizon)
             overtimes = np.array([0] * env.planning_horizon)
-            waitlists = np.array([1] * env.num_types)
+            waitlists = np.array([1000] * env.num_types)
             advance_scheduling_decision = np.array(
                 [[0] * env.num_types for _ in range(env.booking_window_size - 1)]+[waitlists])
             overtime_decision = np.maximum(
@@ -595,6 +595,8 @@ def get_config_by_type(case_type, args=None):
         config = ExperimentConfig.from_ejor_base_case()
     elif case_type == 'ejor_default':
         config = ExperimentConfig.from_ejor_default_case()
+    elif case_type == 'infinite_custom':
+        config = ExperimentConfig.from_ejor_custom_case(**args)
     elif case_type == 'custom':
         config = ExperimentConfig.from_custom_case(**args)
     elif case_type == 'base_case':

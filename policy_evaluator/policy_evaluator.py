@@ -1,7 +1,5 @@
 import time
 from collections import defaultdict
-
-from decision_maker import OptimalAgent, SAAdvanceAgent
 from utils import iter_to_tuple
 from utils.running_stat import RunningStat
 
@@ -95,6 +93,7 @@ class PolicyEvaluator:
 
 
 if __name__ == '__main__':
+    from decision_maker import OptimalAgent, SAAdvanceAgent
     config = ExperimentConfig.from_EJOR_case()
     env = config.env
     init_state = config.init_state

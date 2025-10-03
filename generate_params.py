@@ -182,9 +182,9 @@ def generate_all_experiments(experiment_configs, test_sample_path_num_map, dat_f
     
     print(f"Generated {pending_requests} commands for pending requests across all experiments.")
 
-def _generate_alp_train_params(experiment_name, param_name, param_values, base_env_args_overrides=None, param_modifier_fn=None):
+def _generate_alp_train_params(config_type, experiment_name, param_name, param_values, base_env_args_overrides=None, param_modifier_fn=None):
     # Start with a base configuration.
-    base_env_args = get_config_by_type('finite_base_case').args
+    base_env_args = get_config_by_type(config_type).args
     if base_env_args_overrides:
         base_env_args.update(base_env_args_overrides)
     print(f"Generating parameters for {experiment_name}...")
@@ -209,7 +209,9 @@ def _generate_alp_train_params(experiment_name, param_name, param_values, base_e
 def generate_alp_train_params(experiment_configs, dat_file):
     with open(dat_file, 'w') as f:
         for name, config in experiment_configs.items():
-            for env_arg in  _generate_alp_train_params(experiment_name=name,
+            for env_arg in  _generate_alp_train_params(
+                                       config_type=config['config_type'],
+                                       experiment_name=name,
                                        param_name=config['param_name'],
                                        param_values=config['param_values'],
                                        base_env_args_overrides=config.get('base_env_args_overrides'),
@@ -266,12 +268,21 @@ if __name__ == '__main__':
     '''
     EXPERIMENT_CONFIGS = {
         'demand_rate': {
+            'config_type': 'ejor',
             'param_name': 'total_arrival_rate',
             'param_values': [8.25, 12, 16],
             'param_modifier_fn': demand_rate_modifier
         },
+        'booking_window_size': {
+            'config_type': 'ejor',
+            'param_name': 'booking_window_size',
+            'param_values': [50, 80, 100],
+        }
+
     }
-    
+    '''
+    booking window size
+    '''
     # --- Specify the number of trials for each experiment ---
     # You can customize the number of samples for each experiment here.
     TEST_SAMPLE_NUM_MAP = {
@@ -282,11 +293,12 @@ if __name__ == '__main__':
     }
     
     # --- Run All Experiments ---
-    '''
+
     generate_alp_train_params(
         experiment_configs=EXPERIMENT_CONFIGS,
         dat_file = 'table.dat',
     )
+
     '''
     generate_all_experiments(
         experiment_configs=EXPERIMENT_CONFIGS,
@@ -294,3 +306,4 @@ if __name__ == '__main__':
         dat_file='table.dat',
         is_reuse=False # Set to True to avoid regenerating files and only create the .dat
     )
+    '''

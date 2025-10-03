@@ -80,8 +80,7 @@ def get_solution_value(var_array, use_xn=False):
     attribute = "Xn" if use_xn else "X"
 
     # Define a simple function that gets the desired attribute from a single variable.
-    getter = lambda v: v.getAttr(attribute)
-
+    getter = lambda v: clean_value(v.getAttr(attribute), 1e-12)
     # Use np.vectorize to apply the getter function to each element of the input array.
     return np.vectorize(getter)(var_array)
 

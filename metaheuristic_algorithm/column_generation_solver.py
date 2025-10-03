@@ -71,7 +71,7 @@ class ColumnGenerationSolver:
             print("Final: ", self.master_model.ObjVal)
         raise ValueError('Finding feasible columns failed!')
 
-    def solve(self, tol=1e-6, max_iter=3000):
+    def solve(self, tol=1e-6, max_iter=30000):
         for iteration in range(max_iter):
             print(f"\n--- Iteration {iteration + 1} ---")
             if iteration == 0:
@@ -80,7 +80,7 @@ class ColumnGenerationSolver:
                     self.add_column(candidate=candidate, col_name=f"init_X({i + 1})")
             else:
                 # 2. Get dual values
-                duals = [clean_value(constr.Pi, 1e-8) for constr in self.master_model.getConstrs()]
+                duals = [clean_value(constr.Pi, 1e-12) for constr in self.master_model.getConstrs()]
                 is_column_added = False
                 # separation_callback yields the row and violation in decreasing order
                 for candidate, reduce_cost in self.pricing_callback(duals):
