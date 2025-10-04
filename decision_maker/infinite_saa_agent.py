@@ -3,7 +3,7 @@ import gurobipy as gp
 from gurobipy import GRB
 
 from decision_maker import InfiniteRTAgent
-from metaheuristic_algorithm import ColumnGenerationSolver
+from metaheuristic_algorithm import BenderDecompositionSolver
 from experiments import get_config_by_type
 from utils import get_solution_value, solve_and_handle_errors, clean_value
 
@@ -25,7 +25,7 @@ class InfiniteSAAAgent(InfiniteRTAgent):
         self.sample_path_number = 1
         self.delta = np.array([sample_path])
 
-    def direct_solve(self, state, t, action=None, verbose=False):
+    def direct_solve(self, state,action=None, verbose=False):
         with (gp.Model("SA_Advance", env=self.grb_env) as m):
             m.setParam('DualReductions', 0)
             m.setParam("MultiObjPre", 0)
@@ -37,7 +37,7 @@ class InfiniteSAAAgent(InfiniteRTAgent):
             # add action constraint
             self.add_action_space_constraints(model=m, state_var=state, action_var=action_t_var)
             # ---------- 1. objective ----------
-            imm_cost = self.env.cost_fn(state, action_t_var)
+            imm_cost = self.env.cost_fn(state, action_t_var, is_var=True)
             fut_cost = 0
             if not self.is_myopic:
                 # for every sample path
@@ -51,7 +51,7 @@ class InfiniteSAAAgent(InfiniteRTAgent):
                                                           new_arrival=new_arrival)
                         next_action_var = self.get_action_var(model=m, advance_scheduling_type=self.future_decision_var_type)
                         self.add_action_space_constraints(model=m, state_var=next_state_var, action_var=next_action_var)
-                        fut_cost += self.env.cost_fn(next_state_var, next_action_var)
+                        fut_cost += self.env.cost_fn(next_state_var, next_action_var, is_var=True)
                         prev_state_var = next_state_var
                         prev_action_var = next_action_var
                 fut_cost = fut_cost / self.sample_path_number
@@ -60,7 +60,7 @@ class InfiniteSAAAgent(InfiniteRTAgent):
                 raise RuntimeError("Master model optimal solution not found")
 
             print('imm_cost:', imm_cost.getValue())
-            if t >= self.env.decision_epoch or self.is_myopic:
+            if self.is_myopic:
                 print('future_cost:', fut_cost)
             else:
                 print('future_cost:', fut_cost.getValue())
@@ -68,10 +68,88 @@ class InfiniteSAAAgent(InfiniteRTAgent):
             action = self.get_solution(action_t_var, is_final=True)
             return action, m.ObjVal, {}
 
+    def master_builder_fn(self, state, action=None):
+        master_model = gp.Model(f"SA_Advance_Master", env=self.grb_env)
+        master_model.setParam('DualReductions', 0)
+        master_model.setParam("MultiObjPre", 0)
+        master_model.setParam('MIPFocus', 1)
+        # create action variables in period t
+        action_t_var = self.get_action_var(model=master_model, advance_scheduling_type=GRB.INTEGER)
+        # add action constraint
+        self.add_action_space_constraints(model=master_model, state_var=state, action_var=action_t_var)
+        if action is not None:
+            self.set_action(action_var=action_t_var, action=action)
+        # set imm_cost and a cost to go lb
+        theta_vars = np.array(
+            [master_model.addVar(vtype=GRB.CONTINUOUS, name=f"theta_{omega}") for omega in range(len(self.delta))])
+        imm_cost = self.env.cost_fn(state, action_t_var, is_var=True)
+        z = imm_cost + theta_vars.sum() / self.sample_path_number
+        master_model.setObjective(z, GRB.MINIMIZE)
+        return master_model, imm_cost, theta_vars, action_t_var
+
+    def build_linking_constraints(self, model, action_t_var):
+        x_t_var, y_t_var = action_t_var
+        linking_constraints = []
+        for j, row in enumerate(x_t_var):
+            for i, var in enumerate(row):
+                constraint = model.addConstr(var == 0.0, name=f'link_x_{j},{i}')
+                linking_constraints.append(constraint)
+        for j, var in enumerate(y_t_var):
+            constraint = model.addConstr(var == 0.0, name=f'link_y_{j}')
+            linking_constraints.append(constraint)
+        return linking_constraints
+
+    def subproblem_builder_fn(self, env, state, scenario_id):
+        sub_model = gp.Model(f"Subproblem_SA_Advance_{scenario_id}", env=env)
+        sub_model.setParam('InfUnbdInfo', 1)
+        sub_model.setParam('DualReductions', 0)
+        sub_model.setParam("MultiObjPre", 0)
+        # get u^t+1 and linking constrs
+        action_t_var = self.get_action_var(model=sub_model, advance_scheduling_type=GRB.CONTINUOUS)
+        linking_constraints = self.build_linking_constraints(sub_model, action_t_var)
+        # Initialize scenario state and action like in direct solution
+        fut_cost = 0
+        prev_state_var = state
+        prev_action_var = action_t_var
+        for tau, new_arrival in enumerate(self.delta[scenario_id], start=1):
+            next_state_var = self.get_next_state(model=sub_model,
+                                                 state=prev_state_var,
+                                                 action=prev_action_var,
+                                                 new_arrival=new_arrival)
+            next_action_var = self.get_action_var(model=sub_model, advance_scheduling_type=self.future_decision_var_type)
+            self.add_action_space_constraints(model=sub_model, state_var=next_state_var, action_var=next_action_var)
+            fut_cost += self.env.cost_fn(next_state_var, next_action_var, is_var=True)
+            prev_state_var = next_state_var
+            prev_action_var = next_action_var
+        sub_model.setObjective(fut_cost, GRB.MINIMIZE)
+        return sub_model, linking_constraints
+
+    def solve(self, state, action=None, verbose=False):
+        if self.is_myopic or self.sample_path_number <= 1:
+            action, obj_value, info = self.direct_solve(state, action=action)
+            return action, obj_value, info
+        num_subproblems = self.sample_path_number
+        bender_solver = BenderDecompositionSolver(master_builder_fn=self.master_builder_fn,
+                                                  subproblem_builder_fn=self.subproblem_builder_fn,
+                                                  get_solution=self.get_solution,
+                                                  flatten_fn=None,
+                                                  num_subproblems=num_subproblems)
+        action_t, upper_bound, info = bender_solver.solve(master_builder_args={'state':state, 'action': action},
+                                                          subproblem_builder_args={'env': self.grb_env,
+                                                                                   'state':state},
+                                                          tol=1e-6,
+                                                          max_iter=15000,
+                                                          verbose=verbose)
+        return action_t, upper_bound, info
+
 if __name__ == "__main__":
     config = get_config_by_type('ejor_default')
     env = config.env
-    agent = InfiniteSAAAgent(env=env, discount_factor=0.99, sample_path_number=1, is_myopic=False)
-    state, info = env.reset()
-    action, obj, _ = agent.direct_solve(state=state, t=1, verbose=True)
+    agent = InfiniteSAAAgent(env=env, discount_factor=0.99, sample_path_number=100, is_myopic=False)
+    state=config.init_state
+    action, obj, _ = agent.direct_solve(state=state, verbose=False)
+    print('Direct solve:', obj)
+    print('Action:', action)
+    action, obj, _ = agent.solve(state=state, verbose=False)
+    print('Benders solve:', obj)
 

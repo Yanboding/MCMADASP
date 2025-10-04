@@ -7,9 +7,10 @@ from scipy.stats import truncnorm
 
 from utils import numpy_shift, RunningStats, bounded_compositions
 import gurobipy as gp
+import gym
 
+class RTEnv(gym.Env):
 
-class RTEnv:
     def __init__(self,
                  treatment_pattern,
                  booking_window_size,
@@ -22,7 +23,7 @@ class RTEnv:
                  overtime_capacity,
                  discount_factor,
                  init_state_random_seed,
-                 stop_time_random_seed=42
+                 stop_time_random_seed=42,
                  ):
         self.treatment_pattern = np.array(treatment_pattern)
         self.booking_window_size = booking_window_size # if the problem is finite, bokking_window_size == decision_epoch

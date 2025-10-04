@@ -1,3 +1,5 @@
+import time
+
 import numpy as np
 import gurobipy as gp
 from gurobipy import GRB
@@ -10,7 +12,7 @@ from utils import get_solution_value, solve_and_handle_errors, clean_value
 
 class ALPEJORColumnGenerationAgent(InfiniteRTAgent):
 
-    def __init__(self, env, discount_factor, V=None, Q=None, coefficients=None, pretrain=False):
+    def __init__(self, env, discount_factor, V=None, Q=None, coefficients=None, pretrain=False, verbose=True):
         super().__init__(env, discount_factor, V, Q)
         self.is_trained = False
         self.E_u_alpha = [self.env.regular_capacity * 0.95 ** (i) for i in range(self.env.planning_horizon)]
@@ -18,13 +20,16 @@ class ALPEJORColumnGenerationAgent(InfiniteRTAgent):
         self.E_v_alpha = [self.env.overtime_capacity * 0.3 ** (i+1) for i in range(self.env.planning_horizon)]
         self.E_v_alpha[-1] = 0
         self.E_w_alpha = self.env.arrival_generator.mean_by_type
-        #self.E_w_alpha = [1 for i in range(self.env.num_types)]
         if coefficients is not None:
             final_duals = coefficients
             self.is_trained = True
             self.W_0, self.U, self.V, self.W = self.get_coefficients(final_duals)
         if pretrain:
-            self.train(debug=False)
+            self.train(debug=False,verbose=verbose)
+            print(self.W_0)
+            print(self.U)
+            print(self.V)
+            print(self.W)
 
     def train(self, debug=False, verbose=False):
         if debug == True:
@@ -98,7 +103,7 @@ class ALPEJORColumnGenerationAgent(InfiniteRTAgent):
         master_model.update()
         return master_model
 
-    def pricing_callback(self, duals):
+    def pricing_callback(self, duals, max_attempts=20):
         """
         Solves the pricing subproblem by iterating through each time period.
 
@@ -124,9 +129,42 @@ class ALPEJORColumnGenerationAgent(InfiniteRTAgent):
         approx_V = self.get_approx_value_fn(state_var, W_0, U, V, W)
         reduced_cost = candidate_cost + self.env.discount_factor * self.get_approx_value_fn(next_state_var, W_0, U, V, W) - approx_V
         pricing_model.setObjective(reduced_cost, GRB.MINIMIZE)
-        if solve_and_handle_errors(pricing_model):
-            candidate = self.get_candidate(state_var, action_var)
-            yield candidate, pricing_model.ObjVal
+        ts = None
+        for attempt in range(max_attempts):
+            print('attempt ', attempt)
+            if solve_and_handle_errors(pricing_model):
+                print('reduced cost:', pricing_model.ObjVal)
+                candidate = self.get_candidate(state_var, action_var)
+                yield candidate, pricing_model.ObjVal
+            if ts is not None:
+                print([t.X for t in ts])
+            (x_vars, y_var) = action_var
+            _,(x_vals,_) = candidate
+            candidate_vars = self.tuple_of_arrays_to_list(x_vars)
+            candidate_vals = self.tuple_of_arrays_to_list(x_vals)
+            ts = self.eliminate_one_candidate(pricing_model, candidate_vars, candidate_vals, f'no_good_cut_{attempt}')
+
+    def tuple_of_arrays_to_list(self, obj):
+        result = []
+        if isinstance(obj, np.ndarray):
+            result.extend(obj.flatten().tolist())
+        elif isinstance(obj, (tuple, list)):
+            for item in obj:
+                result.extend(self.tuple_of_arrays_to_list(item))
+        else:
+            # in case you have scalars mixed in
+            result.append(obj)
+        return result
+
+    def eliminate_one_candidate(self, model, vars, vals, name):
+        delta_list = []
+        for i, (var, val) in enumerate(zip(vars, vals)):
+            delta_le = model.addVar(vtype=GRB.BINARY, name=f"delta_le_{i}")
+            delta_ge = model.addVar(vtype=GRB.BINARY, name=f"delta_ge_{i}")
+            model.addGenConstrIndicator(delta_le, True, var <= val - 1)
+            model.addGenConstrIndicator(delta_ge, True, var >= val + 1)
+            delta_list.extend([delta_le, delta_ge])
+        model.addConstr(gp.quicksum(delta_list) >= 1, name=name)
 
     def generate_initial_state_action_pairs(self, verbose=False):
         for i in range(self.env.num_types):
@@ -180,7 +218,8 @@ class ALPEJORColumnGenerationAgent(InfiniteRTAgent):
         if debug == True:
             initial_columns = self.generate_all_columns()
         else:
-            initial_columns = self.generate_initial_state_action_pairs()
+            #initial_columns = self.generate_initial_state_action_pairs()
+            initial_columns = []
         self.cg_solver = ColumnGenerationSolver(master_builder=self.initial_columns_builder,
                                                 pricing_callback=self.pricing_callback,
                                                 initial_columns=initial_columns,
@@ -210,7 +249,7 @@ class ALPEJORColumnGenerationAgent(InfiniteRTAgent):
         M  = 1e4
         # Objective: minimize sum of artificials
         master_model.setObjective(
-            M * (s_W0 + gp.quicksum(s_U) + gp.quicksum(s_V) + gp.quicksum(s_W)),
+            M * (s_W0 + s_U.sum() + s_V.sum() + s_W.sum()),
             GRB.MINIMIZE
         )
         # Add constraints, each backed up by its own artificial
@@ -278,10 +317,10 @@ class ALPEJORColumnGenerationAgent(InfiniteRTAgent):
                 self.set_action(action_var=action_var, action=action)
             # ---------- 1. objective ----------
             imm_cost = self.env.cost_fn(state, action_var, is_var=True)
-            new_state_var = self.env.get_next_state(state=state,
-                                                    action=action_var,
-                                                    new_arrival=self.env.arrival_generator.mean_by_type,
-                                                    is_var=True)
+            new_state_var = self.get_next_state(model=policy_model,
+                                                state=state,
+                                                action=action_var,
+                                                new_arrival=self.env.arrival_generator.mean_by_type)
             fut_cost = self.discount_factor * self.get_approx_value_fn(state=new_state_var,
                                                                          W_0=self.W_0,
                                                                          U=self.U,
@@ -303,21 +342,7 @@ if "__main__" == __name__:
     #print(list(agent.generate_initial_state_action_pairs()))
     #agent.train(verbose=False)
     #print(agent.coeff_C(0,1))
-    print(init_state)
-    print(agent.solve(init_state))
-    '''
-    duals = [-21.5852964, 0.0319991, 0.0316791, 0.0313623, 0.0310487, 0.0323223, 0.0319991, 0.0316791, 0.0318956, 0.0315767, 0.0312609, 0.0325143, 0.0321891, 0.0318673, 0.0305981, 0.0302921, 0.0299892, 0.0296893, 0.0293924, 0.0290985, 0.0288075, 0.0285194, 0.0282342, 0.0279519, 0.0276724, 0.0273957, 0.0271217, 0.0268505, 0.026582, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.1584114]
 
-    for candidate, reduce_cost in agent.pricing_callback(duals):
-        print(candidate)
-        candidate_cost = agent.get_obj_coefficient(candidate)
-        candidate_coeffs = agent.get_constr_coefficients(candidate)
-        # reduced cost = cost − ∑ dual[j] * coeffs[j]
-        rc = candidate_cost
-        for j, coeff in enumerate(candidate_coeffs):
-            rc -= duals[j] * coeff
-        print(rc, reduce_cost)
-    '''
     # master obj: 25250
 
 
