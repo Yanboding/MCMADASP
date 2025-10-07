@@ -2,7 +2,7 @@ import numpy as np
 from gurobipy import GRB
 from decision_maker import InfiniteRTAgent
 
-from utils import solve_and_handle_errors
+from utils import solve_and_handle_errors, clean_value
 
 
 def flatten(vars):
@@ -167,7 +167,9 @@ class BenderDecompositionSolver:
                 cost_to_go_estimation = cost_to_go_estimation / self.num_subproblems
                 upper_bound = self.imm_cost.getValue() + cost_to_go_estimation
                 # Average the future cost across scenarios like in direct solution
-                if upper_bound < lower_bound:
+                if clean_value(upper_bound, 1e-8) < clean_value(lower_bound, 1e-8):
+                    print('upper_bound:', upper_bound)
+                    print('lower_bound:', lower_bound)
                     raise ValueError('Upper bound is higher than lower bound!')
                 if abs(upper_bound - lower_bound) < tol:
                     action_t = self.get_solution(self.action_t_var, is_final=True)

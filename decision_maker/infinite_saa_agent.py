@@ -158,15 +158,16 @@ class InfiniteSAAAgent(InfiniteRTAgent):
 
 if __name__ == "__main__":
     from experiments import get_config_by_type
-    config = get_config_by_type('ejor_default')
+    config = get_config_by_type('ejor')
     env = config.env
-    agent = InfiniteSAAAgent(env=env, discount_factor=0.99, sample_path_number=2, is_myopic=False)
-    state=config.init_state
-    
-    action, obj, _ = agent.direct_solve(state=state, t=1, verbose=False)
-    print('Direct solve:', obj)
-    print('Action:', action)
-    
+    agent = InfiniteSAAAgent(env=env, discount_factor=0.99, sample_path_number=3, is_myopic=False)
+    state, info = env.reset()
+    print(state)
+    done = False
     action, obj, _ = agent.solve(state=state, t=1, verbose=False)
-    print('Benders solve:', obj)
+    print("time:", 1, "bender obj:", obj)
+    state, cost, done, info = env.step(action)
+    action, obj, _ = agent.solve(state=state, t=2, verbose=False)
+    print("time:", 2, "bender obj:", obj)
+
 
