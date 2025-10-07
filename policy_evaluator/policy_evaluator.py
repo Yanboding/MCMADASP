@@ -70,7 +70,6 @@ class PolicyEvaluator:
         # sample_path should start from period t+1 
         benchmark_solver.set_sample_path(sample_path)
         _, benchmark_value, info = benchmark_solver.solve(state, t, action=action)
-        print('minimum:', benchmark_value)
         sample_average_V = self.simulation_evaluate_helper(state, t, [sample_path], action=action)
         upper_bound = sample_average_V[(state_tuple, t)].mean
         abs_gap = max(upper_bound - benchmark_value, 0)
@@ -87,12 +86,11 @@ if __name__ == '__main__':
     t = 1
     sample_path = env.reset_arrivals()
     print('sample_path_length:', len(sample_path))
-    agent = InfiniteSAAAgent(env=env, discount_factor=0.99, sample_path_number=3, is_myopic=False)
+    agent = InfiniteSAAAgent(env=env, discount_factor=0.99, sample_path_number=30, is_myopic=False)
     benchmark_solver = InfiniteSAAAgent(env, discount_factor=env.discount_factor)
     #print("Action:", sa_advance_agent.policy(init_state, t))
     policy_evaluator = PolicyEvaluator(env, agent, discount_factor=env.discount_factor, is_inf=True)
-    abs_gap, benchmark_value = policy_evaluator.sample_path_absolute_gap_evaluate(benchmark_solver, init_state, t, sample_path)
-    print(abs_gap)
-    print(benchmark_value)
+    states, rewards = policy_evaluator.sample_path_evaluate(init_state, t, sample_path)
+    print(sum(rewards))
 
 

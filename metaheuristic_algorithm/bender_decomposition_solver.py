@@ -1,6 +1,9 @@
+import time
+
 import numpy as np
 from gurobipy import GRB
 from decision_maker import InfiniteRTAgent
+import concurrent.futures
 
 from utils import solve_and_handle_errors, clean_value
 
@@ -110,16 +113,25 @@ class BenderDecompositionSolver:
         self.num_subproblems = num_subproblems
         self.master_builder_args= master_builder_args
         self.subproblem_builder_args = subproblem_builder_args
-        self.master_model, self.imm_cost, self.theta_vars, self.action_t_var, self.state_linking_constraints = self.master_builder_fn(**master_builder_args)
+        #self.master_model, self.imm_cost, self.theta_vars, self.action_t_var, self.state_linking_constraints = self.master_builder_fn(**master_builder_args)
         # Build one worker per scenario once, then reuse
         self.workers = [
-            SubproblemWorker(self.subproblem_builder_fn, subproblem_builder_args, sid)
+            SubproblemWorker(self.subproblem_builder_fn, self.subproblem_builder_args, sid)
             for sid in range(self.num_subproblems)
         ]
 
     def solve(self, state, action=None, tol=1e-6, max_iter=15000, verbose=False):
         lower_bound = -GRB.INFINITY
         upper_bound = GRB.INFINITY
+
+        self.master_model, self.imm_cost, self.theta_vars, self.action_t_var, self.state_linking_constraints = self.master_builder_fn(
+            **self.master_builder_args)
+        '''
+        self.workers = [
+            SubproblemWorker(self.subproblem_builder_fn, self.subproblem_builder_args, sid)
+            for sid in range(self.num_subproblems)
+        ]
+        '''
         flatten_state = flatten(state)
         set_link_rhs(self.state_linking_constraints, flatten_state)
         
@@ -131,6 +143,8 @@ class BenderDecompositionSolver:
                 raise RuntimeError("Master model optimal solution not found")
             action_t = self.get_solution(self.action_t_var)
             flat_action_t = self.flatten_fn(action_t)
+            print('flat_action')
+            print(flat_action_t)
 
             lower_bound = self.master_model.ObjVal
 
@@ -167,10 +181,6 @@ class BenderDecompositionSolver:
                 cost_to_go_estimation = cost_to_go_estimation / self.num_subproblems
                 upper_bound = self.imm_cost.getValue() + cost_to_go_estimation
                 # Average the future cost across scenarios like in direct solution
-                if clean_value(upper_bound, 1e-8) < clean_value(lower_bound, 1e-8):
-                    print('upper_bound:', upper_bound)
-                    print('lower_bound:', lower_bound)
-                    raise ValueError('Upper bound is higher than lower bound!')
                 if abs(upper_bound - lower_bound) < tol:
                     action_t = self.get_solution(self.action_t_var, is_final=True)
                     return action_t, upper_bound, {}
