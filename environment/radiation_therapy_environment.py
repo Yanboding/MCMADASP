@@ -7,9 +7,8 @@ from scipy.stats import truncnorm
 
 from utils import numpy_shift, RunningStats, bounded_compositions
 import gurobipy as gp
-import gym
 
-class RTEnv(gym.Env):
+class RTEnv:
 
     def __init__(self,
                  treatment_pattern,
@@ -41,7 +40,6 @@ class RTEnv(gym.Env):
         self.stop_time_rng = np.random.default_rng(stop_time_random_seed)
         self.num_sessions, self.num_types = self.treatment_pattern.shape
         self.planning_horizon = self.booking_window_size + self.num_sessions - 1
-        print('Planning horizon:', self.planning_horizon)
 
     def get_state(self, state, is_var=False):
         if not is_var:
@@ -138,9 +136,6 @@ class RTEnv(gym.Env):
 
     # simulation
     def reset(self, init_state=None, t=1, new_arrivals=None, percentage_occupied=0):
-        if new_arrivals is not None and len(new_arrivals) != self.decision_epoch - t + 1:
-            print("length of new arrivals:", len(new_arrivals), "length of decision epoch:",self.decision_epoch - t + 1)
-            raise ValueError('Invalid sample path!')
         self.t = t
         self.tau = 0
         # how to handle the first arrivals
@@ -158,7 +153,8 @@ class RTEnv(gym.Env):
         self.state = (bookings, overtimes, waitlist)
         # measure of performance
         self.wait_time_by_type = {j: RunningStats() for j in range(self.num_types)}
-        self.overtime = np.array([0] * (self.planning_horizon - t + 1))
+        total_periods = self.decision_epoch + self.planning_horizon - 1
+        self.overtime = np.array([0] * (total_periods - t + 1))
         return copy.deepcopy(self.state), {'wait_time_by_type': self.wait_time_by_type,
                                            'overtime': self.overtime}
 
@@ -184,7 +180,6 @@ class RTEnv(gym.Env):
 
     def step(self, action):
         advance_scheduling_decision, overtime_decision = action
-        # t+tau
         cost = self.cost_fn(self.state, action)
         post_action_state = self.post_action_state(self.state, action)
         post_action_regular_bookings, post_action_overtimes, post_action_waitlist = post_action_state
@@ -196,6 +191,9 @@ class RTEnv(gym.Env):
             self.wait_time_by_type[i].record_batch(wait_times, advance_scheduling_decision[:, i])
         self.overtime[self.tau] = post_action_overtimes[0]
         if done:
+            print('done')
+            print(self.tau)
+            print(len(post_action_overtimes))
             self.overtime[self.tau:] = post_action_overtimes
         # update state
         self.tau += 1

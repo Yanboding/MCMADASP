@@ -167,10 +167,50 @@ class RunningStats:
         t_crit = np.abs(st.t.ppf((1-confidence)/2, sampleSize1 + sampleSize2 - 2))
         halfWindow = t_crit * np.sqrt(sampleVar1/sampleSize1 + sampleVar2/sampleSize2)
         return meanDiff, halfWindow
+    
+    def __truediv__(self, other):
+        """
+        Division operator: returns a RunningStats that represents
+        the ratio of the means self/other, with variance estimated
+        via the delta method.
+
+        Notes
+        -----
+        This is an *approximation*: it does NOT reconstruct sample-wise
+        ratios, but treats the ratio as a derived statistic with
+        effective sample size = min(self.n, other.n).
+        """
+        if isinstance(other, numbers.Number):
+            if other == 0:
+                raise ZeroDivisionError("Cannot divide by zero.")
+            # scale mean, scale variance
+            new_mean = self.mean / other
+            new_var = self.variance / (other**2)
+            eff_n = self.n
+            new_m2 = new_var * (eff_n - 1)
+            return RunningStats(n=eff_n, mean=new_mean, m2=new_m2)
+
+        if isinstance(other, RunningStats):
+            if other.mean == 0:
+                raise ZeroDivisionError("Denominator mean is zero.")
+            if self.n < 2 or other.n < 2:
+                raise ValueError("Need at least 2 samples in both RunningStats.")
+
+            ratio_mean = self.mean / other.mean
+            var_ratio = (self.variance / self.n) / (other.mean**2) \
+                      + (self.mean**2 / other.mean**4) * (other.variance / other.n)
+
+            eff_n = min(self.n, other.n)  # conservative choice
+            ratio_m2 = var_ratio * (eff_n - 1)
+
+            return RunningStats(n=eff_n, mean=ratio_mean, m2=ratio_m2)
+
+        return NotImplemented
+
+
 
 if __name__ == "__main__":
     print("--- Example 1: Basic Usage ---")
-    rs = RunningStats()
-    rs.record_batch(np.array([1,2,3]), np.array([10, 1, 2]))
-    print(rs.mean)
-    print(rs.var_sum)
+    x_1 = RunningStats(n=10, mean=10, m2=300)
+    x_2 = RunningStats(n=10, mean=20, m2=200)
+    print(x_1/x_2)

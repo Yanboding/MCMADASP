@@ -1,14 +1,19 @@
 import numpy as np
 from gurobipy import GRB
+from decision_maker import InfiniteRTAgent
 
 from utils import solve_and_handle_errors
 
 
-def flatten(action):
+def flatten(vars):
     list = []
-    for item in action:
+    for item in vars:
         list.extend(item.reshape(-1))
     return np.array(list)
+
+def set_link_rhs(linking_constraints, rhs_values):
+    for i, constr in enumerate(linking_constraints):
+        constr.setAttr("RHS", float(rhs_values[i]))
 
 class SubproblemWorker:
     """
@@ -19,7 +24,7 @@ class SubproblemWorker:
         self.verbose = verbose
         # Build the model and linking constraints inside THIS env.
         builder_args['scenario_id'] = subproblem_id
-        self.model, self.link_rows = builder_fn(**builder_args)
+        self.model, self.link_rows, self.state_linking_constraints = builder_fn(**builder_args)
         self.subproblem_id = subproblem_id
 
     def set_link_rhs(self, action_values):
@@ -80,7 +85,7 @@ class BenderDecompositionSolver:
         verbose: bool
             Whether to print detailed logs.
     """
-    def __init__(self, master_builder_fn, subproblem_builder_fn, get_solution, flatten_fn, num_subproblems):
+    def __init__(self, master_builder_fn, master_builder_args, subproblem_builder_fn, subproblem_builder_args, get_solution, flatten_fn, num_subproblems):
         """
         Initialize the Bender's decomposition solver.
         Args:
@@ -103,24 +108,31 @@ class BenderDecompositionSolver:
         if flatten_fn is None:
             self.flatten_fn = flatten
         self.num_subproblems = num_subproblems
-
-    def solve(self, master_builder_args, subproblem_builder_args, tol=1e-6, max_iter=15000, verbose=False):
-        lower_bound = -GRB.INFINITY
-        upper_bound = GRB.INFINITY
-        master_model, imm_cost, theta_vars, action_t_var = self.master_builder_fn(**master_builder_args)
-        flat_action_t_var = self.flatten_fn(action_t_var)
+        self.master_builder_args= master_builder_args
+        self.subproblem_builder_args = subproblem_builder_args
+        self.master_model, self.imm_cost, self.theta_vars, self.action_t_var, self.state_linking_constraints = self.master_builder_fn(**master_builder_args)
         # Build one worker per scenario once, then reuse
-        workers = [
-            SubproblemWorker(self.subproblem_builder_fn, subproblem_builder_args, sid, verbose)
+        self.workers = [
+            SubproblemWorker(self.subproblem_builder_fn, subproblem_builder_args, sid)
             for sid in range(self.num_subproblems)
         ]
+
+    def solve(self, state, action=None, tol=1e-6, max_iter=15000, verbose=False):
+        lower_bound = -GRB.INFINITY
+        upper_bound = GRB.INFINITY
+        flatten_state = flatten(state)
+        set_link_rhs(self.state_linking_constraints, flatten_state)
+        
+        flat_action_t_var = flatten(self.action_t_var)
+        for worker in self.workers:
+            set_link_rhs(worker.state_linking_constraints, flatten_state)
         for iteration in range(1, max_iter + 1):
-            if not solve_and_handle_errors(master_model, verbose=verbose):
+            if not solve_and_handle_errors(self.master_model, verbose=verbose):
                 raise RuntimeError("Master model optimal solution not found")
-            action_t = self.get_solution(action_t_var)
+            action_t = self.get_solution(self.action_t_var)
             flat_action_t = self.flatten_fn(action_t)
 
-            lower_bound = master_model.ObjVal
+            lower_bound = self.master_model.ObjVal
 
             # Ask all workers to solve for this action
             # futures = [ex.submit(w.solve, action_t, verbose) for w in workers]
@@ -128,7 +140,7 @@ class BenderDecompositionSolver:
             optimality_cuts = []
             cost_to_go_estimation = 0.0
             all_feasible = True
-            for w in workers:
+            for w in self.workers:
                 scenario_id = w.subproblem_id
                 is_feasible, v, duals = w.solve(flat_action_t, verbose=verbose)
                 if not is_feasible:
@@ -143,27 +155,29 @@ class BenderDecompositionSolver:
                     cost_to_go_estimation += v
                     # cut = @constraint(model, θ >= ret.obj + sum(ret.π .* (x .- x_k)))
                     cut_rhs = v + np.dot(duals, flat_action_t_var - flat_action_t)
-                    optimality_cuts.append(theta_vars[scenario_id] >= cut_rhs)
+                    optimality_cuts.append(self.theta_vars[scenario_id] >= cut_rhs)
             if not all_feasible:
                 print(f"Iteration {iteration}, adding {len(feasibility_cuts)} feasibility cuts")
                 # Some scenario infeasible: add feasibility cuts and repeat
-                master_model.addConstrs((feasibility_cuts[i] for i in range(len(feasibility_cuts))), name="feas_cut_")
+                self.master_model.addConstrs((feasibility_cuts[i] for i in range(len(feasibility_cuts))), name="feas_cut_")
             else:
                 print(f"Iteration {iteration}, adding {len(optimality_cuts)} optimality cuts")
                 # All scenarios feasible: add optimality cuts and continue
-                master_model.addConstrs((optimality_cuts[i] for i in range(len(optimality_cuts))), name="opt_cut_")
+                self.master_model.addConstrs((optimality_cuts[i] for i in range(len(optimality_cuts))), name="opt_cut_")
                 cost_to_go_estimation = cost_to_go_estimation / self.num_subproblems
-                upper_bound = imm_cost.getValue() + cost_to_go_estimation
+                upper_bound = self.imm_cost.getValue() + cost_to_go_estimation
                 # Average the future cost across scenarios like in direct solution
+                if upper_bound < lower_bound:
+                    raise ValueError('Upper bound is higher than lower bound!')
                 if abs(upper_bound - lower_bound) < tol:
-                    action_t = self.get_solution(action_t_var, is_final=True)
+                    action_t = self.get_solution(self.action_t_var, is_final=True)
                     return action_t, upper_bound, {}
             print('upper_bound:', upper_bound)
             print('lower_bound:', lower_bound)
 
             print('-' * 20)
         print('Max iterations reached')
-        action_t = self.get_solution(action_t_var, is_final=True)
+        action_t = self.get_solution(self.action_t_var, is_final=True)
         return action_t, upper_bound, {}
 
 if __name__ == "__main__":

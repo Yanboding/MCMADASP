@@ -18,25 +18,30 @@ class InfiniteRTAgent:
             self.V = {}
         self.grb_env = acquire_grb_env({"Threads": 0}, verbose=False, wait=InfiniteRTAgent.TOKEN_WAIT)
 
+        self.state_var_counter = 0
+        self.action_var_counter = 0
+
     def get_state_var(self, model):
+        self.state_var_counter += 1
         regular_booking_vars = np.array([
-            model.addVar(vtype=GRB.CONTINUOUS, lb=0, name=f"u_{m}") for m in range(self.env.planning_horizon)
+            model.addVar(vtype=GRB.CONTINUOUS, lb=0, name=f"u^{self.state_var_counter}_{m}") for m in range(self.env.planning_horizon)
         ])
         overtime_vars = np.array([
-            model.addVar(vtype=GRB.CONTINUOUS, lb=0, name=f"v_{m}") for m in range(self.env.planning_horizon)
+            model.addVar(vtype=GRB.CONTINUOUS, lb=0, name=f"v^{self.state_var_counter}_{m}") for m in range(self.env.planning_horizon)
         ])
         waitlist_vars = np.array([
-            model.addVar(vtype=GRB.CONTINUOUS, lb=0, name=f"w_{i}") for i in range(self.env.num_types)
+            model.addVar(vtype=GRB.CONTINUOUS, lb=0, name=f"w^{self.state_var_counter}_{i}") for i in range(self.env.num_types)
         ])
         return (regular_booking_vars, overtime_vars, waitlist_vars)
 
     def get_action_var(self, model, advance_scheduling_type):
+        self.action_var_counter += 1
         advance_scheduling_decision_vars = np.array([
-            [model.addVar(vtype=advance_scheduling_type, lb=0, name=f"x_{j},{i}") for i in range(self.env.num_types)]
+            [model.addVar(vtype=advance_scheduling_type, lb=0, name=f"x^{self.action_var_counter}_{j},{i}") for i in range(self.env.num_types)]
             for j in range(self.env.booking_window_size)
         ])
         overtime_decision_vars = np.array(
-            [model.addVar(vtype=GRB.CONTINUOUS, lb=0, name=f"y_{j}") for j in range(self.env.planning_horizon)]
+            [model.addVar(vtype=GRB.CONTINUOUS, lb=0, name=f"y^{self.action_var_counter}_{j}") for j in range(self.env.planning_horizon)]
         )
         return (advance_scheduling_decision_vars, overtime_decision_vars)
 
@@ -67,6 +72,17 @@ class InfiniteRTAgent:
                 var.lb = var.ub = x[i][j]
         for j, var in enumerate(y_var):
             var.lb = var.ub = y[j]
+    
+    @staticmethod
+    def set_state(state_var, state):
+        u_var, v_var, w_var = state_var
+        u, v, w = state
+        for uj_var, uj in zip(u_var, u):
+            uj_var.lb = uj_var.ub = uj
+        for vj_var, vj in zip(v_var, v):
+            vj_var.lb = vj_var.ub = vj
+        for wi_var, wi in zip(w_var, w):
+            wi_var.lb = wi_var.ub = wi
 
     def add_action_space_constraints(self, model, state_var, action_var):
         _, _, waitlist_vars = state_var

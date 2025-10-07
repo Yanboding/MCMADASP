@@ -1,18 +1,17 @@
 import time
 from collections import defaultdict
-from utils import iter_to_tuple
-from utils.running_stat import RunningStat
+from utils import iter_to_tuple, RunningStats
 
 
 class PolicyEvaluator:
 
-    def __init__(self, env, agent, discount_factor, V=None):
+    def __init__(self, env, agent, discount_factor, V=None, is_inf=True):
         self.env = env
         self.agent = agent
         self.discount_factor = discount_factor
+        self.is_inf = is_inf
         if V is None:
             self.V = {}
-        self.sample_average_V = defaultdict(lambda: RunningStat(1))
 
     def evaluate(self, state, t):
         state_tuple = iter_to_tuple(state)
@@ -27,12 +26,6 @@ class PolicyEvaluator:
             else:
                 next_state_val = self.evaluate(next_state, t + 1)
             q += prob * (cost + self.discount_factor * next_state_val)
-        '''
-        print('Time:', t)
-        print('State:', state, 'Action:', action)
-        print('Total_cost:', q)
-        print()
-        '''
         self.V[(state_tuple, t)] = q
         return self.V[(state_tuple, t)]
 
@@ -54,58 +47,52 @@ class PolicyEvaluator:
         return states, rewards
 
     def simulation_evaluate_helper(self, state, t, sample_paths, action=None):
-        sample_average_V = defaultdict(lambda: RunningStat(1))
+        if self.is_inf:
+            self.discount_factor = 1
+        sample_average_V = defaultdict(lambda: RunningStats())
         for sample_path in sample_paths:
             states, rewards = self.sample_path_evaluate(state,t,sample_path, action=action)
             G = 0.0
             for tau in reversed(range(len(states))):
                 G = self.discount_factor * G + rewards[tau]
                 s = states[tau]
-                sample_average_V[(iter_to_tuple(s), t + tau)].record(G)
+                sample_average_V[(iter_to_tuple(s), t + tau)] += G
         return sample_average_V
-    
-    '''
-    def simulation_evaluate(self, state, t, replication, confidence):
-        num_cpus = os.cpu_count()
-        sample_paths = [self.env.reset_arrivals(t=t) for _ in range(replication)]
-        responses = Parallel(n_jobs=-1)(
-            delayed(self.simulation_evaluate_helper)(state=state, t=t, sample_paths=sample_paths[i::num_cpus])for i in range(num_cpus))
-        for sample_average_V in responses:
-            for state_tuple, value_stat in sample_average_V.items():
-                self.sample_average_V[state_tuple].merge(value_stat)
-        state_tuple = iter_to_tuple(state)
-        mean = self.sample_average_V[(state_tuple, t)].mean()
-        half_window = self.sample_average_V[(state_tuple, t)].half_window(confidence)
-        return mean, mean-half_window, mean+half_window
-    '''
 
     def sample_path_optimality_gap_evaluate(self, lower_bound_solver, state, t, sample_path, action=None):
-        state_tuple = iter_to_tuple(state)
-        lower_bound_solver.set_sample_path(sample_path)
-        _, lower_bound, info = lower_bound_solver.solve(state, t, action=action)
-        sample_average_V = self.simulation_evaluate_helper(state, t, [sample_path], action=action)
-        upper_bound = sample_average_V[(state_tuple, t)].expect[0]
-        opt_gap = max(upper_bound - lower_bound, 0)
-        if opt_gap == 0:
+        abs_gap, benchmark_value = self.sample_path_absolute_gap_evaluate(lower_bound_solver, state, t, sample_path, action=action)
+        if abs_gap == 0:
             return 0
-        return opt_gap / lower_bound * 100
+        return abs_gap / benchmark_value * 100 if benchmark_value != 0 else float('inf')
+    
+    def sample_path_absolute_gap_evaluate(self, benchmark_solver, state, t, sample_path, action=None):
+        state_tuple = iter_to_tuple(state)
+        # sample_path should start from period t+1 
+        benchmark_solver.set_sample_path(sample_path)
+        _, benchmark_value, info = benchmark_solver.solve(state, t, action=action)
+        print('minimum:', benchmark_value)
+        sample_average_V = self.simulation_evaluate_helper(state, t, [sample_path], action=action)
+        upper_bound = sample_average_V[(state_tuple, t)].mean
+        abs_gap = max(upper_bound - benchmark_value, 0)
+        return abs_gap, benchmark_value
 
 
 
 if __name__ == '__main__':
-    from decision_maker import OptimalAgent, SAAdvanceAgent
-    config = ExperimentConfig.from_EJOR_case()
+    from experiments import get_config_by_type
+    from decision_maker import InfiniteSAAAgent
+    config = get_config_by_type('ejor_default')
     env = config.env
     init_state = config.init_state
     t = 1
-    sa_advance_agent = SAAdvanceAgent(env=env, discount_factor=env.discount_factor)
-    sa_advance_agent.set_sample_paths(1000)
+    sample_path = env.reset_arrivals()
+    print('sample_path_length:', len(sample_path))
+    agent = InfiniteSAAAgent(env=env, discount_factor=0.99, sample_path_number=3, is_myopic=False)
+    benchmark_solver = InfiniteSAAAgent(env, discount_factor=env.discount_factor)
     #print("Action:", sa_advance_agent.policy(init_state, t))
-    policy_evaluator = PolicyEvaluator(env, sa_advance_agent, discount_factor=env.discount_factor)
-    start = time.time()
-    mean= policy_evaluator.evaluate(init_state, t)
-    print(mean)
-    print(time.time() - start)
-    print(sa_advance_agent.solve(init_state, t))
+    policy_evaluator = PolicyEvaluator(env, agent, discount_factor=env.discount_factor, is_inf=True)
+    abs_gap, benchmark_value = policy_evaluator.sample_path_absolute_gap_evaluate(benchmark_solver, init_state, t, sample_path)
+    print(abs_gap)
+    print(benchmark_value)
 
 
