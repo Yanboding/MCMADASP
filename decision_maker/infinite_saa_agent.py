@@ -17,7 +17,7 @@ class InfiniteSAAAgent(InfiniteRTAgent):
         self.delta = []
         if not is_myopic:
             for omega in range(self.sample_path_number):
-                new_arrivals = self.env.reset_arrivals()
+                new_arrivals = self.env.reset_arrivals()[1:]
                 self.delta.append(new_arrivals)
         self.bender_solver = None
 
@@ -138,11 +138,11 @@ class InfiniteSAAAgent(InfiniteRTAgent):
         return linking_constraints
 
     def solve(self, state, t=1, action=None, verbose=False):
-        '''
+        
         if self.is_myopic or self.sample_path_number <= 1:
             action, obj_value, info = self.direct_solve(state, t=t, action=action)
             return action, obj_value, info
-        '''
+        
         if self.bender_solver is None:
             self.bender_solver = BenderDecompositionSolver(master_builder_fn=self.master_builder_fn,
                                                        master_builder_args={},

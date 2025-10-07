@@ -126,12 +126,6 @@ class BenderDecompositionSolver:
 
         self.master_model, self.imm_cost, self.theta_vars, self.action_t_var, self.state_linking_constraints = self.master_builder_fn(
             **self.master_builder_args)
-        '''
-        self.workers = [
-            SubproblemWorker(self.subproblem_builder_fn, self.subproblem_builder_args, sid)
-            for sid in range(self.num_subproblems)
-        ]
-        '''
         flatten_state = flatten(state)
         set_link_rhs(self.state_linking_constraints, flatten_state)
         
@@ -143,8 +137,6 @@ class BenderDecompositionSolver:
                 raise RuntimeError("Master model optimal solution not found")
             action_t = self.get_solution(self.action_t_var)
             flat_action_t = self.flatten_fn(action_t)
-            print('flat_action')
-            print(flat_action_t)
 
             lower_bound = self.master_model.ObjVal
 

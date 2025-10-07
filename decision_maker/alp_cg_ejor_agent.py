@@ -15,6 +15,8 @@ class ALPEJORColumnGenerationAgent(InfiniteRTAgent):
     def __init__(self, env, discount_factor, V=None, Q=None, coefficients=None, pretrain=False, verbose=True):
         super().__init__(env, discount_factor, V, Q)
         self.is_trained = False
+        # simulate multiple sample path
+        # apply myopic policy to estimate the expected value of each component
         self.E_u_alpha = [self.env.regular_capacity * 0.95 ** (i) for i in range(self.env.planning_horizon)]
         self.E_u_alpha[-1] = 0
         self.E_v_alpha = [self.env.overtime_capacity * 0.1 ** (i+1) for i in range(self.env.planning_horizon)]
