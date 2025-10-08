@@ -17,9 +17,9 @@ class ALPEJORColumnGenerationAgent(InfiniteRTAgent):
         self.is_trained = False
         # simulate multiple sample path
         # apply myopic policy to estimate the expected value of each component
-        self.E_u_alpha = [self.env.regular_capacity * 0.95 ** (i) for i in range(self.env.planning_horizon)]
+        self.E_u_alpha = [self.env.regular_capacity * 0.94 ** (i) for i in range(self.env.planning_horizon)]
         self.E_u_alpha[-1] = 0
-        self.E_v_alpha = [self.env.overtime_capacity * 0.1 ** (i+1) for i in range(self.env.planning_horizon)]
+        self.E_v_alpha = [self.env.overtime_capacity * 0.4 ** (i) for i in range(self.env.planning_horizon)]
         self.E_v_alpha[-1] = 0
         self.E_w_alpha = self.env.arrival_generator.mean_by_type
         if coefficients is not None:

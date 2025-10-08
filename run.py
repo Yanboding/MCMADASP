@@ -28,7 +28,6 @@ def experiment(experiment_name, param_value, env_args, agent_args, sample_path, 
         stats = {'agent_name': agent_name}
         config.reset_params['new_arrivals'] = sample_path
         state, info = env.reset(**config.reset_params)
-        print(env.new_arrivals)
         if agent_name == "hindsight_approx":
             agent_instance = InfiniteSAAAgent(env, discount_factor=env.discount_factor, **args)
         elif agent_name == "myopic":
@@ -72,6 +71,6 @@ if __name__ == '__main__':
     parser.add_argument('--job_id', help='Input METAJOB_ID', type=str)
     args = parser.parse_args()
     params = json.loads(args.params)
-    alp_train(**params, job_id=args.job_id)
-    #experiment(**params, job_id=args.job_id)
+    #alp_train(**params, job_id=args.job_id)
+    experiment(**params, job_id=args.job_id)
     
