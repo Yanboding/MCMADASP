@@ -48,7 +48,9 @@ def plot_experiment_result(directory_path, plot_labels, experiment_lables):
                         x_values.add(param_value)
                         for agent_result in data.get('result', []):
                             agent_name = agent_result['agent_name']
-                            pct_opt_gap_val = agent_result['opt_gap']
+                            if agent_name == 'hindsight_approx':
+                                print(agent_result)
+                            pct_opt_gap_val = agent_result['abs_gap']
                             if pct_opt_gap_val > 1e5 or pct_opt_gap_val < 0:
                                 #print('passed pct_opt_gap_val', pct_opt_gap_val)
                                 continue
@@ -76,10 +78,10 @@ def plot_experiment_result(directory_path, plot_labels, experiment_lables):
                                                    xticks=x_values,
                                                    xticklabels=x_values,
                                                    xlabel=experiment_lables[experiment_name],
-                                                   ylabel="Percentage Optimality Gap (%)",
+                                                   ylabel="Absolute Optimality Gap",
                                                    plot_labels=plot_labels,
                                                    title=None,
-                                                   save_file=os.path.join(directory_path, f'percentage_optimality_gap_by_{experiment_name}'),
+                                                   save_file=os.path.join(directory_path, f'abs_optimality_gap_by_{experiment_name}'),
                                                    is_show_text=True,
                                                    is_set_x_color=False)
 
@@ -125,16 +127,20 @@ def plot_experiment_result(directory_path, plot_labels, experiment_lables):
 
 if __name__ == '__main__':
     # Define the path to your results file
-    plot_labels = {'hindsight_approx': 'Hindsight Approx Policy',
-                   'myopic': 'Myopic Policy',}
+    plot_labels = {
+                   #'hindsight_approx': "Hindsight Policy",
+                   'myopic': 'Myopic Policy',
+                   'alp': 'ALP'}
     experiment_lables = {'demand_rate': 'Arrival Rate',
                          'decision_epoch': 'Decision Epoch',
                          'overtime_cost_by_day':'Overtime Cost',
-                         'occupancy_level': 'Occupancy Level'}
+                         'occupancy_level': 'Occupancy Level',
+                         'discount_factor': 'Discount Factor'}
     # Load and process the data
     #plot_experiment_result('results/demand_rate', plot_labels, experiment_lables)
     #plot_experiment_result('results/occupancy_level', plot_labels, experiment_lables)
-    plot_experiment_result('results/demand_rate', plot_labels, experiment_lables)
+    #plot_experiment_result('results/discount_factor', plot_labels, experiment_lables)
+    plot_experiment_result('results/discount_factor_alp_only', plot_labels, experiment_lables)
     #plot_experiment_result('results/decision_epoch', plot_labels, experiment_lables)
 
     '''
