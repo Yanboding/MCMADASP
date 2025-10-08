@@ -70,7 +70,6 @@ def approximate_value_plot_from_running_stats_dict(running_stats_dict, x_vals, x
             means.append(running_stats.mean)
             half_window.append(running_stats.half_window(0.95))
         means = np.array(means).reshape(-1)
-        print('this is means', means)
         half_window = np.array(half_window).reshape(-1)
         (line,) = ax.plot(x_vals, means, label=plot_labels[label], marker='o')
         lines.append(line)

@@ -68,11 +68,11 @@ class ExperimentConfig:
     def from_ejor_default_case(cls):
         treatment_patterns = ["2 * 1", "2 * 1", "2 * 1", "2 * 1", "2 * 1"]
         l = [(0, 11, 0), (11, 100, 50)]
-        holding_cost =[wait_time(l) for i in range(len(treatment_patterns))]
+        holding_cost = [wait_time(l) for i in range(len(treatment_patterns))]
         holding_cost = np.array(holding_cost).T
         env_args = {
-            "booking_window_size":25,
-            "arrival_rates": [3,4,5,6,7],
+            "booking_window_size": 25,
+            "arrival_rates": [3, 4, 5, 6, 7],
             "patterns": treatment_patterns,
             "holding_cost_by_day_by_type": holding_cost.tolist(),
             "overtime_cost_by_day": 200,
