@@ -325,7 +325,8 @@ class ALPEJORColumnGenerationAgent(InfiniteRTAgent):
         part1 = sum((self.discount_factor ** k) * self.env.holding_cost(k, i) for k in range(n + 1))
         part2 = sum(self.discount_factor * self.env.treatment_pattern[k+1-n, i] * self.U[k] for k in range(n-1,n-1+self.env.num_sessions))
         part3 = self.env.postponing_cost(i) + self.discount_factor * self.W[i]
-        return part1 + part2 - part3
+        cin = part1 + part2 - part3
+        return clean_value(cin, 1e-8)
     
     def coeff_H(self, m):
         if m == 0:
@@ -338,7 +339,7 @@ class ALPEJORColumnGenerationAgent(InfiniteRTAgent):
         for column in self.env.generate_state_action_pairs():
             yield column
 
-    def paper_solve(self, state, t, action=None, verbose=False):
+    def solve(self, state, t, action=None, verbose=False):
         # ---------- shortcuts ----------
         with (gp.Model("ALP_policy", env=self.grb_env) as policy_model):
             policy_model.setParam("MultiObjPre", 0)
@@ -365,7 +366,7 @@ class ALPEJORColumnGenerationAgent(InfiniteRTAgent):
             action = self.get_solution(action_var, is_final=True)
             return action, policy_model.ObjVal, {}
     
-    def solve(self, state, t, action=None, verbose=False):
+    def direct_solve(self, state, t, action=None, verbose=False):
         with (gp.Model("ALP_policy", env=self.grb_env) as policy_model):
             policy_model.setParam("MultiObjPre", 0)
             policy_model.setParam('DualReductions', 0)
