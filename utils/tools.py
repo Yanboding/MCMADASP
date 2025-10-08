@@ -271,6 +271,8 @@ def read_lines_with_pattern(folder, pattern):
                     yield line.rstrip('\n')
 
 def clean_value(value: float, tolerance: float) -> float:
+    if abs(value) < tolerance:
+        return 0
     num_digits = int(-math.log10(tolerance)) + 1
     return round(value, num_digits) + 0.0
 
