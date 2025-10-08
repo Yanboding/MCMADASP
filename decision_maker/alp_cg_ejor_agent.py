@@ -336,7 +336,7 @@ class ALPEJORColumnGenerationAgent(InfiniteRTAgent):
         for column in self.env.generate_state_action_pairs():
             yield column
 
-    def solve(self, state, t, action=None, verbose=False):
+    def paper_solve(self, state, t, action=None, verbose=False):
         # ---------- shortcuts ----------
         with (gp.Model("ALP_policy", env=self.grb_env) as policy_model):
             policy_model.setParam("MultiObjPre", 0)
@@ -364,7 +364,7 @@ class ALPEJORColumnGenerationAgent(InfiniteRTAgent):
             action = self.get_solution(action_var, is_final=True)
             return action, policy_model.ObjVal, {}
     
-    def direct_solve(self, state, t, action=None, verbose=False):
+    def solve(self, state, t, action=None, verbose=False):
         with (gp.Model("ALP_policy", env=self.grb_env) as policy_model):
             policy_model.setParam("MultiObjPre", 0)
             policy_model.setParam('DualReductions', 0)
