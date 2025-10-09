@@ -84,7 +84,7 @@ class InfiniteRTAgent:
         for wi_var, wi in zip(w_var, w):
             wi_var.lb = wi_var.ub = wi
 
-    def add_action_space_constraints(self, model, state_var, action_var):
+    def add_action_space_constraints(self, model, state_var, action_var, is_pricing=False):
         _, _, waitlist_vars = state_var
         advance_scheduling_decision_vars, overtime_decision_vars = action_var
         model.addConstrs(
@@ -109,15 +109,16 @@ class InfiniteRTAgent:
             ),
             name=f"valid_post_action_overtime_bookings",
         )
-        # is this for numerical stability?
-        new_booking_slots = self.env.convert_action_to_booking_slots(advance_scheduling_decision_vars)
-        model.addConstrs(
-            (
-                new_booking_slots[m] >= overtime_decision_vars[m]
-                for m in range(self.env.planning_horizon)
-            ),
-            name="valid_new_appointment_slots",
-        )
+        if is_pricing:
+            # is this for numerical stability?
+            new_booking_slots = self.env.convert_action_to_booking_slots(advance_scheduling_decision_vars)
+            model.addConstrs(
+                (
+                    new_booking_slots[m] >= overtime_decision_vars[m]
+                    for m in range(self.env.planning_horizon)
+                ),
+                name="valid_new_appointment_slots",
+            )
         return model
 
     def policy(self, state, t):

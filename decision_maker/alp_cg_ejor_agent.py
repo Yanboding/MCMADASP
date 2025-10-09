@@ -16,9 +16,9 @@ class ALPEJORColumnGenerationAgent(InfiniteRTAgent):
         self.is_trained = False
         # simulate multiple sample path
         # apply myopic policy to estimate the expected value of each component
-        self.E_u_alpha = [self.env.regular_capacity * discount_factor ** (i) for i in range(self.env.planning_horizon)]
+        self.E_u_alpha = [self.env.regular_capacity * 0.95 ** (i) for i in range(self.env.planning_horizon)]
         self.E_u_alpha[-1] = 0
-        self.E_v_alpha = [self.env.overtime_capacity * 0 ** (i) for i in range(self.env.planning_horizon)]
+        self.E_v_alpha = [self.env.overtime_capacity * 0.4 ** (i) for i in range(self.env.planning_horizon)]
         self.E_v_alpha[-1] = 0
         self.E_w_alpha = self.env.arrival_generator.mean_by_type
         if coefficients is not None:
@@ -26,7 +26,7 @@ class ALPEJORColumnGenerationAgent(InfiniteRTAgent):
             self.is_trained = True
             self.W_0, self.U, self.V, self.W = self.get_coefficients(final_duals)
         if pretrain:
-            self.train(debug=False,verbose=verbose)
+            self.train(debug=False,verbose=verbose, use_barrier=True)
 
     def train(self, tol=1e-6, phase1_max_iter=3000, phase2_max_iter=30000, use_barrier=True, debug=False, verbose=False):
         if debug == True:
@@ -123,12 +123,12 @@ class ALPEJORColumnGenerationAgent(InfiniteRTAgent):
 
         pricing_model = gp.Model(f"Pricing_Problem", env=self.grb_env)
         pricing_model.setParam("MultiObjPre", 0)
-        pricing_model.setParam("Method", 2)      # barrier
-        pricing_model.setParam("Crossover", 0)   # no simplex crossover
-        pricing_model.setParam("MIPGap", 1e-9)    # if MILP pricing, but keep very tight
+        #pricing_model.setParam("Method", 2)      # barrier
+        #pricing_model.setParam("Crossover", 0)   # no simplex crossover
+        #pricing_model.setParam("MIPGap", 1e-9)    # if MILP pricing, but keep very tight
         pricing_model.setParam("Threads", 1)      # stable and reproducible reduced costs
-        pricing_model.setParam("Presolve", 2)     # aggressive presolve speeds up pricing
-        pricing_model.setParam("Heuristics", 0.5)
+        #pricing_model.setParam("Presolve", 1)     # aggressive presolve speeds up pricing
+        #pricing_model.setParam("Heuristics", 0.2)
         #pricing_model.setParam("MIPFocus", 1)      # feasibility emphasis
         # modest global limits as a safety net (you can tune these)
         #pricing_model.setParam("TimeLimit", 2.0)
@@ -137,7 +137,7 @@ class ALPEJORColumnGenerationAgent(InfiniteRTAgent):
 
         state_var = self.get_state_var(pricing_model)
         action_var = self.get_action_var(pricing_model, advance_scheduling_type=GRB.INTEGER)
-        self.add_action_space_constraints(pricing_model, state_var, action_var)
+        self.add_action_space_constraints(pricing_model, state_var, action_var, is_pricing=True)
 
         next_state_var = self.get_next_state(pricing_model, state_var, action_var, self.env.arrival_generator.mean_by_type)
 
@@ -256,8 +256,8 @@ class ALPEJORColumnGenerationAgent(InfiniteRTAgent):
         else:
             master_model.setParam("Method", 1)
         master_model.setParam("MultiObjPre", 0)
-        master_model.setParam("FeasibilityTol", 1e-8)
-        master_model.setParam("OptimalityTol", 1e-8)
+        #master_model.setParam("FeasibilityTol", 1e-8)
+        #master_model.setParam("OptimalityTol", 1e-8)
         # Artificial variable for W_0 constraint
         s_W0 = master_model.addVar(vtype=GRB.CONTINUOUS, lb=0, name='art_W0')
         # Artificial variables for U constraints (planning horizon)
@@ -320,22 +320,17 @@ class ALPEJORColumnGenerationAgent(InfiniteRTAgent):
         return self.env.cost_fn(state, action, is_var=False)
 
     def coeff_C(self, i, n):
-        part1 = sum((self.discount_factor ** k) * self.env.holding_cost(k, i) for k in range(n))
-        part2 = 0
-        for k in range(n,n+self.env.num_sessions):
-            if k < 0:
-                raise ValueError('You are fucked!')
-            part2 += self.discount_factor * self.env.treatment_pattern[k-n, i] * self.U[k]
-        part3 = self.env.postponing_cost(i) + self.discount_factor * self.W[i]
+        part1 = sum((self.discount_factor ** k) * self.env.holding_cost(k, i) for k in range(n)) - self.env.postponing_cost(i)
+        part2 = self.discount_factor * sum(self.env.treatment_pattern[k+1-n, i] * self.U[k] for k in range(max(n-1,0),n+self.env.num_sessions-1))
+        part3 =  self.discount_factor * self.W[i]
         cin = part1 + part2 - part3
         return clean_value(cin, 1e-8)
     
     def coeff_H(self, m):
-        if m == 0:
-            return self.env.overtime_cost(m)
-        else:
-            hm = self.discount_factor ** m * self.env.overtime_cost(m) + self.discount_factor * (self.V[m-1] - self.U[m-1])
-            return clean_value(hm, 1e-8)
+        hm = self.discount_factor ** m * self.env.overtime_cost(m)
+        if m > 0:
+            hm += self.discount_factor * (self.V[m-1] - self.U[m-1])
+        return clean_value(hm, 1e-8)
     
     def myopic_coeff_C(self, i, n):
         cin = sum((self.discount_factor ** k) * self.env.holding_cost(k, i) for k in range(n))
@@ -354,7 +349,7 @@ class ALPEJORColumnGenerationAgent(InfiniteRTAgent):
         with (gp.Model("ALP_policy", env=self.grb_env) as policy_model):
             policy_model.setParam("MultiObjPre", 0)
             policy_model.setParam('DualReductions', 0)
-            policy_model.setParam("FeasibilityTol", 1e-8)
+            #policy_model.setParam("FeasibilityTol", 1e-8)
             # m.setParam("OutputFlag", 0)
             # m.setParam("LogToConsole", 0)
             # m.setParam("MIPFocus", 1)
@@ -419,7 +414,7 @@ if "__main__" == __name__:
     init_state = config.init_state
     coefficients = train_args['result']['args']['coefficients']
     print("coefficients:", coefficients)
-    agent = ALPEJORColumnGenerationAgent(env=env, discount_factor=0.99, coefficients=coefficients, pretrain=False)
+    agent = ALPEJORColumnGenerationAgent(env=env, discount_factor=0.99, pretrain=True)
     print('ALP')
     print([agent.coeff_C(i,n) for n in range(agent.env.booking_window_size) for i in range(agent.env.num_types)])
     print('Myopic')

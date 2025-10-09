@@ -92,6 +92,7 @@ class ColumnGenerationSolver:
             # 3. Optimize the current relaxed master model
             start = time.time()
             if not solve_and_handle_errors(self.master_model):
+                self.master_model.write('broken.lp')
                 raise ValueError("Master problem could not be solved to optimality. Aborting.")
             if verbose:
                 print('master problem costs:', time.time() - start)
