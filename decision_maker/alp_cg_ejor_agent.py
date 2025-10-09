@@ -1,6 +1,4 @@
 import time
-from decimal import Decimal, getcontext
-getcontext().prec = 50
 import numpy as np
 import gurobipy as gp
 from gurobipy import GRB
@@ -18,9 +16,9 @@ class ALPEJORColumnGenerationAgent(InfiniteRTAgent):
         self.is_trained = False
         # simulate multiple sample path
         # apply myopic policy to estimate the expected value of each component
-        self.E_u_alpha = [self.env.regular_capacity * 0.94 ** (i) for i in range(self.env.planning_horizon)]
+        self.E_u_alpha = [self.env.regular_capacity * discount_factor ** (i) for i in range(self.env.planning_horizon)]
         self.E_u_alpha[-1] = 0
-        self.E_v_alpha = [self.env.overtime_capacity * 0.4 ** (i) for i in range(self.env.planning_horizon)]
+        self.E_v_alpha = [self.env.overtime_capacity * 0 ** (i) for i in range(self.env.planning_horizon)]
         self.E_v_alpha[-1] = 0
         self.E_w_alpha = self.env.arrival_generator.mean_by_type
         if coefficients is not None:
@@ -322,8 +320,12 @@ class ALPEJORColumnGenerationAgent(InfiniteRTAgent):
         return self.env.cost_fn(state, action, is_var=False)
 
     def coeff_C(self, i, n):
-        part1 = sum((self.discount_factor ** k) * self.env.holding_cost(k, i) for k in range(n + 1))
-        part2 = sum(self.discount_factor * self.env.treatment_pattern[k+1-n, i] * self.U[k] for k in range(n-1,n-1+self.env.num_sessions))
+        part1 = sum((self.discount_factor ** k) * self.env.holding_cost(k, i) for k in range(n))
+        part2 = 0
+        for k in range(n,n+self.env.num_sessions):
+            if k < 0:
+                raise ValueError('You are fucked!')
+            part2 += self.discount_factor * self.env.treatment_pattern[k-n, i] * self.U[k]
         part3 = self.env.postponing_cost(i) + self.discount_factor * self.W[i]
         cin = part1 + part2 - part3
         return clean_value(cin, 1e-8)
@@ -334,6 +336,14 @@ class ALPEJORColumnGenerationAgent(InfiniteRTAgent):
         else:
             hm = self.discount_factor ** m * self.env.overtime_cost(m) + self.discount_factor * (self.V[m-1] - self.U[m-1])
             return clean_value(hm, 1e-8)
+    
+    def myopic_coeff_C(self, i, n):
+        cin = sum((self.discount_factor ** k) * self.env.holding_cost(k, i) for k in range(n))
+        g_i = self.env.postponing_cost(i)
+        return (cin - g_i)
+    
+    def myopic_coeff_H(self, m):
+        return self.discount_factor ** m * self.env.overtime_cost(m)
 
     def generate_all_columns(self):
         for column in self.env.generate_state_action_pairs():
@@ -358,7 +368,9 @@ class ALPEJORColumnGenerationAgent(InfiniteRTAgent):
             # ---------- 1. objective ----------
             C = [self.coeff_C(i, n) for i in range(self.env.num_types) for n in range(self.env.booking_window_size)]
             H = [self.coeff_H(m) for m in range(self.env.planning_horizon)]
-            policy_model.setObjective(np.dot(C, flatten_x_var) + np.dot(H, y_var), GRB.MINIMIZE)
+            advance_scheduling_cost = np.dot(C, flatten_x_var)
+            overtime_cost = np.dot(H, y_var)
+            policy_model.setObjective(advance_scheduling_cost + overtime_cost, GRB.MINIMIZE)
 
             if not solve_and_handle_errors(policy_model, verbose=verbose):
                 raise RuntimeError("Master model optimal solution not found")
@@ -399,14 +411,23 @@ class ALPEJORColumnGenerationAgent(InfiniteRTAgent):
 
 
 if "__main__" == __name__:
-    train_args = {"uid": "d0bd28788b8f74eebabc19f94cee8387", "result": {"agent_name": "alp", "args": {"coefficients": [-103506.528484757, 180.876415002, 179.067650852, 180.876415002, 179.067650852, 180.876415002, 179.067650852, 180.876415002, 179.067650852, 180.876415002, 179.067650852, 180.876415002, 179.067650852, 177.276974343, 175.5042046, 173.749162554, 172.011670928, 170.291554219, 168.588638677, 166.90275229, 165.233724767, 163.581387519, 161.945573644, 160.326117908, 158.722856729, 157.135628161, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 359.944065854, 359.944065854, 359.944065854, 359.944065854, 359.944065854]}}}
+    train_args = {"uid": "0360ea73787bbe07b431cee558f64d77", "result": {"agent_name": "alp", "args": {"coefficients": [-55667.655958531, 88.638487172, 89.533825426, 88.638487172, 89.533825426, 88.638487172, 89.533825426, 88.638487172, 89.533825426, 88.638487172, 89.533825426, 88.638487172, 89.533825426, 88.638487172, 87.7521023, 86.874581277, 86.005835464, 85.145777109, 84.294319338, 83.451376145, 82.616862384, 81.79069376, 80.972786822, 80.163058954, 79.361428364, 78.567814081, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 178.172312597, 178.172312597, 178.172312597, 178.172312597, 178.172312597]}}}
+
+    sample_path = [[2, 5, 4, 8, 6], [4, 3, 3, 5, 8], [2, 4, 5, 8, 4], [3, 4, 3, 10, 3], [4, 4, 7, 12, 10], [2, 10, 4, 6, 5], [4, 5, 4, 8, 6], [4, 5, 4, 6, 4], [5, 3, 2, 11, 6], [2, 1, 6, 6, 4], [2, 1, 6, 4, 4], [1, 3, 5, 12, 9], [3, 4, 1, 3, 3], [5, 5, 3, 7, 16], [1, 5, 6, 4, 14], [1, 4, 7, 8, 9], [3, 3, 1, 3, 7], [2, 4, 6, 6, 3], [7, 6, 4, 6, 7], [1, 7, 5, 2, 9], [5, 5, 9, 2, 5], [2, 1, 7, 3, 6], [3, 4, 4, 5, 5], [3, 5, 5, 5, 7], [4, 5, 5, 7, 7], [1, 4, 7, 7, 6], [3, 8, 2, 4, 2], [5, 6, 5, 4, 11], [3, 1, 5, 2, 9], [1, 4, 7, 5, 7], [6, 6, 5, 4, 5], [2, 7, 4, 5, 5], [3, 2, 10, 4, 5], [4, 7, 5, 6, 9], [5, 2, 4, 7, 6], [3, 4, 4, 8, 6], [6, 5, 10, 9, 5], [3, 2, 2, 10, 5], [6, 5, 6, 8, 6], [2, 3, 4, 6, 8], [3, 0, 4, 7, 8], [6, 5, 4, 11, 5], [4, 2, 7, 3, 2], [2, 6, 5, 11, 7], [4, 2, 7, 8, 9], [5, 8, 6, 6, 6], [2, 1, 5, 4, 5], [2, 5, 3, 6, 5], [3, 3, 7, 10, 6], [1, 2, 5, 10, 6], [1, 2, 2, 3, 5], [3, 4, 3, 9, 8], [2, 5, 6, 3, 13], [3, 8, 9, 9, 6], [1, 5, 3, 4, 7], [1, 6, 8, 3, 4], [7, 2, 1, 9, 11], [4, 2, 2, 7, 3], [3, 3, 5, 6, 5], [1, 4, 6, 4, 9], [1, 1, 4, 4, 14], [3, 6, 2, 9, 5], [2, 0, 7, 9, 13], [3, 3, 7, 6, 8], [5, 5, 6, 6, 5], [2, 7, 5, 2, 10], [1, 6, 4, 1, 9], [1, 8, 3, 5, 7], [5, 1, 8, 11, 12], [1, 5, 9, 9, 8], [2, 5, 4, 8, 10], [2, 4, 6, 4, 9], [7, 6, 8, 4, 6], [4, 5, 9, 5, 4], [3, 2, 7, 8, 4], [4, 4, 1, 12, 4], [4, 4, 4, 5, 4], [5, 3, 3, 6, 9], [1, 4, 6, 5, 6], [3, 3, 11, 4, 8], [6, 3, 8, 4, 9], [5, 6, 5, 11, 11], [4, 7, 3, 7, 9], [0, 5, 1, 7, 4], [4, 7, 5, 3, 9], [4, 1, 4, 8, 12], [4, 2, 7, 7, 11], [2, 7, 5, 9, 2], [4, 3, 7, 6, 5], [2, 3, 5, 6, 9], [5, 5, 1, 4, 5], [2, 8, 7, 8, 9], [6, 8, 2, 7, 14], [1, 7, 3, 4, 7], [3, 4, 5, 9, 13], [5, 2, 2, 5, 7], [2, 4, 4, 4, 4], [2, 2, 5, 8, 11], [5, 1, 6, 9, 8], [1, 3, 6, 5, 6], [3, 9, 6, 8, 8], [2, 5, 4, 6, 7], [2, 3, 3, 5, 8], [3, 4, 3, 6, 6], [4, 3, 4, 5, 3], [4, 3, 4, 7, 11], [2, 3, 3, 9, 5], [5, 2, 5, 12, 3], [5, 2, 3, 5, 9], [0, 5, 6, 1, 7], [5, 3, 4, 7, 7], [2, 8, 5, 6, 14], [2, 2, 4, 3, 9], [4, 7, 6, 8, 9], [2, 2, 6, 5, 4], [4, 4, 5, 6, 7], [2, 4, 3, 4, 7], [2, 9, 5, 11, 12], [2, 2, 5, 8, 8], [5, 2, 6, 12, 6], [3, 4, 6, 4, 11], [6, 2, 5, 4, 7], [3, 1, 3, 8, 7], [2, 5, 7, 9, 8], [5, 6, 6, 6, 8], [4, 3, 5, 7, 10], [2, 4, 7, 11, 5], [2, 5, 3, 3, 4], [2, 2, 6, 4, 7], [2, 0, 6, 8, 10], [1, 2, 5, 5, 5], [3, 3, 4, 7, 9], [3, 4, 8, 8, 10], [1, 6, 4, 5, 7], [3, 6, 6, 4, 8], [3, 3, 6, 7, 2], [7, 5, 4, 7, 6], [6, 4, 4, 7, 10], [3, 4, 6, 6, 10], [3, 2, 6, 5, 8], [3, 2, 5, 6, 7], [4, 1, 3, 4, 6], [3, 4, 7, 3, 13], [3, 5, 9, 10, 5], [5, 6, 8, 6, 1], [4, 2, 9, 6, 8], [0, 2, 5, 7, 7], [7, 5, 7, 2, 7], [2, 5, 6, 3, 6], [4, 3, 4, 10, 7], [1, 4, 0, 6, 3], [4, 3, 4, 5, 7], [2, 4, 5, 5, 5], [1, 2, 7, 3, 4], [2, 3, 7, 4, 6], [4, 4, 5, 8, 11], [1, 5, 9, 4, 3], [2, 3, 4, 6, 4], [1, 2, 8, 7, 9], [5, 7, 3, 8, 6], [4, 4, 4, 5, 6], [4, 2, 8, 2, 16], [2, 5, 8, 8, 4], [2, 0, 9, 4, 10], [5, 3, 9, 4, 10], [6, 2, 6, 9, 6], [1, 4, 5, 10, 6], [3, 6, 7, 3, 3], [4, 4, 4, 10, 3], [2, 4, 5, 5, 10], [3, 4, 9, 8, 7], [4, 7, 7, 10, 5], [1, 2, 6, 4, 5], [0, 3, 4, 9, 9], [6, 4, 6, 7, 10], [2, 1, 11, 4, 6], [4, 5, 9, 6, 4], [3, 3, 8, 2, 5], [4, 5, 3, 11, 8], [1, 3, 4, 5, 7], [2, 5, 7, 4, 4], [2, 2, 1, 8, 8], [3, 5, 3, 4, 5], [3, 2, 8, 9, 5], [3, 6, 8, 3, 10], [3, 2, 4, 6, 5], [2, 5, 5, 1, 8], [1, 8, 3, 8, 4], [3, 3, 4, 6, 6], [3, 3, 8, 9, 4], [0, 5, 7, 4, 3], [3, 3, 4, 11, 5], [1, 5, 6, 6, 7], [2, 6, 3, 4, 4], [3, 5, 5, 6, 5], [6, 4, 6, 2, 5], [2, 3, 5, 3, 5], [2, 4, 3, 6, 8], [4, 3, 4, 9, 7], [6, 5, 7, 4, 9], [5, 5, 2, 9, 13], [5, 3, 4, 8, 8], [1, 4, 6, 4, 9], [2, 1, 4, 8, 5], [3, 6, 6, 5, 7], [4, 5, 5, 6, 6], [6, 3, 7, 8, 6], [5, 3, 5, 5, 4], [3, 3, 5, 8, 8], [2, 4, 4, 4, 5], [5, 2, 5, 4, 6], [5, 5, 2, 8, 4], [4, 4, 4, 7, 10], [3, 5, 5, 4, 6], [4, 4, 6, 5, 7], [4, 4, 8, 8, 13], [4, 5, 10, 6, 8], [1, 4, 6, 7, 7], [4, 4, 3, 4, 6], [0, 6, 2, 8, 10], [3, 6, 4, 6, 10], [6, 4, 3, 8, 5], [1, 8, 4, 9, 6], [2, 6, 2, 3, 8], [4, 3, 2, 7, 6], [4, 4, 0, 7, 5], [2, 3, 2, 4, 6], [1, 5, 4, 10, 4], [1, 6, 5, 8, 9], [1, 5, 3, 5, 9], [3, 5, 10, 4, 12], [3, 4, 3, 5, 8], [1, 7, 6, 6, 3], [4, 4, 6, 9, 7], [3, 7, 8, 1, 8], [4, 4, 2, 5, 10], [4, 3, 3, 8, 3], [3, 5, 3, 4, 3], [1, 4, 6, 3, 6], [2, 4, 6, 2, 6], [3, 2, 6, 5, 8], [3, 4, 6, 5, 5], [3, 5, 2, 6, 9], [4, 3, 5, 6, 4], [5, 3, 10, 5, 4], [2, 8, 5, 9, 9], [3, 6, 6, 7, 7], [4, 6, 3, 5, 8], [3, 2, 4, 9, 4], [4, 3, 5, 4, 13], [5, 2, 5, 7, 11], [4, 1, 2, 2, 10], [7, 4, 5, 6, 8], [2, 5, 8, 8, 9], [4, 5, 4, 4, 4], [1, 2, 4, 4, 9], [3, 5, 4, 9, 7], [4, 4, 2, 4, 11], [2, 4, 7, 3, 2], [0, 8, 9, 8, 1], [5, 3, 5, 12, 5], [5, 2, 5, 8, 8], [3, 3, 4, 2, 5], [1, 2, 3, 7, 4], [1, 7, 5, 6, 6], [2, 2, 9, 8, 6], [5, 5, 9, 5, 8], [2, 3, 5, 6, 12], [5, 7, 4, 6, 5], [7, 5, 3, 8, 8], [6, 5, 5, 7, 1], [2, 4, 5, 5, 4], [4, 1, 4, 5, 5], [1, 4, 3, 8, 7], [1, 6, 9, 9, 6], [1, 5, 4, 5, 10], [6, 2, 4, 2, 3], [5, 7, 4, 10, 6], [6, 7, 4, 9, 4], [3, 2, 4, 5, 3], [0, 5, 6, 6, 12], [2, 2, 5, 3, 8], [4, 3, 2, 4, 4], [4, 6, 6, 3, 5], [5, 7, 4, 4, 8], [1, 4, 4, 4, 9], [3, 5, 3, 8, 5], [4, 2, 7, 11, 6], [1, 5, 2, 4, 7], [5, 4, 5, 6, 7], [2, 4, 6, 3, 7], [1, 3, 4, 3, 7], [3, 4, 5, 7, 10], [4, 4, 5, 7, 7], [7, 1, 3, 7, 6], [2, 4, 4, 8, 6], [3, 2, 8, 2, 8], [5, 4, 8, 2, 8], [2, 2, 0, 4, 6], [5, 3, 0, 5, 6], [3, 5, 3, 5, 2], [1, 4, 3, 7, 4], [2, 3, 7, 9, 5], [2, 4, 6, 4, 8], [4, 4, 7, 7, 5], [3, 2, 4, 5, 11], [4, 6, 7, 7, 5], [4, 6, 8, 3, 7], [2, 3, 1, 5, 5], [4, 3, 1, 6, 4], [3, 4, 5, 3, 12], [6, 4, 6, 3, 11], [7, 6, 8, 4, 5], [3, 3, 4, 4, 4], [3, 2, 8, 4, 9], [0, 6, 4, 4, 6], [4, 4, 4, 6, 4], [5, 4, 7, 8, 6], [3, 6, 6, 5, 6], [4, 9, 6, 4, 7], [2, 4, 7, 5, 8], [1, 6, 7, 8, 10], [5, 4, 3, 4, 6], [2, 1, 6, 5, 11], [3, 12, 6, 7, 5], [3, 2, 5, 5, 14], [3, 3, 2, 4, 5], [2, 5, 1, 7, 6]]
     config = get_config_by_type('ejor_default')
     env = config.env
     init_state = config.init_state
     coefficients = train_args['result']['args']['coefficients']
     print("coefficients:", coefficients)
     agent = ALPEJORColumnGenerationAgent(env=env, discount_factor=0.99, coefficients=coefficients, pretrain=False)
+    print('ALP')
+    print([agent.coeff_C(i,n) for n in range(agent.env.booking_window_size) for i in range(agent.env.num_types)])
+    print('Myopic')
+    print([agent.myopic_coeff_C(i,n) for n in range(agent.env.booking_window_size) for i in range(agent.env.num_types)])
+    print('ALP')
     print([agent.coeff_H(m) for m in range(agent.env.planning_horizon)])
+    print('Myopic')
+    print([agent.myopic_coeff_H(m) for m in range(agent.env.planning_horizon)])
     '''
     action, obj, info = agent.solve(state=state, t=1)
     x, y = action

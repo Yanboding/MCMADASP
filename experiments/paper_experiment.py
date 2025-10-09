@@ -137,10 +137,10 @@ if __name__ == '__main__':
                          'occupancy_level': 'Occupancy Level',
                          'discount_factor': 'Discount Factor'}
     # Load and process the data
-    #plot_experiment_result('results/demand_rate', plot_labels, experiment_lables)
+    plot_experiment_result('results/demand_rate', plot_labels, experiment_lables)
     #plot_experiment_result('results/occupancy_level', plot_labels, experiment_lables)
     #plot_experiment_result('results/discount_factor', plot_labels, experiment_lables)
-    plot_experiment_result('results/discount_factor_alp_only', plot_labels, experiment_lables)
+    #plot_experiment_result('results/discount_factor_alp_only', plot_labels, experiment_lables)
     #plot_experiment_result('results/decision_epoch', plot_labels, experiment_lables)
 
     '''

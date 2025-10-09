@@ -273,7 +273,7 @@ if __name__ == '__main__':
         'demand_rate': {
             'config_type': 'ejor_default',
             'param_name': 'total_arrival_rate',
-            'param_values': [25, 28, 30],
+            'param_values': [25],
             'param_modifier_fn': demand_rate_modifier
         }
     }
@@ -295,11 +295,21 @@ if __name__ == '__main__':
         dat_file = 'table.dat',
     )
     '''
+    '''
+    generate_all_experiments(
+        config_type='ejor_default',
+        experiment_configs=EXPERIMENT_CONFIGS,
+        test_sample_path_num_map=TEST_SAMPLE_NUM_MAP,
+        dat_file='unif_sample_path_table.dat',
+        is_reuse=False # Set to True to avoid regenerating files and only create the .dat
+    )
+    '''
     
     generate_all_experiments(
         config_type='ejor_default',
         experiment_configs=EXPERIMENT_CONFIGS,
         test_sample_path_num_map=TEST_SAMPLE_NUM_MAP,
-        dat_file='table.dat',
+        dat_file='geo_sample_path_table.dat',
         is_reuse=False # Set to True to avoid regenerating files and only create the .dat
     )
+    

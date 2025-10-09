@@ -85,7 +85,7 @@ class RTEnv:
         regular_bookings, overtimes, waitlist = state
         advance_scheduling_decision, overtime_decision = action
         waiting_cost = gp.quicksum(
-            gp.quicksum(self.discount_factor ** k * self.holding_cost(k, i) for k in range(j + 1)) * advance_scheduling_decision[j, i]
+            gp.quicksum(self.discount_factor ** k * self.holding_cost(k, i) for k in range(j)) * advance_scheduling_decision[j, i]
             for j in range(len(advance_scheduling_decision))
             for i in range(len(advance_scheduling_decision[0]))
         )
@@ -191,9 +191,6 @@ class RTEnv:
             self.wait_time_by_type[i].record_batch(wait_times, advance_scheduling_decision[:, i])
         self.overtime[self.tau] = post_action_overtimes[0]
         if done:
-            print('done')
-            print(self.tau)
-            print(len(post_action_overtimes))
             self.overtime[self.tau:] = post_action_overtimes
         # update state
         self.tau += 1

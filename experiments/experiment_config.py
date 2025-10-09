@@ -75,7 +75,7 @@ class ExperimentConfig:
             "arrival_rates": [3, 4, 5, 6, 7],
             "patterns": treatment_patterns,
             "holding_cost_by_day_by_type": holding_cost.tolist(),
-            "overtime_cost_by_day": 200,
+            "overtime_cost_by_day": 100,
             "postponing_cost": 5000,
             "duration": 1,
             "regular_capacity": 50,

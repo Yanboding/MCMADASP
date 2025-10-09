@@ -164,7 +164,6 @@ if __name__ == "__main__":
     env = config.env
     agent = InfiniteSAAAgent(env=env, discount_factor=0.99, sample_path_number=300, is_myopic=False)
     state, info = env.reset()
-    print(state)
     done = False
     action, obj, _ = agent.solve(state=state, t=1, verbose=False)
     print("time:", 1, "bender obj:", obj)
