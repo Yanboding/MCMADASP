@@ -309,7 +309,7 @@ if __name__ == '__main__':
         config_type='ejor_default',
         experiment_configs=EXPERIMENT_CONFIGS,
         test_sample_path_num_map=TEST_SAMPLE_NUM_MAP,
-        dat_file='geo_sample_path_table.dat',
+        dat_file='table.dat',
         is_reuse=False # Set to True to avoid regenerating files and only create the .dat
     )
     
