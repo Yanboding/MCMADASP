@@ -109,16 +109,15 @@ class InfiniteRTAgent:
             ),
             name=f"valid_post_action_overtime_bookings",
         )
-        if is_pricing:
-            # is this for numerical stability?
-            new_booking_slots = self.env.convert_action_to_booking_slots(advance_scheduling_decision_vars)
-            model.addConstrs(
-                (
-                    new_booking_slots[m] >= overtime_decision_vars[m]
-                    for m in range(self.env.planning_horizon)
-                ),
-                name="valid_new_appointment_slots",
-            )
+        # is this for numerical stability?
+        new_booking_slots = self.env.convert_action_to_booking_slots(advance_scheduling_decision_vars)
+        model.addConstrs(
+            (
+                new_booking_slots[m] >= overtime_decision_vars[m]
+                for m in range(self.env.planning_horizon)
+            ),
+            name="valid_new_appointment_slots",
+        )
         return model
 
     def policy(self, state, t):

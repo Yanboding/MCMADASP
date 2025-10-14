@@ -40,11 +40,6 @@ class PolicyEvaluator:
             else:
                 a = self.agent.policy(s, t + tau)
             next_state, reward, done, info = self.env.step(a)
-            if reward > 0:
-                print('current state:')
-                print(s)
-                print('current action:')
-                print(a)
             rewards.append(reward)
             s = next_state
             if done:

@@ -22,10 +22,6 @@ class RunningStats:
     @property
     def mean(self) -> float:
         return self._mean if self._n > 0 else 0.0
-    
-    @property
-    def var_sum(self) -> float:
-        return self._m2 if self._n > 0 else 0.0
 
     @property
     def var_sum(self) -> float:
@@ -55,29 +51,6 @@ class RunningStats:
         self._mean += delta / self._n
         delta2 = value - self._mean
         self._m2 += delta * delta2
-    
-    def record_batch(self, values, counts):
-        """
-        Update the running statistics with `counts[i]` copies of `values[i]`.
-
-        Parameters
-        ----------
-        values : 1‑D array‑like of constants            (e.g. waiting times 0,1,2,…)
-        counts : 1‑D array‑like of non‑negative integers (how many start after that wait)
-
-        The two arrays must have equal length.
-        """
-        m = counts.sum()
-        if m == 0:
-            return
-        batch_mean = (counts*values).sum()/m
-        batch_var_sum = (counts * (values - batch_mean) ** 2).sum()
-        # treat the batch as another RunningStat and merge once
-        tmp = RunningStats()
-        tmp._n = m
-        tmp._mean = batch_mean
-        tmp._m2 = batch_var_sum
-        self += tmp
 
     def record_batch(self, values, counts):
         """
@@ -212,5 +185,7 @@ class RunningStats:
 if __name__ == "__main__":
     print("--- Example 1: Basic Usage ---")
     x_1 = RunningStats(n=10, mean=10, m2=300)
-    x_2 = RunningStats(n=10, mean=20, m2=200)
-    print(x_1/x_2)
+    x_2 = RunningStats(n=10, mean=14, m2=300)
+    #x_2 = RunningStats(n=10, mean=20, m2=200)
+    x_1 = x_1/x_2
+    print(x_1)

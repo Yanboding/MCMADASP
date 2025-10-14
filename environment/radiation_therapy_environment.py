@@ -1,9 +1,8 @@
 import copy
 import itertools
-from scipy.stats import geom
 
 import numpy as np
-from scipy.stats import truncnorm
+from scipy.stats import truncnorm, geom
 
 from utils import numpy_shift, RunningStats, bounded_compositions
 import gurobipy as gp
@@ -135,7 +134,7 @@ class RTEnv:
         return res
 
     # simulation
-    def reset(self, init_state=None, t=1, new_arrivals=None, percentage_occupied=0):
+    def reset(self, init_state=None, t=1, new_arrivals=None, percentage_occupied=0.99):
         self.t = t
         self.tau = 0
         # how to handle the first arrivals
@@ -163,19 +162,26 @@ class RTEnv:
         stop_time = geom.rvs((1- self.discount_factor), random_state=self.stop_time_rng)
         return self.arrival_generator.rvs(stop_time)
 
-    def reset_initial_state(self, percentage_occupied, new_arrivals):
+    def reset_initial_state(self, decay_factor, new_arrivals):
         # find out the average appointment slot required in first period
-        capacity_occupied = (self.regular_capacity + self.overtime_capacity) * percentage_occupied
-        # Step 1: Generate from truncated normal distribution
-        mean = 1.0
-        std_dev = 0.3
-        lower, upper = 0, 2
-        a, b = (lower - mean) / std_dev, (upper - mean) / std_dev
-        samples = truncnorm.rvs(a, b, loc=mean, scale=std_dev, size=self.planning_horizon, random_state=self.init_state_rng)
-        # Step 2: Scale so that the average is exactly 100 * p
-        total_bookings = samples / samples.mean() * capacity_occupied
-        overtimes = np.maximum(total_bookings - self.regular_capacity, 0)
-        regular_bookings = total_bookings - overtimes
+        required_bookings = []
+        for j in range(self.planning_horizon):
+            mean = (self.regular_capacity + self.overtime_capacity) * decay_factor**(j+1)
+            std_dev = 1
+            required_booking = truncnorm.rvs(0, float('inf'), loc=mean, scale=std_dev, random_state=self.init_state_rng)
+            # randomized rounding to preserve mean
+            k = int(np.floor(required_booking))
+            p = required_booking - k
+            if self.init_state_rng.random() < p:
+                required_booking = k + 1
+            else:
+                required_booking = k
+
+            required_bookings.append(required_booking)
+        required_bookings[-1] = 0
+        required_bookings = np.array(required_bookings)
+        regular_bookings = np.minimum(required_bookings, self.regular_capacity)
+        overtimes = np.minimum(np.maximum(required_bookings - self.regular_capacity, 0), self.overtime_capacity)
         return (regular_bookings, overtimes, new_arrivals)
 
     def step(self, action):
@@ -206,6 +212,8 @@ if __name__ == '__main__':
     from experiments import get_config_by_type
     config = get_config_by_type('ejor_default')
     env = config.env
-    print(config.init_state)
-    print(config.valid_action)
-    print(env.cost_fn(state=config.init_state, action=config.valid_action))
+    required_bookings= np.zeros(env.planning_horizon)
+    n = 10000
+    for i in range(n):
+        regular_bookings, overtimes, new_arrivals = env.reset_initial_state(decay_factor=0.95, new_arrivals=[1,1,1,1])
+        required_bookings += regular_bookings+overtimes

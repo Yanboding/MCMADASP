@@ -80,9 +80,9 @@ class ExperimentConfig:
             "duration": 1,
             "regular_capacity": 50,
             "overtime_capacity": 6,
-            "discount_factor": 0.99,
+            "discount_factor": 0.95,
             "reset_params": {
-                'percentage_occupied': 0,
+                'percentage_occupied': 0.95,
                 't': 1
             },
             "maximum_total_arrival": 30,
@@ -149,9 +149,9 @@ class ExperimentConfig:
             'duration': 1,
             'regular_capacity': 120,
             "overtime_capacity": 15,
-            'discount_factor': 0.99,
+            'discount_factor': 0.95,
             'reset_params': {
-                'percentage_occupied': 0,
+                'percentage_occupied': 0.99,
                 't': 1
             },
             'maximum_total_arrival': math.ceil(total_arrival_rate * 3),

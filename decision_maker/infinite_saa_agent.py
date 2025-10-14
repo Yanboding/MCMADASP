@@ -8,14 +8,17 @@ from utils import solve_and_handle_errors
 
 class InfiniteSAAAgent(InfiniteRTAgent):
 
-    def __init__(self, env, discount_factor, V=None, Q=None, sample_path_number=100, current_decision_var_type='integer', future_decision_var_type='continuous', is_myopic=False, verbose=False):
+    def __init__(self, env, discount_factor, V=None, Q=None, sample_path_number=100, current_decision_var_type='integer', future_decision_var_type='continuous', is_myopic=False, sample_path=None, verbose=False):
         super().__init__(env, discount_factor, V=V, Q=Q)
         self.sample_path_number = sample_path_number
         self.current_decision_var_type = GRB.INTEGER if current_decision_var_type is None or current_decision_var_type == 'integer' else GRB.CONTINUOUS
         self.future_decision_var_type = GRB.INTEGER if future_decision_var_type is None or future_decision_var_type == 'integer' else GRB.CONTINUOUS
         self.is_myopic = is_myopic
+        self.sample_path = sample_path
         self.delta = []
-        if not is_myopic:
+        if self.sample_path != None:
+            self.set_sample_path(sample_path)
+        if not is_myopic and sample_path is None:
             for omega in range(self.sample_path_number):
                 new_arrivals = self.env.reset_arrivals()[1:]
                 self.delta.append(new_arrivals)
@@ -138,7 +141,6 @@ class InfiniteSAAAgent(InfiniteRTAgent):
         return linking_constraints
 
     def solve(self, state, t=1, action=None, verbose=False):
-        
         if self.is_myopic or self.sample_path_number <= 1:
             action, obj_value, info = self.direct_solve(state, t=t, action=action)
             return action, obj_value, info
@@ -154,7 +156,7 @@ class InfiniteSAAAgent(InfiniteRTAgent):
         action_t, upper_bound, info = self.bender_solver.solve(state=state,
                                                                action=action,
                                                                 tol=1e-6,
-                                                                max_iter=15000,
+                                                                max_iter=100,
                                                                 verbose=verbose)
         return action_t, upper_bound, info
 

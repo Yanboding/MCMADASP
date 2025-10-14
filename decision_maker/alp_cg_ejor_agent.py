@@ -16,15 +16,22 @@ class ALPEJORColumnGenerationAgent(InfiniteRTAgent):
         self.is_trained = False
         # simulate multiple sample path
         # apply myopic policy to estimate the expected value of each component
-        self.E_u_alpha = [self.env.regular_capacity * 0.95 ** (i) for i in range(self.env.planning_horizon)]
-        self.E_u_alpha[-1] = 0
-        self.E_v_alpha = [self.env.overtime_capacity * 0.4 ** (i) for i in range(self.env.planning_horizon)]
-        self.E_v_alpha[-1] = 0
+        decay_factor = 0.94
+        required_bookings = [(self.env.regular_capacity + self.env.overtime_capacity) * decay_factor**(j+1) for j in range(self.env.planning_horizon)]
+        required_bookings[-1] = 0
+        required_bookings = np.array(required_bookings)
+        self.E_u_alpha = np.minimum(required_bookings, self.env.regular_capacity)
+        self.E_v_alpha = np.minimum(np.maximum(required_bookings - self.env.regular_capacity, 0), self.env.regular_capacity)
         self.E_w_alpha = self.env.arrival_generator.mean_by_type
+        #self.E_u_alpha = [self.env.regular_capacity * 0.95 ** (i) for i in range(self.env.planning_horizon)]
+        #self.E_u_alpha[-1] = 0
+        #self.E_v_alpha = [self.env.overtime_capacity * 0.4 ** (i) for i in range(self.env.planning_horizon)]
+        #self.E_v_alpha[-1] = 0
         if coefficients is not None:
             final_duals = coefficients
             self.is_trained = True
             self.W_0, self.U, self.V, self.W = self.get_coefficients(final_duals)
+            print(self.U)
         if pretrain:
             self.train(debug=False,verbose=verbose, use_barrier=True)
 
@@ -414,15 +421,15 @@ if "__main__" == __name__:
     init_state = config.init_state
     coefficients = train_args['result']['args']['coefficients']
     print("coefficients:", coefficients)
-    agent = ALPEJORColumnGenerationAgent(env=env, discount_factor=0.99, pretrain=True)
-    print('ALP')
-    print([agent.coeff_C(i,n) for n in range(agent.env.booking_window_size) for i in range(agent.env.num_types)])
-    print('Myopic')
-    print([agent.myopic_coeff_C(i,n) for n in range(agent.env.booking_window_size) for i in range(agent.env.num_types)])
-    print('ALP')
-    print([agent.coeff_H(m) for m in range(agent.env.planning_horizon)])
-    print('Myopic')
-    print([agent.myopic_coeff_H(m) for m in range(agent.env.planning_horizon)])
+    agent = ALPEJORColumnGenerationAgent(env=env, discount_factor=0.99, pretrain=False)
+    #print('ALP')
+    #print([agent.coeff_C(i,n) for n in range(agent.env.booking_window_size) for i in range(agent.env.num_types)])
+    #print('Myopic')
+    #print([agent.myopic_coeff_C(i,n) for n in range(agent.env.booking_window_size) for i in range(agent.env.num_types)])
+    #print('ALP')
+    #print([agent.coeff_H(m) for m in range(agent.env.planning_horizon)])
+    #print('Myopic')
+    #print([agent.myopic_coeff_H(m) for m in range(agent.env.planning_horizon)])
     '''
     action, obj, info = agent.solve(state=state, t=1)
     x, y = action

@@ -7,7 +7,7 @@ import numpy as np
 
 from decision_maker import ALPEJORColumnGenerationAgent
 from experiments import get_config_by_type
-from utils import iter_to_tuple, iter_to_list, get_uid, read_lines_with_pattern
+from utils import iter_to_tuple, iter_to_list, get_uid, read_lines_with_pattern, RunningStats
 from pathlib import Path
 import hashlib
 import json
@@ -41,11 +41,6 @@ def _generate_experiment_parameters(config_type, experiment_name, param_name, pa
         base_env_args.update(base_env_args_overrides)
 
     # Define a standard set of agent arguments.
-    agent_args = [
-        #{'agent_name': 'hindsight_approx', 'args': {'sample_path_number': 350, 'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False}},
-        {'agent_name': 'myopic', 'args': {'is_myopic': True}},
-        #{'agent_name': 'alp', 'args': {'coefficients': [-195284.271323261, 123.537317331, 122.301944158, 121.078924717, 119.868135469, 118.669454115, 117.482759574, 116.307931978, 115.144852658, 113.993404131, 112.85347009, 111.724935389, 110.607686035, 109.501609175, 108.406593083, 107.322527152, 106.249301881, 105.186808862, 104.134940773, 103.093591366, 102.062655452, 101.042028898, 100.031608609, 99.031292522, 98.040979597, 97.060569801, 96.089964103, 95.129064462, 94.177773818, 93.235996079, 92.303636119, 91.380599757, 90.46679376, 89.562125822, 88.666504564, 87.779839518, 86.902041123, 86.033020712, 85.172690505, 84.3209636, 83.477753964, 82.642976424, 81.81654666, 80.998381193, 80.188397381, 79.386513408, 78.592648274, 77.806721791, 77.028654573, 76.258368027, 75.495784347, 74.740826503, 73.993418238, 73.253484056, 72.520949215, 71.795739723, 71.077782326, 70.367004503, 69.663334458, 68.966701113, 68.277034102, 67.594263761, 66.918321123, 66.249137912, 65.586646533, 64.930780068, 64.281472267, 63.638657544, 63.002270969, 62.372248259, 61.748525777, 61.131040519, 60.519730114, 59.914532813, 59.315387484, 58.72223361, 58.135011273, 57.553661161, 56.978124549, 56.408343304, 55.844259871, 55.285817272, 54.732959099, 54.185629508, 53.643773213, 53.107335481, 0.0, 23.537317331, 23.301944158, 23.068924717, 22.838235469, 22.609853115, 22.383754584, 22.159917038, 21.938317867, 21.718934689, 21.501745342, 21.286727888, 21.073860609, 20.863122003, 20.654490783, 20.447945875, 20.243466417, 20.041031753, 19.840621435, 19.642215221, 19.445793068, 19.251335138, 19.058821786, 18.868233569, 18.679551233, 18.492755721, 18.307828163, 18.124749882, 17.943502383, 17.764067359, 17.586426685, 17.410562419, 17.236456794, 17.064092226, 16.893451304, 16.724516791, 16.557271623, 16.391698907, 16.227781918, 16.065504099, 15.904849058, 15.745800567, 15.588342562, 15.432459136, 15.278134545, 15.125353199, 14.974099667, 14.82435867, 14.676115084, 14.529353933, 14.384060393, 14.24021979, 14.097817592, 13.956839416, 13.817271021, 13.679098311, 13.542307328, 13.406884255, 13.272815412, 13.140087258, 2e-09, 1e-09, 1e-09, 1e-09, 1e-09, 1e-09, 1e-09, 1e-09, 1e-09, 1e-09, 1e-09, 1e-09, 1e-09, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 728.993093121, 247.074634663, 610.323639007, 1789.204068776, 2263.926831342, 3465.554667463, 237.338908229, 700.26785657, 1253.362150343, 586.274452439, 1779.349320377, 118.669454115, 2279.557885455, 7157.009484284, 3298.362359767, 3617.528300023, 3699.344846683, 3298.362359767]}},
-    ]
     result_dict = {}
     lines_to_write = [] # Optimization: Collect lines to write in a list
     print(f"Generating parameters for {experiment_name}...")
@@ -69,12 +64,10 @@ def _generate_experiment_parameters(config_type, experiment_name, param_name, pa
             for key in keys[:-1]:
                 d = d.setdefault(key, {})
             d[keys[-1]] = value
-        uid = get_uid(env_args_for_value)
-        print(uid)
-        alp_agent = alp_train_res.get(uid, {'agent_name': 'alp', 'args': {'coefficients': None}})
-        print(alp_agent)
-        agent_args.append(alp_agent)
+        env_uid = get_uid(env_args_for_value)
+        print(env_uid)
         # Generate multiple random trials for each parameter value.
+        sample_path_stats = RunningStats()
         for command_id in range(test_sample_path_num):
             # 1. Generate the sample path with a specific, isolated random seed.
             sample_gen_args = copy.deepcopy(env_args_for_value)
@@ -84,6 +77,14 @@ def _generate_experiment_parameters(config_type, experiment_name, param_name, pa
             config_for_sample_path = get_config_by_type('infinite_custom', args=sample_gen_args)
             env_for_sample_path = config_for_sample_path.env
             sample_path = env_for_sample_path.reset_arrivals() if env_for_sample_path else [[]]
+            sample_path = sample_path.tolist() if hasattr(sample_path, 'tolist') else sample_path
+            sample_path_stats += len(sample_path)
+            agent_args = [
+                {'agent_name': 'hindsight_approx', 'args': {'sample_path_number': 350, 'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False}},
+                {'agent_name': 'myopic', 'args': {'is_myopic': True}},
+                #alp_train_res.get(env_uid, {'agent_name': 'alp', 'args': {'coefficients': None}}),
+                {'agent_name': 'hindsight_value', 'args': {'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False, 'sample_path': sample_path}}
+                ]
 
             # 2. Prepare the final parameters for the actual simulation run with a different seed.
             trial_env_args = copy.deepcopy(env_args_for_value)
@@ -93,7 +94,7 @@ def _generate_experiment_parameters(config_type, experiment_name, param_name, pa
             parameter = {
                 "experiment_name": experiment_name,
                 "param_value": value,
-                "sample_path": sample_path.tolist() if hasattr(sample_path, 'tolist') else sample_path,
+                "sample_path": sample_path,
                 "env_args": trial_env_args
             }
             
@@ -104,6 +105,7 @@ def _generate_experiment_parameters(config_type, experiment_name, param_name, pa
             parameter_str = json.dumps(parameter)
             result_dict[uid] = parameter
             lines_to_write.append(parameter_str + '\n')
+        print(sample_path_stats)
 
     # Optimization: Write all lines to the file at once to reduce I/O operations.
     print(f"Writing {len(lines_to_write)} parameters to {request_path}...")
@@ -270,10 +272,10 @@ if __name__ == '__main__':
     }
     '''
     EXPERIMENT_CONFIGS = {
-        'demand_rate': {
+        'demand_rate':{
             'config_type': 'ejor_default',
             'param_name': 'total_arrival_rate',
-            'param_values': [25],
+            'param_values': [20, 30, 35],
             'param_modifier_fn': demand_rate_modifier
         }
     }
@@ -283,25 +285,18 @@ if __name__ == '__main__':
     # --- Specify the number of trials for each experiment ---
     # You can customize the number of samples for each experiment here.
     TEST_SAMPLE_NUM_MAP = {
-        'demand_rate': 2000,
+        'demand_rate': 998,
         'decision_epoch': 2000,
         'overtime_cost_by_day': 2000,
-        'occupancy_level': 2000
+        'occupancy_level': 2000,
+        'discount_factor':2000,
+        'percentage_occupied':998
     }
     '''
     # --- Run All Experiments ---
     generate_alp_train_params(
         experiment_configs=EXPERIMENT_CONFIGS,
         dat_file = 'table.dat',
-    )
-    '''
-    '''
-    generate_all_experiments(
-        config_type='ejor_default',
-        experiment_configs=EXPERIMENT_CONFIGS,
-        test_sample_path_num_map=TEST_SAMPLE_NUM_MAP,
-        dat_file='unif_sample_path_table.dat',
-        is_reuse=False # Set to True to avoid regenerating files and only create the .dat
     )
     '''
     

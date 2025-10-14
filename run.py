@@ -28,9 +28,7 @@ def experiment(experiment_name, param_value, env_args, agent_args, sample_path, 
         stats = {'agent_name': agent_name}
         config.reset_params['new_arrivals'] = sample_path
         state, info = env.reset(**config.reset_params)
-        if agent_name == "hindsight_approx":
-            agent_instance = InfiniteSAAAgent(env, discount_factor=env.discount_factor, **args)
-        elif agent_name == "myopic":
+        if agent_name in {"hindsight_approx", "hindsight_value", "myopic"}:
             agent_instance = InfiniteSAAAgent(env, discount_factor=env.discount_factor, **args)
         elif agent_name == 'alp':
             agent_instance = ALPEJORColumnGenerationAgent(env, discount_factor=env.discount_factor, **args)
@@ -72,17 +70,18 @@ def value_function_experiment(experiment_name, param_value, env_args, agent_args
         state, info = env.reset(**config.reset_params)
         print(config.reset_params)
         print('init state:', state)
-        if agent_name == "hindsight_approx":
-            agent_instance = InfiniteSAAAgent(env, discount_factor=env.discount_factor, **args)
-        elif agent_name == "myopic":
+        if agent_name in {"hindsight_approx", "hindsight_value", "myopic"}:
             agent_instance = InfiniteSAAAgent(env, discount_factor=env.discount_factor, **args)
         elif agent_name == 'alp':
             agent_instance = ALPEJORColumnGenerationAgent(env, discount_factor=env.discount_factor, **args)
         evaluator = PolicyEvaluator(env, agent_instance, env.discount_factor)
         states, rewards = evaluator.sample_path_evaluate(state, t, sample_path)
-        if agent_name == 'alp':
-            print(rewards)
         stats['value_function'] = sum(rewards)
+        '''
+        if agent_name == "hindsight_value":
+            benchmark_solver = InfiniteSAAAgent(env, discount_factor=env.discount_factor, **args)
+            _, benchmark_value, info = benchmark_solver.solve(state, t)
+        '''
         wait_time_by_type =[]
         for type_i, running_stat in env.wait_time_by_type.items():
             wait_time_by_type.append({"treatment_type":type_i,
