@@ -3,18 +3,29 @@ import gurobipy as gp
 from gurobipy import GRB
 
 from decision_maker import InfiniteRTAgent
-from metaheuristic_algorithm import BenderDecompositionSolver
+from metaheuristic_algorithm import BenderDecompositionSolver, ColumnGenerationSolver
 from utils import solve_and_handle_errors
 
-class InfiniteSAAAgent(InfiniteRTAgent):
+class InfinitePenalizedSAAAgent(InfiniteRTAgent):
 
-    def __init__(self, env, discount_factor, V=None, Q=None, sample_path_number=100, current_decision_var_type='integer', future_decision_var_type='continuous', is_myopic=False, sample_path=None, verbose=False):
+    def __init__(self, env, 
+                 discount_factor, 
+                 V=None, Q=None, 
+                 sample_path_number=100, 
+                 current_decision_var_type='integer', 
+                 future_decision_var_type='continuous', 
+                 is_myopic=False, 
+                 sample_path=None, 
+                 coeffecients=None, 
+                 verbose=False):
         super().__init__(env, discount_factor, V=V, Q=Q)
         self.sample_path_number = sample_path_number
         self.current_decision_var_type = GRB.INTEGER if current_decision_var_type is None or current_decision_var_type == 'integer' else GRB.CONTINUOUS
         self.future_decision_var_type = GRB.INTEGER if future_decision_var_type is None or future_decision_var_type == 'integer' else GRB.CONTINUOUS
         self.is_myopic = is_myopic
         self.sample_path = sample_path
+        self.coeffecients = coeffecients
+        self.W_0, self.U, self.V, self.W = self.get_coefficients(coeffecients)
         self.delta = []
         if self.sample_path != None:
             self.set_sample_path(sample_path)
@@ -27,6 +38,15 @@ class InfiniteSAAAgent(InfiniteRTAgent):
     def set_sample_path(self, sample_path):
         self.sample_path_number = 1
         self.delta = np.array([sample_path])
+    
+    def get_coefficients(self, solution):
+        it = iter(solution)
+        W_0 = float(next(it))
+        U = np.array([float(next(it)) for _ in range(self.env.planning_horizon)])
+        V = np.array([float(next(it)) for _ in range(self.env.planning_horizon)])
+        W = np.array([float(next(it)) for _ in range(self.env.num_types)])
+        return W_0, U, V, W
+
 
     def direct_solve(self, state, t=1, action=None, verbose=False):
         with (gp.Model("SA_Advance", env=self.grb_env) as m):
@@ -55,6 +75,9 @@ class InfiniteSAAAgent(InfiniteRTAgent):
                         next_action_var = self.get_action_var(model=m, advance_scheduling_type=self.future_decision_var_type)
                         self.add_action_space_constraints(model=m, state_var=next_state_var, action_var=next_action_var)
                         fut_cost += self.env.cost_fn(next_state_var, next_action_var, is_var=True)
+                        # penalty for ALP
+                        penalty = np.dot(self.W, (self.env.arrival_generator.mean_by_type - new_arrival))
+                        fut_cost += penalty
                         prev_state_var = next_state_var
                         prev_action_var = next_action_var
                 fut_cost = fut_cost / self.sample_path_number
@@ -109,6 +132,9 @@ class InfiniteSAAAgent(InfiniteRTAgent):
             next_action_var = self.get_action_var(model=sub_model, advance_scheduling_type=self.future_decision_var_type)
             self.add_action_space_constraints(model=sub_model, state_var=next_state_var, action_var=next_action_var)
             fut_cost += self.env.cost_fn(next_state_var, next_action_var, is_var=True)
+            # penalty for ALP
+            penalty = np.dot(self.W, (self.env.arrival_generator.mean_by_type - new_arrival))
+            fut_cost += penalty
             prev_state_var = next_state_var
             prev_action_var = next_action_var
         sub_model.setObjective(fut_cost, GRB.MINIMIZE)
@@ -140,7 +166,7 @@ class InfiniteSAAAgent(InfiniteRTAgent):
             linking_constraints.append(constraint)
         return linking_constraints
 
-    def solve(self, state, t=1, action=None, verbose=True):
+    def solve(self, state, t=1, action=None, verbose=False):
         if self.is_myopic or self.sample_path_number <= 1:
             action, obj_value, info = self.direct_solve(state, t=t, action=action)
             return action, obj_value, info

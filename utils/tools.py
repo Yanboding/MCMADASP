@@ -172,7 +172,7 @@ def get_status_string(status_code):
     return status_map.get(status_code, "UNKNOWN_STATUS")
 
 
-def solve_and_handle_errors(model: gp.Model, verbose=False):
+def solve_and_handle_errors(model: gp.Model, verbose=True):
     """
     Optimizes a Gurobi model and handles non-optimal statuses by saving the model.
 
@@ -194,6 +194,7 @@ def solve_and_handle_errors(model: gp.Model, verbose=False):
             return True
 
         else:
+            print('Failed fucked')
             if verbose:
                 # --- Handle non-optimal cases ---
                 status_string = get_status_string(model.Status)

@@ -46,7 +46,7 @@ class SubproblemWorker:
         self.set_link_rhs(action_values)
 
         if verbose:
-            self.model.Params.OutputFlag = 1
+            self.model.Params.OutputFlag = 0
         else:
             self.model.Params.OutputFlag = 0
 

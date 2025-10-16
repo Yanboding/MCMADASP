@@ -1,11 +1,13 @@
 import time
 import gurobipy as gp
+from gurobipy import GRB
+import numpy as np
 
 from utils import solve_and_handle_errors, clean_value
 
 
 class ColumnGenerationSolver:
-    def __init__(self, master_builder, pricing_callback, initial_columns, get_constr_coefficients, get_obj_coefficient):
+    def __init__(self, master_builder, pricing_callback, initial_columns, get_constr_coefficients, get_obj_coefficient, dual_regularization_penalty=0.0):
         """
         master_builder: function(model, columns) -> None
             Add variables and constraints to the model, given columns.
@@ -13,7 +15,6 @@ class ColumnGenerationSolver:
             Given dual values, generate new columns (can be empty if optimal).
         initial_columns: list
             Initial list of columns for the master problem.
-        sense: GRB.MINIMIZE or GRB.MAXIMIZE
         """
         self.master_model = master_builder()
         self.pricing_callback = pricing_callback
@@ -22,6 +23,11 @@ class ColumnGenerationSolver:
         self.get_obj_coefficient = get_obj_coefficient
         self.candidates = set()
         self.candidates_list = []
+
+        self.rho = dual_regularization_penalty
+        self.prev_duals = None
+        if self.rho > 0:
+            print("Dual regularization enabled (Objective Penalty Method).")
 
     def add_column(self, candidate, col_name):
         new_col = gp.Column()
@@ -49,7 +55,7 @@ class ColumnGenerationSolver:
                 for i, candidate in enumerate(self.initial_candidates):
                     self.add_column(candidate=candidate, col_name=f"init_X({i + 1})")
             else:
-                duals = [clean_value(constr.Pi, tol) for constr in self.master_model.getConstrs()]
+                duals = [constr.Pi for constr in self.master_model.getConstrs()]
                 for candidate, reduce_cost in self.pricing_callback(duals):
                     if -reduce_cost < tol:
                         break
@@ -78,11 +84,29 @@ class ColumnGenerationSolver:
                 for i, candidate in enumerate(self.initial_candidates):
                     self.add_column(candidate=candidate, col_name=f"init_X({i + 1})")
             else:
+                constrs = self.master_model.getConstrs()
                 # 2. Get dual values
-                duals = [clean_value(constr.Pi, 1e-12) for constr in self.master_model.getConstrs()]
+                duals = [constr.Pi for constr in constrs]
+                # --- Step 2: Dual regularization (stabilization) ---
+                if self.rho > 0 and self.prev_duals is not None:
+                    effective_duals = []
+                    for i, c in enumerate(constrs):
+                        row = self.master_model.getRow(c)
+                        lhs = row.getValue()  # Equivalent to A_i x
+                        if c.Sense == GRB.LESS_EQUAL:
+                            r = c.RHS - lhs
+                        elif c.Sense == GRB.GREATER_EQUAL:
+                            r = lhs - c.RHS
+                        else:
+                            r = lhs - c.RHS
+                        effective_duals.append(duals[i] + self.rho * r)
+                else:
+                    effective_duals = duals
+
+                self.prev_duals = duals.copy()
                 # separation_callback yields the row and violation in decreasing order
                 # try to add only one column to the master model, if no column can be added, then stop
-                for candidate, reduce_cost in self.pricing_callback(duals):
+                for candidate, reduce_cost in self.pricing_callback(effective_duals):
                     if -reduce_cost < tol:
                         return self.master_model
                     if self.add_column(candidate=candidate, col_name=f'X({iteration})'):

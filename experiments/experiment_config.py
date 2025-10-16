@@ -66,9 +66,13 @@ class ExperimentConfig:
 
     @classmethod
     def from_ejor_default_case(cls):
-        treatment_patterns = ["2 * 1", "2 * 1", "2 * 1", "2 * 1", "2 * 1"]
-        l = [(0, 11, 0), (11, 100, 50)]
-        holding_cost = [wait_time(l) for i in range(len(treatment_patterns))]
+        treatment_patterns = ["1 * 1", "2 * 1", "3 * 1", "4 * 1", "5 * 1"]
+        l = [[(0, 6, 0), (6, 100, 50)],
+             [(0, 9, 0), (9, 100, 50)],
+             [(0, 11, 0), (11, 100, 50)],
+             [(0, 13, 0), (13, 100, 50)],
+             [(0, 16, 0), (16, 100, 50)]]
+        holding_cost = [wait_time(l[i]) for i in range(len(treatment_patterns))]
         holding_cost = np.array(holding_cost).T
         env_args = {
             "booking_window_size": 25,
@@ -76,7 +80,7 @@ class ExperimentConfig:
             "patterns": treatment_patterns,
             "holding_cost_by_day_by_type": holding_cost.tolist(),
             "overtime_cost_by_day": 100,
-            "postponing_cost": 5000,
+            "postponing_cost": 2000,
             "duration": 1,
             "regular_capacity": 50,
             "overtime_capacity": 6,
@@ -85,7 +89,7 @@ class ExperimentConfig:
                 'percentage_occupied': 0.95,
                 't': 1
             },
-            "maximum_total_arrival": 30,
+            "maximum_total_arrival": 75,
             "init_state": None,
             "valid_action": None,
             "env_random_seed": 0,

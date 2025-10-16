@@ -10,7 +10,7 @@ from gurobipy import GRB
 
 from experiments.experiment_config import get_config_by_type
 from utils import iter_to_tuple, get_uid, safe_open
-from decision_maker import ALPEJORColumnGenerationAgent, InfiniteSAAAgent
+from decision_maker import ALPEJORColumnGenerationAgent, InfiniteSAAAgent, InfinitePenalizedSAAAgent
 from policy_evaluator import PolicyEvaluator
 
 
@@ -21,6 +21,16 @@ def experiment(experiment_name, param_value, env_args, agent_args, sample_path, 
     res["param_value"] = param_value
     sample_path = np.array(sample_path)
     t = 1  # Assuming a single time step for the experiment
+    config = get_config_by_type(case_type='infinite_custom',args=env_args)
+    env = config.env
+    config.reset_params['new_arrivals'] = sample_path
+    state, info = env.reset(**config.reset_params)
+    print('init state:', state)
+    perfect_info_lower_bound_solver = InfiniteSAAAgent(env, discount_factor=env.discount_factor,current_decision_var_type=GRB.INTEGER,
+                                            future_decision_var_type=GRB.INTEGER)
+    perfect_info_lower_bound_solver.set_sample_path(sample_path)
+    _, benchmark_value, info = perfect_info_lower_bound_solver.solve(state, t)
+    print('benchmark_value:', benchmark_value)
     for agent in agent_args:
         config = get_config_by_type(case_type='infinite_custom',args=env_args)
         env = config.env
@@ -28,15 +38,17 @@ def experiment(experiment_name, param_value, env_args, agent_args, sample_path, 
         stats = {'agent_name': agent_name}
         config.reset_params['new_arrivals'] = sample_path
         state, info = env.reset(**config.reset_params)
+        print('agent_name:', agent_name)
         if agent_name in {"hindsight_approx", "hindsight_value", "myopic"}:
             agent_instance = InfiniteSAAAgent(env, discount_factor=env.discount_factor, **args)
+        elif agent_name in {"hindsight_approx_with_penalty"}:
+            agent_instance = InfinitePenalizedSAAAgent(env, discount_factor=env.discount_factor, **args)
         elif agent_name == 'alp':
             agent_instance = ALPEJORColumnGenerationAgent(env, discount_factor=env.discount_factor, **args)
         evaluator = PolicyEvaluator(env, agent_instance, env.discount_factor)
-        lower_bound_solver = InfiniteSAAAgent(env, discount_factor=env.discount_factor,current_decision_var_type=GRB.INTEGER,
-                                            future_decision_var_type=GRB.INTEGER)
-        abs_gap, benchmark_value = evaluator.sample_path_absolute_gap_evaluate(lower_bound_solver, state, t, sample_path)
-        stats['abs_gap'] = abs_gap
+        states, rewards = evaluator.sample_path_evaluate(state, t, sample_path)
+        value_function = sum(rewards)
+        stats['abs_gap'] = max(value_function - benchmark_value, 0)
         stats['benchmark_value'] = benchmark_value
         wait_time_by_type =[]
         for type_i, running_stat in env.wait_time_by_type.items():
@@ -114,6 +126,6 @@ if __name__ == '__main__':
     args = parser.parse_args()
     params = json.loads(args.params)
     #alp_train(**params, job_id=args.job_id)
-    #experiment(**params, job_id=args.job_id)
-    value_function_experiment(**params, job_id=args.job_id)
+    experiment(**params, job_id=args.job_id)
+    #value_function_experiment(**params, job_id=args.job_id)
     

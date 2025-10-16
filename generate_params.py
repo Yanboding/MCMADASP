@@ -79,11 +79,12 @@ def _generate_experiment_parameters(config_type, experiment_name, param_name, pa
             sample_path = env_for_sample_path.reset_arrivals() if env_for_sample_path else [[]]
             sample_path = sample_path.tolist() if hasattr(sample_path, 'tolist') else sample_path
             sample_path_stats += len(sample_path)
+            alp_args = alp_train_res.get(env_uid, {'agent_name': 'alp', 'args': {'coefficients': None}})
             agent_args = [
                 {'agent_name': 'hindsight_approx', 'args': {'sample_path_number': 350, 'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False}},
+                # {'agent_name': 'hindsight_approx_with_penalty', 'args': {'sample_path_number': 350, 'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False, 'coeffecients':alp_args['args']['coefficients']}},
                 {'agent_name': 'myopic', 'args': {'is_myopic': True}},
-                #alp_train_res.get(env_uid, {'agent_name': 'alp', 'args': {'coefficients': None}}),
-                {'agent_name': 'hindsight_value', 'args': {'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False, 'sample_path': sample_path}}
+                alp_args,
                 ]
 
             # 2. Prepare the final parameters for the actual simulation run with a different seed.
@@ -272,12 +273,11 @@ if __name__ == '__main__':
     }
     '''
     EXPERIMENT_CONFIGS = {
-        'demand_rate':{
+        'occupancy_level': {
             'config_type': 'ejor_default',
-            'param_name': 'total_arrival_rate',
-            'param_values': [20, 30, 35],
-            'param_modifier_fn': demand_rate_modifier
-        }
+            'param_name': 'reset_params.percentage_occupied',
+            'param_values': [0.75, 0.85, 0.95],
+        },
     }
     '''
     booking window size
@@ -288,7 +288,7 @@ if __name__ == '__main__':
         'demand_rate': 998,
         'decision_epoch': 2000,
         'overtime_cost_by_day': 2000,
-        'occupancy_level': 2000,
+        'occupancy_level': 998,
         'discount_factor':2000,
         'percentage_occupied':998
     }

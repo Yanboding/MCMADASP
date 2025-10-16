@@ -1,4 +1,5 @@
 from .optimal_agent import OptimalAgent
 from .infinite_rt_agent import InfiniteRTAgent
 from .infinite_saa_agent import InfiniteSAAAgent
+from .infinite_saa_with_ALP_penalty_agent import InfinitePenalizedSAAAgent
 from .alp_cg_ejor_agent import ALPEJORColumnGenerationAgent

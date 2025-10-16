@@ -16,22 +16,17 @@ class ALPEJORColumnGenerationAgent(InfiniteRTAgent):
         self.is_trained = False
         # simulate multiple sample path
         # apply myopic policy to estimate the expected value of each component
-        decay_factor = 0.94
+        decay_factor = 0.95
         required_bookings = [(self.env.regular_capacity + self.env.overtime_capacity) * decay_factor**(j+1) for j in range(self.env.planning_horizon)]
         required_bookings[-1] = 0
         required_bookings = np.array(required_bookings)
         self.E_u_alpha = np.minimum(required_bookings, self.env.regular_capacity)
         self.E_v_alpha = np.minimum(np.maximum(required_bookings - self.env.regular_capacity, 0), self.env.regular_capacity)
         self.E_w_alpha = self.env.arrival_generator.mean_by_type
-        #self.E_u_alpha = [self.env.regular_capacity * 0.95 ** (i) for i in range(self.env.planning_horizon)]
-        #self.E_u_alpha[-1] = 0
-        #self.E_v_alpha = [self.env.overtime_capacity * 0.4 ** (i) for i in range(self.env.planning_horizon)]
-        #self.E_v_alpha[-1] = 0
         if coefficients is not None:
             final_duals = coefficients
             self.is_trained = True
             self.W_0, self.U, self.V, self.W = self.get_coefficients(final_duals)
-            print(self.U)
         if pretrain:
             self.train(debug=False,verbose=verbose, use_barrier=True)
 
@@ -44,7 +39,8 @@ class ALPEJORColumnGenerationAgent(InfiniteRTAgent):
                                                 pricing_callback=self.pricing_callback,
                                                 initial_columns=initial_columns,
                                                 get_constr_coefficients=self.get_constr_coefficients,
-                                                get_obj_coefficient=self.get_obj_coefficient)
+                                                get_obj_coefficient=self.get_obj_coefficient,
+                                                dual_regularization_penalty=0.1)
         print('Training Coeffecients')
         self.cg_solver.solve(tol=tol, max_iter=phase2_max_iter, verbose=verbose)
         print('Finished Training Coeffecients!')
@@ -319,7 +315,7 @@ class ALPEJORColumnGenerationAgent(InfiniteRTAgent):
         # W_i coefficients
         W = (waitlist - gamma * new_waitlist).tolist()
         coefficients = [W_0] + U + V + W
-        coefficients = [clean_value(c, 1e-12) for c in coefficients]
+        #coefficients = [c for c in coefficients]
         return coefficients
 
     def get_obj_coefficient(self, candidate):
