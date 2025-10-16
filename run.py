@@ -20,6 +20,8 @@ def experiment(experiment_name, param_value, env_args, agent_args, sample_path, 
     res["experiment_name"] = experiment_name
     res["param_value"] = param_value
     sample_path = np.array(sample_path)
+    print('uid:', uid)
+    print('test sample_path:', sample_path)
     t = 1  # Assuming a single time step for the experiment
     config = get_config_by_type(case_type='infinite_custom',args=env_args)
     env = config.env

@@ -173,7 +173,7 @@ class BenderDecompositionSolver:
                 cost_to_go_estimation = cost_to_go_estimation / self.num_subproblems
                 upper_bound = self.imm_cost.getValue() + cost_to_go_estimation
                 # Average the future cost across scenarios like in direct solution
-                if abs(upper_bound - lower_bound) < tol:
+                if abs(upper_bound - lower_bound) < tol or lower_bound > upper_bound:
                     action_t = self.get_solution(self.action_t_var, is_final=True)
                     return action_t, upper_bound, {}
             print('upper_bound:', upper_bound)

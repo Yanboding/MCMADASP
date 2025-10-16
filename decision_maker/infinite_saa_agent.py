@@ -156,7 +156,7 @@ class InfiniteSAAAgent(InfiniteRTAgent):
         action_t, upper_bound, info = self.bender_solver.solve(state=state,
                                                                action=action,
                                                                 tol=1e-6,
-                                                                max_iter=100,
+                                                                max_iter=12000,
                                                                 verbose=verbose)
         return action_t, upper_bound, info
 
