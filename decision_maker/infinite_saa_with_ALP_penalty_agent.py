@@ -53,6 +53,8 @@ class InfinitePenalizedSAAAgent(InfiniteRTAgent):
             m.setParam('DualReductions', 0)
             m.setParam("MultiObjPre", 0)
             m.setParam('MIPFocus', 1)
+            m.setParam("FeasibilityTol", 1e-8)
+            m.setParam("OptimalityTol", 1e-8)
             # ---------- 1. today’s increments ----------
             action_t_var = self.get_action_var(model=m, advance_scheduling_type=GRB.INTEGER)
             if action is not None:
@@ -94,6 +96,8 @@ class InfinitePenalizedSAAAgent(InfiniteRTAgent):
         master_model.setParam('DualReductions', 0)
         master_model.setParam("MultiObjPre", 0)
         master_model.setParam('MIPFocus', 1)
+        master_model.setParam("FeasibilityTol", 1e-8)
+        master_model.setParam("OptimalityTol", 1e-8)
         state_var = self.get_state_var(master_model)
         state_linking_constraints = self.build_state_linking_constraints(master_model, state_var)
         # create action variables in period t

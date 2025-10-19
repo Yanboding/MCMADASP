@@ -59,8 +59,11 @@ class ALPEJORColumnGenerationAgent(InfiniteRTAgent):
 
     def get_approx_value_fn(self, state, W_0, U, V, W):
         regular_bookings, overtimes, waitlist = state
-        return W_0 + np.dot(U, regular_bookings) + np.dot(V, overtimes) + np.dot(W, waitlist)
-
+        regular_bookings_cost = gp.quicksum(U[i] * regular_bookings[i] for i in range(len(U)))
+        overtime_cost = gp.quicksum(V[j] * overtimes[j] for j in range(len(V)))
+        waitlist_cost = gp.quicksum(W[k] * waitlist[k] for k in range(len(W)))
+        return W_0 + regular_bookings_cost + overtime_cost + waitlist_cost
+    
     def get_candidate(self, state_var, action_var):
         regular_booking_vars, overtime_vars, waitlist_vars = state_var
         advance_scheduling_decision_vars, overtime_decision_vars = action_var
@@ -128,7 +131,7 @@ class ALPEJORColumnGenerationAgent(InfiniteRTAgent):
         pricing_model.setParam("MultiObjPre", 0)
         #pricing_model.setParam("Method", 2)      # barrier
         #pricing_model.setParam("Crossover", 0)   # no simplex crossover
-        #pricing_model.setParam("MIPGap", 1e-9)    # if MILP pricing, but keep very tight
+        pricing_model.setParam("MIPGap", 1e-9)    # if MILP pricing, but keep very tight
         pricing_model.setParam("Threads", 1)      # stable and reproducible reduced costs
         #pricing_model.setParam("Presolve", 1)     # aggressive presolve speeds up pricing
         #pricing_model.setParam("Heuristics", 0.2)
@@ -137,6 +140,9 @@ class ALPEJORColumnGenerationAgent(InfiniteRTAgent):
         #pricing_model.setParam("TimeLimit", 2.0)
         #pricing_model.setParam("NodeLimit", 50000)
         pricing_model.setParam("OutputFlag", 0)
+        pricing_model.setParam('DualReductions', 0)
+        #pricing_model.setParam("FeasibilityTol", 1e-9)
+        #pricing_model.setParam("OptimalityTol", 1e-9)
 
         state_var = self.get_state_var(pricing_model)
         action_var = self.get_action_var(pricing_model, advance_scheduling_type=GRB.INTEGER)
@@ -190,6 +196,8 @@ class ALPEJORColumnGenerationAgent(InfiniteRTAgent):
             with (gp.Model("init_columns", env=self.grb_env) as init_columns_model):
                 init_columns_model.setParam('DualReductions', 0)
                 init_columns_model.setParam("MultiObjPre", 0)
+                init_columns_model.setParam("FeasibilityTol", 1e-9)
+                init_columns_model.setParam("OptimalityTol", 1e-9)
                 state_var = self.get_state_var(init_columns_model)
                 action_var = self.get_action_var(init_columns_model, advance_scheduling_type=GRB.INTEGER)
                 self.add_action_space_constraints(init_columns_model, state_var, action_var)
@@ -259,8 +267,8 @@ class ALPEJORColumnGenerationAgent(InfiniteRTAgent):
         else:
             master_model.setParam("Method", 1)
         master_model.setParam("MultiObjPre", 0)
-        #master_model.setParam("FeasibilityTol", 1e-8)
-        #master_model.setParam("OptimalityTol", 1e-8)
+        master_model.setParam("FeasibilityTol", 1e-9)
+        master_model.setParam("OptimalityTol", 1e-9)
         # Artificial variable for W_0 constraint
         s_W0 = master_model.addVar(vtype=GRB.CONTINUOUS, lb=0, name='art_W0')
         # Artificial variables for U constraints (planning horizon)
@@ -347,7 +355,7 @@ class ALPEJORColumnGenerationAgent(InfiniteRTAgent):
         for column in self.env.generate_state_action_pairs():
             yield column
 
-    def solve(self, state, t, action=None, verbose=False):
+    def paper_solve(self, state, t, action=None, verbose=False):
         # ---------- shortcuts ----------
         with (gp.Model("ALP_policy", env=self.grb_env) as policy_model):
             policy_model.setParam("MultiObjPre", 0)
@@ -376,14 +384,14 @@ class ALPEJORColumnGenerationAgent(InfiniteRTAgent):
             action = self.get_solution(action_var, is_final=True)
             return action, policy_model.ObjVal, {}
     
-    def direct_solve(self, state, t, action=None, verbose=False):
+    def solve(self, state, t, action=None, verbose=False):
         with (gp.Model("ALP_policy", env=self.grb_env) as policy_model):
             policy_model.setParam("MultiObjPre", 0)
             policy_model.setParam('DualReductions', 0)
-            policy_model.setParam("FeasibilityTol", 1e-8)
-            policy_model.setParam("OptimalityTol", 1e-8)
-            # m.setParam("OutputFlag", 0)
-            # m.setParam("LogToConsole", 0)
+            policy_model.setParam("FeasibilityTol", 1e-9)
+            policy_model.setParam("OptimalityTol", 1e-9)
+            policy_model.setParam("OutputFlag", 0)
+            policy_model.setParam("LogToConsole", 0)
             # m.setParam("MIPFocus", 1)
             # ---------- 1. today’s increments ----------
             action_var = self.get_action_var(policy_model, advance_scheduling_type=GRB.INTEGER)

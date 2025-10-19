@@ -6,15 +6,17 @@ from decision_maker import InfiniteRTAgent
 from metaheuristic_algorithm import RowGenerationSolver
 from utils import get_solution_value, solve_and_handle_errors, clean_value
 
-class ALPEJORRowGenerationAgent(InfiniteRTAgent):
+class ALPRowGenerationAgent(InfiniteRTAgent):
 
     def __init__(self, env, discount_factor, V=None, Q=None, coefficients=None, pretrain=False):
         super().__init__(env, discount_factor, V, Q)
         self.is_trained = False
-        self.E_u_alpha = [self.env.regular_capacity * 0.99 ** (i) for i in range(self.env.planning_horizon)]
-        self.E_u_alpha[-1] = 0
-        self.E_v_alpha = [self.env.overtime_capacity * 0.3 ** (i+1) for i in range(self.env.planning_horizon)]
-        self.E_v_alpha[-1] = 0
+        decay_factor = 0.8
+        required_bookings = [(self.env.regular_capacity + self.env.overtime_capacity) * decay_factor**(j+1) for j in range(self.env.planning_horizon)]
+        required_bookings[-1] = 0
+        required_bookings = np.array(required_bookings)
+        self.E_u_alpha = np.minimum(required_bookings, self.env.regular_capacity)
+        self.E_v_alpha = np.minimum(np.maximum(required_bookings - self.env.regular_capacity, 0), self.env.regular_capacity)
         self.E_w_alpha = self.env.arrival_generator.mean_by_type
         if coefficients is not None:
             self.is_trained = True
@@ -115,15 +117,26 @@ class ALPEJORRowGenerationAgent(InfiniteRTAgent):
 
     def master_builder(self):
         master_model = gp.Model('MasterRMP')
-        BIGM = 1e7
-        self.W_0_var = master_model.addVar(vtype=GRB.CONTINUOUS, lb=-GRB.INFINITY, ub=BIGM, name=f"W_0")
-        self.U_vars = np.array([master_model.addVar(vtype=GRB.CONTINUOUS, lb=0, ub=BIGM, name=f"U_{j}") for j in range(self.env.planning_horizon)])
-        self.V_vars = np.array([master_model.addVar(vtype=GRB.CONTINUOUS, lb=0, ub=BIGM, name=f"V_{j}") for j in range(self.env.planning_horizon)])
-        self.W_vars = np.array([master_model.addVar(vtype=GRB.CONTINUOUS, lb=0, ub=BIGM, name=f"W_{i}") for i in range(1, self.env.num_types + 1)])
-        obj = self.W_0_var + np.dot(self.U_vars, self.E_u_alpha) + np.dot(self.V_vars, self.E_v_alpha) + np.dot(self.W_vars, self.E_w_alpha)
+        master_model.setParam('DualReductions', 0)
+        master_model.setParam("MultiObjPre", 0)
+        master_model.setParam("FeasibilityTol", 1e-8)
+        master_model.setParam("OptimalityTol", 1e-8)
+        master_model.setParam('OutputFlag', 0)
+        self.W_0_var = master_model.addVar(vtype=GRB.CONTINUOUS, lb=-GRB.INFINITY, ub=GRB.INFINITY, name=f"W_0")
+        self.U_vars = np.array([master_model.addVar(vtype=GRB.CONTINUOUS, lb=0, ub=GRB.INFINITY, name=f"U_{j}") for j in range(self.env.planning_horizon)])
+        self.V_vars = np.array([master_model.addVar(vtype=GRB.CONTINUOUS, lb=0, ub=GRB.INFINITY, name=f"V_{j}") for j in range(self.env.planning_horizon)])
+        self.W_vars = np.array([master_model.addVar(vtype=GRB.CONTINUOUS, lb=0, ub=GRB.INFINITY, name=f"W_{i}") for i in range(1, self.env.num_types + 1)])
+        obj = (
+            self.W_0_var
+            + gp.quicksum(self.U_vars[j] * self.E_u_alpha[j] for j in range(self.env.planning_horizon))
+            + gp.quicksum(self.V_vars[j] * self.E_v_alpha[j] for j in range(self.env.planning_horizon))
+            + gp.quicksum(self.W_vars[i] * self.E_w_alpha[i] for i in range(self.env.num_types))
+        )
+
         master_model.setObjective(obj, GRB.MAXIMIZE)
         master_model.update()
-        return master_model
+        coefficient_vars = [self.W_0_var] + self.U_vars.tolist() + self.V_vars.tolist() + self.W_vars.tolist()
+        return master_model, obj, coefficient_vars
 
     def separation_callback(self, solution):
         W_0, U, V, W = self.get_coefficients(solution)
@@ -165,16 +178,41 @@ class ALPEJORRowGenerationAgent(InfiniteRTAgent):
                                              get_constraint_data=self.get_constraint_data,
                                              initial_candidates=initial_candidates)
         self.rg_solver.solve(tol=tol, max_iter=max_iter)
-        final_coefficients = [clean_value(v.X, tol) for v in self.rg_solver.master_model.getVars()]
+        final_coefficients = [v.X for v in self.rg_solver.master_model.getVars()]
         self.W_0, self.U, self.V, self.W = self.get_coefficients(final_coefficients)
         self.is_trained = True
         return final_coefficients
-
-    def coeff_C(self, i, n):
-        part1 = sum(self.discount_factor ** k * self.env.holding_cost(k, i) for k in range(n + 1))
-        part2 = sum(self.discount_factor * self.env.treatment_pattern[k+1-n, i] * self.U[k] for k in range(n-1,n-1+self.env.num_sessions))
-        part3 = self.env.postponing_cost(i) - self.discount_factor * self.W[i]
-        return part1 + part2 + part3
+    
+    def solve(self, state, t, action=None, verbose=False):
+        with (gp.Model("ALP_policy", env=self.grb_env) as policy_model):
+            policy_model.setParam("MultiObjPre", 0)
+            policy_model.setParam('DualReductions', 0)
+            policy_model.setParam("FeasibilityTol", 1e-9)
+            policy_model.setParam("OptimalityTol", 1e-9)
+            policy_model.setParam("OutputFlag", 0)
+            policy_model.setParam("LogToConsole", 0)
+            # m.setParam("MIPFocus", 1)
+            # ---------- 1. today’s increments ----------
+            action_var = self.get_action_var(policy_model, advance_scheduling_type=GRB.INTEGER)
+            self.add_action_space_constraints(policy_model, state, action_var)
+            if action is not None:
+                self.set_action(action_var=action_var, action=action)
+            imm_cost = self.env.cost_fn(state, action_var, is_var=True)
+            new_state_var = self.get_next_state(model=policy_model,
+                                                state=state,
+                                                action=action_var,
+                                                new_arrival=self.env.arrival_generator.mean_by_type)
+            fut_cost = self.discount_factor * self.get_approx_value_fn(state=new_state_var,
+                                                                            W_0=self.W_0,
+                                                                            U=self.U,
+                                                                            V=self.V,
+                                                                            W=self.W)
+            policy_model.setObjective(imm_cost + fut_cost, GRB.MINIMIZE)
+            if not solve_and_handle_errors(policy_model, verbose=verbose):
+                raise RuntimeError("Master model optimal solution not found")
+            # ---------- 8. return ----------
+            action = self.get_solution(action_var, is_final=True)
+            return action, policy_model.ObjVal, {}
 
 if "__main__" == __name__:
     from experiments import get_config_by_type

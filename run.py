@@ -10,7 +10,7 @@ from gurobipy import GRB
 
 from experiments.experiment_config import get_config_by_type
 from utils import iter_to_tuple, get_uid, safe_open
-from decision_maker import ALPEJORColumnGenerationAgent, InfiniteSAAAgent, InfinitePenalizedSAAAgent
+from decision_maker import ALPEJORColumnGenerationAgent, InfiniteSAAAgent, InfinitePenalizedSAAAgent, MyopicAgent, ALPRowGenerationAgent
 from policy_evaluator import PolicyEvaluator
 
 
@@ -29,8 +29,7 @@ def experiment(experiment_name, param_value, env_args, agent_args, sample_path, 
     state, info = env.reset(**config.reset_params)
     print('init state:', state)
     perfect_info_lower_bound_solver = InfiniteSAAAgent(env, discount_factor=env.discount_factor,current_decision_var_type=GRB.INTEGER,
-                                            future_decision_var_type=GRB.INTEGER)
-    perfect_info_lower_bound_solver.set_sample_path(sample_path)
+                                            future_decision_var_type=GRB.INTEGER, sample_path=sample_path)
     _, benchmark_value, info = perfect_info_lower_bound_solver.solve(state, t)
     print('benchmark_value:', benchmark_value)
     for agent in agent_args:
@@ -53,12 +52,20 @@ def experiment(experiment_name, param_value, env_args, agent_args, sample_path, 
         stats['abs_gap'] = max(value_function - benchmark_value, 0)
         stats['benchmark_value'] = benchmark_value
         wait_time_by_type =[]
+        waiting_time_target_violations = []
         for type_i, running_stat in env.wait_time_by_type.items():
             wait_time_by_type.append({"treatment_type":type_i,
                                       "expect":running_stat.mean,
                                       "varSum":running_stat.var_sum,
                                       "count":int(running_stat.n)})
         stats['wait_time_by_type'] = wait_time_by_type
+        for type_i, running_stat in env.waiting_time_target_violations.items():
+            waiting_time_target_violations.append({"treatment_type":type_i,
+                                                    "expect":running_stat.mean,
+                                                    "varSum":running_stat.var_sum,
+                                                    "count":int(running_stat.n)})
+            
+        stats['waiting_time_target_violations'] = waiting_time_target_violations
         stats['overtime'] = env.overtime.tolist()
         res['result'].append(stats)
     output_file = os.path.join('experiments', 'results', experiment_name, f'{job_id}.jsonl')
@@ -86,6 +93,8 @@ def value_function_experiment(experiment_name, param_value, env_args, agent_args
         print('init state:', state)
         if agent_name in {"hindsight_approx", "hindsight_value", "myopic"}:
             agent_instance = InfiniteSAAAgent(env, discount_factor=env.discount_factor, **args)
+        elif agent_name == "myopic":
+            agent_instance = MyopicAgent(env, discount_factor=env.discount_factor, **args)
         elif agent_name == 'alp':
             agent_instance = ALPEJORColumnGenerationAgent(env, discount_factor=env.discount_factor, **args)
         evaluator = PolicyEvaluator(env, agent_instance, env.discount_factor)
@@ -115,8 +124,8 @@ def alp_train(env_args, experiment_name, job_id=None):
     print('Training ALP agent with args:', env_args)
     config_for_train = get_config_by_type(case_type='infinite_custom',args=env_args)
     env_for_train = config_for_train.env
-    agent = ALPEJORColumnGenerationAgent(env=env_for_train, discount_factor=env_for_train.discount_factor)
-    coefficients = agent.train(use_barrier=False, debug=False, verbose=True)
+    agent = ALPRowGenerationAgent(env=env_for_train, discount_factor=env_for_train.discount_factor)
+    coefficients = agent.train(debug=False, verbose=True, max_iter=5000)
     output_file = os.path.join('experiments','results',experiment_name, f'alp_train{job_id}.jsonl' if job_id else 'alp_train.jsonl')
     with safe_open(output_file, 'a') as f:  # 'a' will create the file if not present
         f.write(json.dumps({'uid':get_uid(env_args), 'result': {'agent_name': 'alp', 'args': {'coefficients':coefficients}}}) + '\n')
@@ -127,7 +136,7 @@ if __name__ == '__main__':
     parser.add_argument('--job_id', help='Input METAJOB_ID', type=str)
     args = parser.parse_args()
     params = json.loads(args.params)
-    #alp_train(**params, job_id=args.job_id)
-    experiment(**params, job_id=args.job_id)
+    alp_train(**params, job_id=args.job_id)
+    #experiment(**params, job_id=args.job_id)
     #value_function_experiment(**params, job_id=args.job_id)
     

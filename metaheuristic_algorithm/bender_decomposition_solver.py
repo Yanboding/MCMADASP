@@ -123,7 +123,8 @@ class BenderDecompositionSolver:
     def solve(self, state, action=None, tol=1e-6, max_iter=15000, verbose=False):
         lower_bound = -GRB.INFINITY
         upper_bound = GRB.INFINITY
-
+        prev_upper_bound = GRB.INFINITY
+        prev_lower_bound = -GRB.INFINITY
         self.master_model, self.imm_cost, self.theta_vars, self.action_t_var, self.state_linking_constraints = self.master_builder_fn(
             **self.master_builder_args)
         flatten_state = flatten(state)
@@ -173,12 +174,21 @@ class BenderDecompositionSolver:
                 cost_to_go_estimation = cost_to_go_estimation / self.num_subproblems
                 upper_bound = self.imm_cost.getValue() + cost_to_go_estimation
                 # Average the future cost across scenarios like in direct solution
-                if abs(upper_bound - lower_bound) < tol or lower_bound > upper_bound:
+                if abs(upper_bound - lower_bound) < tol:
                     action_t = self.get_solution(self.action_t_var, is_final=True)
                     return action_t, upper_bound, {}
+                if lower_bound > upper_bound:
+                    print('Rwong upper_bound:', upper_bound)
+                    print('Rwong lower_bound:', lower_bound)
+                    raise RuntimeError("Lower bound exceeded upper bound")
+                if lower_bound == prev_lower_bound and iteration > 20:
+                    print('No improvement upper_bound:', upper_bound)
+                    print('No improvement lower_bound:', lower_bound)
+                    raise RuntimeError('No improvement in bounds; terminating early')
             print('upper_bound:', upper_bound)
             print('lower_bound:', lower_bound)
-
+            prev_upper_bound = upper_bound
+            prev_lower_bound = lower_bound
             print('-' * 20)
         print('Max iterations reached')
         action_t = self.get_solution(self.action_t_var, is_final=True)

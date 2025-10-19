@@ -81,7 +81,7 @@ def _generate_experiment_parameters(config_type, experiment_name, param_name, pa
             sample_path_stats += len(sample_path)
             alp_args = alp_train_res.get(env_uid, {'agent_name': 'alp', 'args': {'coefficients': None}})
             agent_args = [
-                {'agent_name': 'hindsight_approx', 'args': {'sample_path_number': 350, 'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False}},
+                # {'agent_name': 'hindsight_approx', 'args': {'sample_path_number': 350, 'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False}},
                 # {'agent_name': 'hindsight_approx_with_penalty', 'args': {'sample_path_number': 350, 'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False, 'coeffecients':alp_args['args']['coefficients']}},
                 {'agent_name': 'myopic', 'args': {'is_myopic': True}},
                 alp_args,
@@ -278,6 +278,12 @@ if __name__ == '__main__':
             'param_name': 'reset_params.percentage_occupied',
             'param_values': [0.75, 0.85, 0.95],
         },
+        'demand_rate': {
+            'config_type': 'ejor_default',
+            'param_name': 'total_arrival_rate',
+            'param_values': [25, 30],
+            'param_modifier_fn': demand_rate_modifier
+        },
     }
     '''
     booking window size
@@ -288,11 +294,11 @@ if __name__ == '__main__':
         'demand_rate': 998,
         'decision_epoch': 2000,
         'overtime_cost_by_day': 2000,
-        'occupancy_level': 998,
+        'occupancy_level': 2000,
         'discount_factor':2000,
-        'percentage_occupied':998
+        'percentage_occupied':2000
     }
-    '''
+    
     # --- Run All Experiments ---
     generate_alp_train_params(
         experiment_configs=EXPERIMENT_CONFIGS,
@@ -307,4 +313,4 @@ if __name__ == '__main__':
         dat_file='table.dat',
         is_reuse=False # Set to True to avoid regenerating files and only create the .dat
     )
-    
+    '''

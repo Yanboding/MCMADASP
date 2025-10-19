@@ -24,7 +24,7 @@ class RTEnv:
                  stop_time_random_seed=42,
                  ):
         self.treatment_pattern = np.array(treatment_pattern)
-        self.booking_window_size = booking_window_size # if the problem is finite, bokking_window_size == decision_epoch
+        self.booking_window_size = booking_window_size
         self.arrival_generator = arrival_generator
         self.holding_cost = holding_cost
         self.overtime_cost = overtime_cost
@@ -154,8 +154,10 @@ class RTEnv:
         self.wait_time_by_type = {j: RunningStats() for j in range(self.num_types)}
         total_periods = self.decision_epoch + self.planning_horizon - 1
         self.overtime = np.array([0] * (total_periods - t + 1))
+        self.target_violations = {j: RunningStats() for j in range(self.num_types)}
         return copy.deepcopy(self.state), {'wait_time_by_type': self.wait_time_by_type,
-                                           'overtime': self.overtime}
+                                           'overtime': self.overtime,
+                                           'target_violations': self.target_violations}
 
     def reset_arrivals(self):
         # Generate a single random number from the geometric distribution
@@ -195,6 +197,8 @@ class RTEnv:
         wait_times = np.arange(advance_scheduling_decision.shape[0])
         for i in range(advance_scheduling_decision.shape[1]):
             self.wait_time_by_type[i].record_batch(wait_times, advance_scheduling_decision[:, i])
+            is_violate_waiting_time_target = (wait_times - self.holding_cost.get_waiting_target(i) >=0).astype(int)
+            self.target_violations[i].record_batch(is_violate_waiting_time_target, advance_scheduling_decision[:, i])
         self.overtime[self.tau] = post_action_overtimes[0]
         if done:
             self.overtime[self.tau:] = post_action_overtimes
@@ -205,15 +209,20 @@ class RTEnv:
         else:
             delta = self.new_arrivals[self.tau]
         self.state = self.post_action_state_to_new_state(post_action_state, delta)
-        return self.state, cost, done, {'wait_time_by_type': self.wait_time_by_type, 'overtime': self.overtime}
+        return self.state, cost, done, {'wait_time_by_type': self.wait_time_by_type, 
+                                        'overtime': self.overtime, 
+                                        'target_violations': self.target_violations}
 
 
 if __name__ == '__main__':
     from experiments import get_config_by_type
     config = get_config_by_type('ejor_default')
     env = config.env
-    required_bookings= np.zeros(env.planning_horizon)
-    n = 10000
-    for i in range(n):
-        regular_bookings, overtimes, new_arrivals = env.reset_initial_state(decay_factor=0.95, new_arrivals=[1,1,1,1])
-        required_bookings += regular_bookings+overtimes
+    state, info = env.reset(**config.reset_params)
+    advance_scheduling_decision = np.array([[3,9,7,6,4] for _ in range(env.booking_window_size)])
+    advance_scheduling_decision[5:, :] = 0
+    print(advance_scheduling_decision)
+    overtime_decision = np.array([5 for _ in range(env.planning_horizon)])
+    action = (advance_scheduling_decision, overtime_decision)
+    state, cost, done, info = env.step(action)
+    print(info['target_violations'])

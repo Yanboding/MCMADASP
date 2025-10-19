@@ -20,6 +20,10 @@ class HoldingCostCalculator:
         else:
             holding_cost = self.cost_data[t, i]
         return holding_cost
+    
+    def get_waiting_target(self, i):
+        waiting_target = np.argmax(self.cost_data[:, i] > 0) if np.any(self.cost_data[:, i] > 0) else float('inf')
+        return waiting_target - 1 # think carefully about the -1 here
 
 class OvertimeCostCalculator:
     """
@@ -261,5 +265,6 @@ def get_config_by_type(case_type, args=None):
     return config
 
 if __name__ == '__main__':
-    config = get_config_by_type('base_case')
-    print(config)
+    config = get_config_by_type('ejor_default')
+    env = config.env
+    print(env.holding_cost.get_waiting_target(2))

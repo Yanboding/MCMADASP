@@ -69,11 +69,7 @@ class RunningStats:
         batch_mean = (counts*values).sum()/m
         batch_var_sum = (counts * (values - batch_mean) ** 2).sum()
         # treat the batch as another RunningStat and merge once
-        tmp = RunningStats()
-        tmp._n = m
-        tmp._mean = batch_mean
-        tmp._m2 = batch_var_sum
-        self += tmp
+        self += RunningStats(n=m, mean=batch_mean, m2=batch_var_sum)
 
     def half_window(self, confidence):
         half = 0
