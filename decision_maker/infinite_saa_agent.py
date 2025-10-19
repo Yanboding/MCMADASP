@@ -6,6 +6,17 @@ from decision_maker import InfiniteRTAgent
 from metaheuristic_algorithm import BenderDecompositionSolver
 from utils import solve_and_handle_errors
 
+
+def flatten(vars):
+    list = []
+    for item in vars:
+        list.extend(item.reshape(-1))
+    return np.array(list)
+
+def set_link_rhs(linking_constraints, rhs_values):
+    for i, constr in enumerate(linking_constraints):
+        constr.setAttr("RHS", float(rhs_values[i]))
+
 class InfiniteSAAAgent(InfiniteRTAgent):
 
     def __init__(self, env, discount_factor, V=None, Q=None, sample_path_number=100, current_decision_var_type='integer', future_decision_var_type='continuous', is_myopic=False, sample_path=None, verbose=False):
@@ -23,49 +34,83 @@ class InfiniteSAAAgent(InfiniteRTAgent):
             for omega in range(self.sample_path_number):
                 new_arrivals = self.env.reset_arrivals()[1:]
                 self.delta.append(new_arrivals)
+                print(f'sample path {omega} length:', len(new_arrivals))
         self.bender_solver = None
+        self.direct_model, self.state_linking_constraints, self.action_t_var = self.direct_builder_fn()
 
     def set_sample_path(self, sample_path):
         self.sample_path_number = 1
         self.delta = np.array([sample_path])
+    
+    def build_state_linking_constraints(self, model, state_var):
+        u_var, v_var, w_var = state_var
+        linking_constraints = []
+        for j, uj_var in enumerate(u_var):
+            constraint = model.addConstr(uj_var == 0.0, name=f'link_u_{j}')
+            linking_constraints.append(constraint)
+        for j, vj_var in enumerate(v_var):
+            constraint = model.addConstr(vj_var == 0.0, name=f'link_v_{j}')
+            linking_constraints.append(constraint)
+        for i, wi_var in enumerate(w_var):
+            constraint = model.addConstr(wi_var == 0.0, name=f'link_w_{i}')
+            linking_constraints.append(constraint)
+        return linking_constraints
+    
+    def build_action_linking_constraints(self, model, action_t_var):
+        x_t_var, y_t_var = action_t_var
+        linking_constraints = []
+        for j, row in enumerate(x_t_var):
+            for i, var in enumerate(row):
+                constraint = model.addConstr(var == 0.0, name=f'link_x_{j},{i}')
+                linking_constraints.append(constraint)
+        for j, var in enumerate(y_t_var):
+            constraint = model.addConstr(var == 0.0, name=f'link_y_{j}')
+            linking_constraints.append(constraint)
+        return linking_constraints
+    
+    def direct_builder_fn(self):
+        direct_model = gp.Model(f"SA_Advance_Direct_Model", env=self.grb_env)
+        direct_model.setParam("MultiObjPre", 0)
+        direct_model.setParam("FeasibilityTol", 1e-9)
+        direct_model.setParam("OptimalityTol", 1e-9)
+        # ---------- 1. today’s increments ----------
+        state_var = self.get_state_var(direct_model)
+        state_linking_constraints = self.build_state_linking_constraints(direct_model, state_var)
+        action_t_var = self.get_action_var(model=direct_model, advance_scheduling_type=GRB.INTEGER)
+        # add action constraint
+        self.add_action_space_constraints(model=direct_model, state_var=state_var, action_var=action_t_var)
+        # ---------- 1. objective ----------
+        imm_cost = self.env.cost_fn(state_var, action_t_var, is_var=True)
+        fut_cost = 0
+        # for every sample path
+        for omega in range(self.sample_path_number):
+            prev_state_var = state_var
+            prev_action_var = action_t_var
+            for tau, new_arrival in enumerate(self.delta[omega], start=1):
+                next_state_var = self.get_next_state(model=direct_model,
+                                                    state=prev_state_var,
+                                                    action=prev_action_var,
+                                                    new_arrival=new_arrival)
+                next_action_var = self.get_action_var(model=direct_model, advance_scheduling_type=self.future_decision_var_type)
+                self.add_action_space_constraints(model=direct_model, state_var=next_state_var, action_var=next_action_var)
+                fut_cost += self.env.cost_fn(next_state_var, next_action_var, is_var=True)
+                prev_state_var = next_state_var
+                prev_action_var = next_action_var
+        fut_cost = fut_cost / self.sample_path_number
+        direct_model.setObjective(imm_cost + fut_cost, GRB.MINIMIZE)
+        return direct_model, state_linking_constraints, action_t_var
+    
+    def solve(self, state, t=1, action=None, verbose=True):
+        flatten_state = flatten(state)
+        set_link_rhs(self.state_linking_constraints, flatten_state)
+        if action is not None:
+            self.set_action(action_var=self.action_t_var, action=action)
+        if not solve_and_handle_errors(self.direct_model, verbose=verbose):
+            raise RuntimeError("Master model optimal solution not found")
 
-    def direct_solve(self, state, t=1, action=None, verbose=False):
-        with (gp.Model("SA_Advance", env=self.grb_env) as m):
-            m.setParam('DualReductions', 0)
-            m.setParam("MultiObjPre", 0)
-            m.setParam('MIPFocus', 1)
-            # ---------- 1. today’s increments ----------
-            action_t_var = self.get_action_var(model=m, advance_scheduling_type=GRB.INTEGER)
-            if action is not None:
-                self.set_action(action_var=action_t_var, action=action)
-            # add action constraint
-            self.add_action_space_constraints(model=m, state_var=state, action_var=action_t_var)
-            # ---------- 1. objective ----------
-            imm_cost = self.env.cost_fn(state, action_t_var, is_var=True)
-            fut_cost = 0
-            if not self.is_myopic:
-                # for every sample path
-                for omega in range(self.sample_path_number):
-                    prev_state_var = state
-                    prev_action_var = action_t_var
-                    for tau, new_arrival in enumerate(self.delta[omega], start=1):
-                        next_state_var = self.get_next_state(model=m,
-                                                          state=prev_state_var,
-                                                          action=prev_action_var,
-                                                          new_arrival=new_arrival)
-                        next_action_var = self.get_action_var(model=m, advance_scheduling_type=self.future_decision_var_type)
-                        self.add_action_space_constraints(model=m, state_var=next_state_var, action_var=next_action_var)
-                        fut_cost += self.env.cost_fn(next_state_var, next_action_var, is_var=True)
-                        prev_state_var = next_state_var
-                        prev_action_var = next_action_var
-                fut_cost = fut_cost / self.sample_path_number
-            m.setObjective(imm_cost + fut_cost, GRB.MINIMIZE)
-            if not solve_and_handle_errors(m, verbose=verbose):
-                raise RuntimeError("Master model optimal solution not found")
-
-            # ---------- 8. return ----------
-            action = self.get_solution(action_t_var, is_final=True)
-            return action, m.ObjVal, {}
+        # ---------- 8. return ----------
+        action = self.get_solution(self.action_t_var, is_final=True)
+        return action, self.direct_model.ObjVal, {}
     
     def master_builder_fn(self):
         master_model = gp.Model(f"SA_Advance_Master", env=self.grb_env)
@@ -115,33 +160,7 @@ class InfiniteSAAAgent(InfiniteRTAgent):
         sub_model.setObjective(fut_cost, GRB.MINIMIZE)
         return sub_model, action_linking_constraints, state_linking_constraints
 
-    def build_action_linking_constraints(self, model, action_t_var):
-        x_t_var, y_t_var = action_t_var
-        linking_constraints = []
-        for j, row in enumerate(x_t_var):
-            for i, var in enumerate(row):
-                constraint = model.addConstr(var == 0.0, name=f'link_x_{j},{i}')
-                linking_constraints.append(constraint)
-        for j, var in enumerate(y_t_var):
-            constraint = model.addConstr(var == 0.0, name=f'link_y_{j}')
-            linking_constraints.append(constraint)
-        return linking_constraints
-    
-    def build_state_linking_constraints(self, model, state_var):
-        u_var, v_var, w_var = state_var
-        linking_constraints = []
-        for j, uj_var in enumerate(u_var):
-            constraint = model.addConstr(uj_var == 0.0, name=f'link_u_{j}')
-            linking_constraints.append(constraint)
-        for j, vj_var in enumerate(v_var):
-            constraint = model.addConstr(vj_var == 0.0, name=f'link_v_{j}')
-            linking_constraints.append(constraint)
-        for i, wi_var in enumerate(w_var):
-            constraint = model.addConstr(wi_var == 0.0, name=f'link_w_{i}')
-            linking_constraints.append(constraint)
-        return linking_constraints
-
-    def solve(self, state, t=1, action=None, verbose=True):
+    def benders_solve(self, state, t=1, action=None, verbose=True):
         if self.is_myopic or self.sample_path_number <= 1:
             action, obj_value, info = self.direct_solve(state, t=t, action=action)
             return action, obj_value, info

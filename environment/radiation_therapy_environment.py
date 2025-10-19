@@ -154,10 +154,10 @@ class RTEnv:
         self.wait_time_by_type = {j: RunningStats() for j in range(self.num_types)}
         total_periods = self.decision_epoch + self.planning_horizon - 1
         self.overtime = np.array([0] * (total_periods - t + 1))
-        self.target_violations = {j: RunningStats() for j in range(self.num_types)}
+        self.waiting_time_target_violations = {j: RunningStats() for j in range(self.num_types)}
         return copy.deepcopy(self.state), {'wait_time_by_type': self.wait_time_by_type,
                                            'overtime': self.overtime,
-                                           'target_violations': self.target_violations}
+                                           'target_violations': self.waiting_time_target_violations}
 
     def reset_arrivals(self):
         # Generate a single random number from the geometric distribution
@@ -198,7 +198,7 @@ class RTEnv:
         for i in range(advance_scheduling_decision.shape[1]):
             self.wait_time_by_type[i].record_batch(wait_times, advance_scheduling_decision[:, i])
             is_violate_waiting_time_target = (wait_times - self.holding_cost.get_waiting_target(i) >=0).astype(int)
-            self.target_violations[i].record_batch(is_violate_waiting_time_target, advance_scheduling_decision[:, i])
+            self.waiting_time_target_violations[i].record_batch(is_violate_waiting_time_target, advance_scheduling_decision[:, i])
         self.overtime[self.tau] = post_action_overtimes[0]
         if done:
             self.overtime[self.tau:] = post_action_overtimes
@@ -211,7 +211,7 @@ class RTEnv:
         self.state = self.post_action_state_to_new_state(post_action_state, delta)
         return self.state, cost, done, {'wait_time_by_type': self.wait_time_by_type, 
                                         'overtime': self.overtime, 
-                                        'target_violations': self.target_violations}
+                                        'target_violations': self.waiting_time_target_violations}
 
 
 if __name__ == '__main__':

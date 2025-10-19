@@ -81,9 +81,9 @@ def _generate_experiment_parameters(config_type, experiment_name, param_name, pa
             sample_path_stats += len(sample_path)
             alp_args = alp_train_res.get(env_uid, {'agent_name': 'alp', 'args': {'coefficients': None}})
             agent_args = [
-                # {'agent_name': 'hindsight_approx', 'args': {'sample_path_number': 350, 'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False}},
+                {'agent_name': 'hindsight_approx', 'args': {'sample_path_number': 350, 'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False}},
                 # {'agent_name': 'hindsight_approx_with_penalty', 'args': {'sample_path_number': 350, 'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False, 'coeffecients':alp_args['args']['coefficients']}},
-                {'agent_name': 'myopic', 'args': {'is_myopic': True}},
+                {'agent_name': 'myopic', 'args': {}},
                 alp_args,
                 ]
 
@@ -298,7 +298,7 @@ if __name__ == '__main__':
         'discount_factor':2000,
         'percentage_occupied':2000
     }
-    
+    '''
     # --- Run All Experiments ---
     generate_alp_train_params(
         experiment_configs=EXPERIMENT_CONFIGS,
@@ -313,4 +313,3 @@ if __name__ == '__main__':
         dat_file='table.dat',
         is_reuse=False # Set to True to avoid regenerating files and only create the .dat
     )
-    '''

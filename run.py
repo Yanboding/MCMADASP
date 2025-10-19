@@ -40,16 +40,18 @@ def experiment(experiment_name, param_value, env_args, agent_args, sample_path, 
         config.reset_params['new_arrivals'] = sample_path
         state, info = env.reset(**config.reset_params)
         print('agent_name:', agent_name)
-        if agent_name in {"hindsight_approx", "hindsight_value", "myopic"}:
+        if agent_name in {"hindsight_approx", "hindsight_value"}:
             agent_instance = InfiniteSAAAgent(env, discount_factor=env.discount_factor, **args)
         elif agent_name in {"hindsight_approx_with_penalty"}:
             agent_instance = InfinitePenalizedSAAAgent(env, discount_factor=env.discount_factor, **args)
+        elif agent_name == "myopic":
+            agent_instance = MyopicAgent(env, discount_factor=env.discount_factor, **args)
         elif agent_name == 'alp':
             agent_instance = ALPEJORColumnGenerationAgent(env, discount_factor=env.discount_factor, **args)
         evaluator = PolicyEvaluator(env, agent_instance, env.discount_factor)
         states, rewards = evaluator.sample_path_evaluate(state, t, sample_path)
         value_function = sum(rewards)
-        stats['abs_gap'] = max(value_function - benchmark_value, 0)
+        stats['value_function'] = value_function
         stats['benchmark_value'] = benchmark_value
         wait_time_by_type =[]
         waiting_time_target_violations = []
@@ -136,7 +138,7 @@ if __name__ == '__main__':
     parser.add_argument('--job_id', help='Input METAJOB_ID', type=str)
     args = parser.parse_args()
     params = json.loads(args.params)
-    alp_train(**params, job_id=args.job_id)
-    #experiment(**params, job_id=args.job_id)
+    #alp_train(**params, job_id=args.job_id)
+    experiment(**params, job_id=args.job_id)
     #value_function_experiment(**params, job_id=args.job_id)
     

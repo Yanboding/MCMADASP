@@ -41,7 +41,7 @@ class InfiniteRTAgent:
             for j in range(self.env.booking_window_size)
         ])
         overtime_decision_vars = np.array(
-            [model.addVar(vtype=GRB.CONTINUOUS, lb=0, name=f"y^{self.action_var_counter}_{j}") for j in range(self.env.planning_horizon)]
+            [model.addVar(vtype=advance_scheduling_type, lb=0, name=f"y^{self.action_var_counter}_{j}") for j in range(self.env.planning_horizon)]
         )
         return (advance_scheduling_decision_vars, overtime_decision_vars)
 
@@ -58,10 +58,11 @@ class InfiniteRTAgent:
     def get_solution(self, action_var, is_final=False):
         x_var, y_var = action_var
         if is_final:
-            x = np.array([[clean_value(var.Xn, tolerance=1e-6) for var in row] for row in x_var]).astype(int)
+            x = np.array([[round(var.Xn) for var in row] for row in x_var]).astype(int)
+            y = np.array([round(var.Xn) for var in y_var]).astype(int)
         else:
             x = get_solution_value(x_var).astype(float)
-        y = get_solution_value(y_var).astype(float)
+            y = get_solution_value(y_var).astype(float)
         return (x, y)
 
     def set_action(self, action_var, action):
@@ -84,8 +85,8 @@ class InfiniteRTAgent:
         for wi_var, wi in zip(w_var, w):
             wi_var.lb = wi_var.ub = wi
 
-    def add_action_space_constraints(self, model, state_var, action_var, is_pricing=False):
-        _, _, waitlist_vars = state_var
+    def add_action_space_constraints(self, model, state_var, action_var):
+        regular_booking_vars, overtime_booking_vars, waitlist_vars = state_var
         advance_scheduling_decision_vars, overtime_decision_vars = action_var
         model.addConstrs(
             (advance_scheduling_decision_vars[:, i].sum() <= waitlist_vars[i]
@@ -109,7 +110,6 @@ class InfiniteRTAgent:
             ),
             name=f"valid_post_action_overtime_bookings",
         )
-        # is this for numerical stability?
         new_booking_slots = self.env.convert_action_to_booking_slots(advance_scheduling_decision_vars)
         model.addConstrs(
             (
