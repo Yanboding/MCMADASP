@@ -16,8 +16,8 @@ class ALPEJORColumnGenerationAgent(InfiniteRTAgent):
         self.is_trained = False
         # simulate multiple sample path
         # apply myopic policy to estimate the expected value of each component
-        decay_factor = 0.95
-        required_bookings = [(self.env.regular_capacity + self.env.overtime_capacity) * decay_factor**(j+1) for j in range(self.env.planning_horizon)]
+        decay_factor = 0.94
+        required_bookings = [(self.env.regular_capacity + self.env.overtime_capacity) * decay_factor**(j) for j in range(self.env.planning_horizon)]
         required_bookings[-1] = 0
         required_bookings = np.array(required_bookings)
         self.E_u_alpha = np.minimum(required_bookings, self.env.regular_capacity)
@@ -30,7 +30,7 @@ class ALPEJORColumnGenerationAgent(InfiniteRTAgent):
         if pretrain:
             self.train(debug=False,verbose=verbose, use_barrier=True)
 
-    def train(self, tol=1e-6, phase1_max_iter=3000, phase2_max_iter=30000, use_barrier=True, debug=False, verbose=False):
+    def train(self, tol=1e-6, phase1_max_iter=3000, phase2_max_iter=30000, use_barrier=False, debug=False, verbose=False):
         if debug == True:
             initial_columns = self.generate_all_columns()
         else:
@@ -44,10 +44,12 @@ class ALPEJORColumnGenerationAgent(InfiniteRTAgent):
         print('Training Coeffecients')
         self.cg_solver.solve(tol=tol, max_iter=phase2_max_iter, verbose=verbose)
         print('Finished Training Coeffecients!')
-        final_duals = [clean_value(c.Pi, 1e-8) for c in self.cg_solver.master_model.getConstrs()]
+        final_duals = [c.Pi for c in self.cg_solver.master_model.getConstrs()]
         self.W_0, self.U, self.V, self.W = self.get_coefficients(final_duals)
         self.is_trained = True
-        return final_duals
+        print("Training completed. Objective value:", self.cg_solver.master_model.ObjVal)
+        master_obj = self.cg_solver.master_model.ObjVal
+        return master_obj, final_duals
 
     def get_coefficients(self, solution):
         it = iter(solution)
@@ -88,8 +90,8 @@ class ALPEJORColumnGenerationAgent(InfiniteRTAgent):
         else:
             master_model.setParam("Method", 1) 
         master_model.setParam("MultiObjPre", 0)
-        master_model.setParam("FeasibilityTol", 1e-8)
-        master_model.setParam("OptimalityTol", 1e-8)
+        master_model.setParam("FeasibilityTol", 1e-9)
+        master_model.setParam("OptimalityTol", 1e-9)
         master_model.addConstr(
             (
                     gp.LinExpr() == 1
@@ -131,7 +133,7 @@ class ALPEJORColumnGenerationAgent(InfiniteRTAgent):
         pricing_model.setParam("MultiObjPre", 0)
         #pricing_model.setParam("Method", 2)      # barrier
         #pricing_model.setParam("Crossover", 0)   # no simplex crossover
-        pricing_model.setParam("MIPGap", 1e-9)    # if MILP pricing, but keep very tight
+        #pricing_model.setParam("MIPGap", 1e-9)    # if MILP pricing, but keep very tight
         pricing_model.setParam("Threads", 1)      # stable and reproducible reduced costs
         #pricing_model.setParam("Presolve", 1)     # aggressive presolve speeds up pricing
         #pricing_model.setParam("Heuristics", 0.2)
@@ -140,13 +142,13 @@ class ALPEJORColumnGenerationAgent(InfiniteRTAgent):
         #pricing_model.setParam("TimeLimit", 2.0)
         #pricing_model.setParam("NodeLimit", 50000)
         pricing_model.setParam("OutputFlag", 0)
-        pricing_model.setParam('DualReductions', 0)
-        #pricing_model.setParam("FeasibilityTol", 1e-9)
-        #pricing_model.setParam("OptimalityTol", 1e-9)
+        #pricing_model.setParam('DualReductions', 0)
+        pricing_model.setParam("FeasibilityTol", 1e-9)
+        pricing_model.setParam("OptimalityTol", 1e-9)
 
         state_var = self.get_state_var(pricing_model)
         action_var = self.get_action_var(pricing_model, advance_scheduling_type=GRB.INTEGER)
-        self.add_action_space_constraints(pricing_model, state_var, action_var, is_pricing=True)
+        self.add_action_space_constraints(pricing_model, state_var, action_var)
 
         next_state_var = self.get_next_state(pricing_model, state_var, action_var, self.env.arrival_generator.mean_by_type)
 

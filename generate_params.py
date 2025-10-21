@@ -48,7 +48,8 @@ def _generate_experiment_parameters(config_type, experiment_name, param_name, pa
     alp_train_res = {}
     for line in read_lines_with_pattern(directory_path, 'alp_train*.jsonl'):
         line = json.loads(line)
-        alp_train_res[line['uid']] = line['result']
+        agent_type = line['result']['agent_name']
+        alp_train_res[line['uid']+agent_type] = line['result']
     # Iterate over each value of the parameter being tested.
     for value in param_values:
         # Optimization: Use copy.deepcopy for more efficient object copying.
@@ -79,12 +80,14 @@ def _generate_experiment_parameters(config_type, experiment_name, param_name, pa
             sample_path = env_for_sample_path.reset_arrivals() if env_for_sample_path else [[]]
             sample_path = sample_path.tolist() if hasattr(sample_path, 'tolist') else sample_path
             sample_path_stats += len(sample_path)
-            alp_args = alp_train_res.get(env_uid, {'agent_name': 'alp', 'args': {'coefficients': None}})
+            col_alp_args = alp_train_res.get(env_uid+'col_gen_alp', {'agent_name': 'alp', 'args': {'coefficients': None}})
+            row_alp_args = alp_train_res.get(env_uid+'row_gen_alp', {'agent_name': 'alp', 'args': {'coefficients': None}})
             agent_args = [
-                {'agent_name': 'hindsight_approx', 'args': {'sample_path_number': 350, 'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False}},
+                {'agent_name': 'hindsight_approx', 'args': {'sample_path_number': 400, 'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False}},
                 # {'agent_name': 'hindsight_approx_with_penalty', 'args': {'sample_path_number': 350, 'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False, 'coeffecients':alp_args['args']['coefficients']}},
                 {'agent_name': 'myopic', 'args': {}},
-                alp_args,
+                col_alp_args,
+                row_alp_args
                 ]
 
             # 2. Prepare the final parameters for the actual simulation run with a different seed.
@@ -222,8 +225,9 @@ def generate_alp_train_params(experiment_configs, dat_file):
                                        param_values=config['param_values'],
                                        base_env_args_overrides=config.get('base_env_args_overrides'),
                                        param_modifier_fn=config.get('param_modifier_fn')):
-                line = "python run.py --params '" + json.dumps({'env_args':env_arg, 'experiment_name': name}) + "'\n"
-                f.write(line)
+                for train_type in ["col_gen","row_gen"]:
+                    line = "python run.py --params '" + json.dumps({'env_args':env_arg, 'experiment_name': name, 'train_type': train_type}) + "'\n"
+                    f.write(line)
 
 if __name__ == '__main__':
     # --- Define Experiment-Specific Logic ---
@@ -278,12 +282,6 @@ if __name__ == '__main__':
             'param_name': 'reset_params.percentage_occupied',
             'param_values': [0.75, 0.85, 0.95],
         },
-        'demand_rate': {
-            'config_type': 'ejor_default',
-            'param_name': 'total_arrival_rate',
-            'param_values': [25, 30],
-            'param_modifier_fn': demand_rate_modifier
-        },
     }
     '''
     booking window size
@@ -291,7 +289,7 @@ if __name__ == '__main__':
     # --- Specify the number of trials for each experiment ---
     # You can customize the number of samples for each experiment here.
     TEST_SAMPLE_NUM_MAP = {
-        'demand_rate': 998,
+        'demand_rate': 2000,
         'decision_epoch': 2000,
         'overtime_cost_by_day': 2000,
         'occupancy_level': 2000,
@@ -304,8 +302,8 @@ if __name__ == '__main__':
         experiment_configs=EXPERIMENT_CONFIGS,
         dat_file = 'table.dat',
     )
-    '''
     
+    '''
     generate_all_experiments(
         config_type='ejor_default',
         experiment_configs=EXPERIMENT_CONFIGS,
@@ -313,3 +311,4 @@ if __name__ == '__main__':
         dat_file='table.dat',
         is_reuse=False # Set to True to avoid regenerating files and only create the .dat
     )
+    

@@ -46,8 +46,10 @@ def experiment(experiment_name, param_value, env_args, agent_args, sample_path, 
             agent_instance = InfinitePenalizedSAAAgent(env, discount_factor=env.discount_factor, **args)
         elif agent_name == "myopic":
             agent_instance = MyopicAgent(env, discount_factor=env.discount_factor, **args)
-        elif agent_name == 'alp':
+        elif agent_name == 'col_gen_alp':
             agent_instance = ALPEJORColumnGenerationAgent(env, discount_factor=env.discount_factor, **args)
+        elif agent_name == 'row_gen_alp':
+            agent_instance = ALPRowGenerationAgent(env, discount_factor=env.discount_factor, **args)
         evaluator = PolicyEvaluator(env, agent_instance, env.discount_factor)
         states, rewards = evaluator.sample_path_evaluate(state, t, sample_path)
         value_function = sum(rewards)
@@ -93,7 +95,7 @@ def value_function_experiment(experiment_name, param_value, env_args, agent_args
         state, info = env.reset(**config.reset_params)
         print(config.reset_params)
         print('init state:', state)
-        if agent_name in {"hindsight_approx", "hindsight_value", "myopic"}:
+        if agent_name in {"hindsight_approx", "hindsight_value"}:
             agent_instance = InfiniteSAAAgent(env, discount_factor=env.discount_factor, **args)
         elif agent_name == "myopic":
             agent_instance = MyopicAgent(env, discount_factor=env.discount_factor, **args)
@@ -122,15 +124,18 @@ def value_function_experiment(experiment_name, param_value, env_args, agent_args
     with open(output_file, 'a') as f:  # 'a' will create the file if not present
         f.write(json.dumps(res) + '\n')
 
-def alp_train(env_args, experiment_name, job_id=None):
+def alp_train(env_args, experiment_name, train_type="col_gen", job_id=None):
     print('Training ALP agent with args:', env_args)
     config_for_train = get_config_by_type(case_type='infinite_custom',args=env_args)
     env_for_train = config_for_train.env
-    agent = ALPRowGenerationAgent(env=env_for_train, discount_factor=env_for_train.discount_factor)
-    coefficients = agent.train(debug=False, verbose=True, max_iter=5000)
-    output_file = os.path.join('experiments','results',experiment_name, f'alp_train{job_id}.jsonl' if job_id else 'alp_train.jsonl')
+    if train_type == "col_gen":
+        agent = ALPEJORColumnGenerationAgent(env=env_for_train, discount_factor=env_for_train.discount_factor)
+    else:
+        agent = ALPRowGenerationAgent(env=env_for_train, discount_factor=env_for_train.discount_factor)
+    obj_val, coefficients = agent.train(debug=False, verbose=True)
+    output_file = os.path.join('experiments','results',experiment_name, f'alp_train_{train_type}_{job_id}.jsonl' if job_id else f'alp_train_{train_type}.jsonl')
     with safe_open(output_file, 'a') as f:  # 'a' will create the file if not present
-        f.write(json.dumps({'uid':get_uid(env_args), 'result': {'agent_name': 'alp', 'args': {'coefficients':coefficients}}}) + '\n')
+        f.write(json.dumps({'uid':get_uid(env_args), 'result': {'agent_name': f'{train_type}_alp', 'obj_val': obj_val, 'args': {'coefficients':coefficients}}}) + '\n')
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Example of using argparse to pass in a list of lists.")

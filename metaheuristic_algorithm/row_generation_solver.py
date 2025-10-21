@@ -144,6 +144,8 @@ class RowGenerationSolver:
                                                                                             max_violation=max_violation,
                                                                                             tol=tol
                                                                                         )
+            #self.penalty_weight_l2 = 0
+            #self.penalty_weight_l1 = 0
             self.master_model.setObjective(self.objective - self.penalty_weight_l2 * self.l2_penalty - self.penalty_weight_l1 * self.l1_penalty, self.master_model.ModelSense)
             self.master_model.update()
             # 1. Optimize the current relaxed master model

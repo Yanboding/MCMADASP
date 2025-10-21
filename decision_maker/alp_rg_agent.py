@@ -11,8 +11,8 @@ class ALPRowGenerationAgent(InfiniteRTAgent):
     def __init__(self, env, discount_factor, V=None, Q=None, coefficients=None, pretrain=False):
         super().__init__(env, discount_factor, V, Q)
         self.is_trained = False
-        decay_factor = 0.8
-        required_bookings = [(self.env.regular_capacity + self.env.overtime_capacity) * decay_factor**(j+1) for j in range(self.env.planning_horizon)]
+        decay_factor = 0.94
+        required_bookings = [(self.env.regular_capacity + self.env.overtime_capacity) * decay_factor**(j) for j in range(self.env.planning_horizon)]
         required_bookings[-1] = 0
         required_bookings = np.array(required_bookings)
         self.E_u_alpha = np.minimum(required_bookings, self.env.regular_capacity)
@@ -119,13 +119,14 @@ class ALPRowGenerationAgent(InfiniteRTAgent):
         master_model = gp.Model('MasterRMP')
         master_model.setParam('DualReductions', 0)
         master_model.setParam("MultiObjPre", 0)
-        master_model.setParam("FeasibilityTol", 1e-8)
-        master_model.setParam("OptimalityTol", 1e-8)
+        master_model.setParam("FeasibilityTol", 1e-9)
+        master_model.setParam("OptimalityTol", 1e-9)
         master_model.setParam('OutputFlag', 0)
-        self.W_0_var = master_model.addVar(vtype=GRB.CONTINUOUS, lb=-GRB.INFINITY, ub=GRB.INFINITY, name=f"W_0")
-        self.U_vars = np.array([master_model.addVar(vtype=GRB.CONTINUOUS, lb=0, ub=GRB.INFINITY, name=f"U_{j}") for j in range(self.env.planning_horizon)])
-        self.V_vars = np.array([master_model.addVar(vtype=GRB.CONTINUOUS, lb=0, ub=GRB.INFINITY, name=f"V_{j}") for j in range(self.env.planning_horizon)])
-        self.W_vars = np.array([master_model.addVar(vtype=GRB.CONTINUOUS, lb=0, ub=GRB.INFINITY, name=f"W_{i}") for i in range(1, self.env.num_types + 1)])
+        BigM = 1e4
+        self.W_0_var = master_model.addVar(vtype=GRB.CONTINUOUS, lb=-GRB.INFINITY, ub=BigM, name=f"W_0")
+        self.U_vars = np.array([master_model.addVar(vtype=GRB.CONTINUOUS, lb=0, ub=BigM, name=f"U_{j}") for j in range(self.env.planning_horizon)])
+        self.V_vars = np.array([master_model.addVar(vtype=GRB.CONTINUOUS, lb=0, ub=BigM, name=f"V_{j}") for j in range(self.env.planning_horizon)])
+        self.W_vars = np.array([master_model.addVar(vtype=GRB.CONTINUOUS, lb=0, ub=BigM, name=f"W_{i}") for i in range(1, self.env.num_types + 1)])
         obj = (
             self.W_0_var
             + gp.quicksum(self.U_vars[j] * self.E_u_alpha[j] for j in range(self.env.planning_horizon))
@@ -168,7 +169,7 @@ class ALPRowGenerationAgent(InfiniteRTAgent):
             candidate = self.get_candidate(state_var, action_var)
             yield candidate, separation_model.ObjVal
 
-    def train(self, debug, tol=1e-6, max_iter=1000, verbose=False):
+    def train(self, debug, tol=1e-6, max_iter=20000, verbose=False):
         if debug == True:
             initial_candidates = self.generate_all_candidates()
         else:
@@ -178,10 +179,12 @@ class ALPRowGenerationAgent(InfiniteRTAgent):
                                              get_constraint_data=self.get_constraint_data,
                                              initial_candidates=initial_candidates)
         self.rg_solver.solve(tol=tol, max_iter=max_iter)
-        final_coefficients = [v.X for v in self.rg_solver.master_model.getVars()]
+        final_coefficients = [v.X for v in self.rg_solver.coefficient_vars]
         self.W_0, self.U, self.V, self.W = self.get_coefficients(final_coefficients)
         self.is_trained = True
-        return final_coefficients
+        print("Training completed. Objective value:", self.rg_solver.master_model.ObjVal)
+        master_obj = self.rg_solver.master_model.ObjVal
+        return master_obj, final_coefficients
     
     def solve(self, state, t, action=None, verbose=False):
         with (gp.Model("ALP_policy", env=self.grb_env) as policy_model):

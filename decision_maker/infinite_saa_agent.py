@@ -105,6 +105,8 @@ class InfiniteSAAAgent(InfiniteRTAgent):
         set_link_rhs(self.state_linking_constraints, flatten_state)
         if action is not None:
             self.set_action(action_var=self.action_t_var, action=action)
+        # Clean solution before resolving
+        self.direct_model.reset()
         if not solve_and_handle_errors(self.direct_model, verbose=verbose):
             raise RuntimeError("Master model optimal solution not found")
 

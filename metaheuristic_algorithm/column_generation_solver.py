@@ -7,7 +7,7 @@ from utils import solve_and_handle_errors, clean_value
 
 
 class ColumnGenerationSolver:
-    def __init__(self, master_builder, pricing_callback, initial_columns, get_constr_coefficients, get_obj_coefficient, dual_regularization_penalty=0.0):
+    def __init__(self, master_builder, pricing_callback, initial_columns, get_constr_coefficients, get_obj_coefficient, dual_regularization_penalty=0.9):
         """
         master_builder: function(model, columns) -> None
             Add variables and constraints to the model, given columns.
@@ -69,9 +69,9 @@ class ColumnGenerationSolver:
             if verbose:
                 print(f"Relaxed master objective: {self.master_model.ObjVal:.6f}")
             # Stopping condition: objective small enough
-            if clean_value(self.master_model.ObjVal, 1e-8) < tol:
+            if self.master_model.ObjVal < tol:
                 if verbose:
-                    print([clean_value(constr.Pi, tol) for constr in self.master_model.getConstrs()])
+                    print([constr.Pi for constr in self.master_model.getConstrs()])
                 return self.candidates_list
         raise ValueError('Finding feasible columns failed!')
 
