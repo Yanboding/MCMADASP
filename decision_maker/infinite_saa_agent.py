@@ -19,7 +19,7 @@ def set_link_rhs(linking_constraints, rhs_values):
 
 class InfiniteSAAAgent(InfiniteRTAgent):
 
-    def __init__(self, env, discount_factor, V=None, Q=None, sample_path_number=100, current_decision_var_type='integer', future_decision_var_type='continuous', is_myopic=False, sample_path=None, verbose=False):
+    def __init__(self, env, discount_factor, V=None, Q=None, sample_path_number=100, current_decision_var_type='integer', future_decision_var_type='continuous', is_myopic=False, sample_path=None, is_include_discount_factor=False, verbose=False):
         super().__init__(env, discount_factor, V=V, Q=Q)
         self.sample_path_number = sample_path_number
         self.current_decision_var_type = GRB.INTEGER if current_decision_var_type is None or current_decision_var_type == 'integer' else GRB.CONTINUOUS
@@ -36,6 +36,7 @@ class InfiniteSAAAgent(InfiniteRTAgent):
                 self.delta.append(new_arrivals)
                 print(f'sample path {omega} length:', len(new_arrivals))
         self.bender_solver = None
+        self.is_include_discount_factor = is_include_discount_factor
         self.direct_model, self.state_linking_constraints, self.action_t_var = self.direct_builder_fn()
 
     def set_sample_path(self, sample_path):
@@ -71,6 +72,8 @@ class InfiniteSAAAgent(InfiniteRTAgent):
     def direct_builder_fn(self):
         direct_model = gp.Model(f"SA_Advance_Direct_Model", env=self.grb_env)
         direct_model.setParam("MultiObjPre", 0)
+        direct_model.setParam("MIPGapAbs", 1e-9)         # Enforce extremely tight absolute gap
+        direct_model.setParam("MIPGap", 1e-9)
         direct_model.setParam("FeasibilityTol", 1e-9)
         direct_model.setParam("OptimalityTol", 1e-9)
         # ---------- 1. today’s increments ----------
@@ -93,7 +96,10 @@ class InfiniteSAAAgent(InfiniteRTAgent):
                                                     new_arrival=new_arrival)
                 next_action_var = self.get_action_var(model=direct_model, advance_scheduling_type=self.future_decision_var_type)
                 self.add_action_space_constraints(model=direct_model, state_var=next_state_var, action_var=next_action_var)
-                fut_cost += self.env.cost_fn(next_state_var, next_action_var, is_var=True)
+                if self.is_include_discount_factor:
+                    fut_cost += (self.discount_factor ** tau) * self.env.cost_fn(next_state_var, next_action_var, is_var=True)
+                else:
+                    fut_cost += self.env.cost_fn(next_state_var, next_action_var, is_var=True)
                 prev_state_var = next_state_var
                 prev_action_var = next_action_var
         fut_cost = fut_cost / self.sample_path_number

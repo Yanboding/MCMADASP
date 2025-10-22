@@ -159,9 +159,10 @@ class RTEnv:
                                            'overtime': self.overtime,
                                            'target_violations': self.waiting_time_target_violations}
 
-    def reset_arrivals(self):
+    def reset_arrivals(self, stop_time=None):
         # Generate a single random number from the geometric distribution
-        stop_time = geom.rvs((1- self.discount_factor), random_state=self.stop_time_rng)
+        if stop_time is None:
+            stop_time = geom.rvs((1- self.discount_factor), random_state=self.stop_time_rng)
         return self.arrival_generator.rvs(stop_time)
 
     def reset_initial_state(self, decay_factor, new_arrivals):

@@ -72,18 +72,18 @@ def _generate_experiment_parameters(config_type, experiment_name, param_name, pa
         for command_id in range(test_sample_path_num):
             # 1. Generate the sample path with a specific, isolated random seed.
             sample_gen_args = copy.deepcopy(env_args_for_value)
-            sample_gen_args['arrival_random_seed'] = command_id + 1 # Seed for sample path generation
-            sample_gen_args['stop_time_random_seed'] = command_id + 4
-            
+            sample_gen_args['arrival_random_seed'] = command_id + 10 # Seed for sample path generation
+            sample_gen_args['stop_time_random_seed'] = command_id + 40
+            stop_time = 100
             config_for_sample_path = get_config_by_type('infinite_custom', args=sample_gen_args)
             env_for_sample_path = config_for_sample_path.env
-            sample_path = env_for_sample_path.reset_arrivals() if env_for_sample_path else [[]]
+            sample_path = env_for_sample_path.reset_arrivals(stop_time=stop_time) if env_for_sample_path else [[]]
             sample_path = sample_path.tolist() if hasattr(sample_path, 'tolist') else sample_path
             sample_path_stats += len(sample_path)
             col_alp_args = alp_train_res.get(env_uid+'col_gen_alp', {'agent_name': 'alp', 'args': {'coefficients': None}})
             row_alp_args = alp_train_res.get(env_uid+'row_gen_alp', {'agent_name': 'alp', 'args': {'coefficients': None}})
             agent_args = [
-                {'agent_name': 'hindsight_approx', 'args': {'sample_path_number': 400, 'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False}},
+                {'agent_name': 'hindsight_approx', 'args': {'sample_path_number': 350, 'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False}},
                 # {'agent_name': 'hindsight_approx_with_penalty', 'args': {'sample_path_number': 350, 'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False, 'coeffecients':alp_args['args']['coefficients']}},
                 {'agent_name': 'myopic', 'args': {}},
                 col_alp_args,
@@ -92,8 +92,8 @@ def _generate_experiment_parameters(config_type, experiment_name, param_name, pa
 
             # 2. Prepare the final parameters for the actual simulation run with a different seed.
             trial_env_args = copy.deepcopy(env_args_for_value)
-            trial_env_args['arrival_random_seed'] = command_id + 2 # Seed for agent's future paths
-            trial_env_args['env_random_seed'] = command_id + 3     # Seed for the main environment simulation
+            trial_env_args['arrival_random_seed'] = command_id + 20 # Seed for agent's future paths
+            trial_env_args['env_random_seed'] = command_id + 30     # Seed for the main environment simulation
 
             parameter = {
                 "experiment_name": experiment_name,
