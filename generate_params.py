@@ -1,5 +1,6 @@
 import json
 import math
+import random
 from pprint import pprint
 
 import pandas as pd
@@ -110,7 +111,6 @@ def _generate_experiment_parameters(config_type, experiment_name, param_name, pa
             result_dict[uid] = parameter
             lines_to_write.append(parameter_str + '\n')
         print(sample_path_stats)
-
     # Optimization: Write all lines to the file at once to reduce I/O operations.
     print(f"Writing {len(lines_to_write)} parameters to {request_path}...")
     with open(request_path, "w") as f:
@@ -179,8 +179,11 @@ def generate_all_experiments(config_type, experiment_configs, test_sample_path_n
     # --- 3. Generate a single DAT file for all pending requests ---
     print(f"\n--- Generating combined DAT file: {dat_file} ---")
     pending_requests = 0
+    uids = list(all_requests.keys())
+    random.shuffle(uids)
     with open(dat_file, 'w') as f:
-        for uid, parameter in all_requests.items():
+        for uid in uids:
+            parameter = all_requests[uid]
             if uid not in all_results:
                 # Determine the correct output file for this specific parameter
                 exp_name = parameter['experiment_name']
@@ -280,7 +283,7 @@ if __name__ == '__main__':
         'occupancy_level': {
             'config_type': 'ejor_default',
             'param_name': 'reset_params.percentage_occupied',
-            'param_values': [0.75, 0.85, 0.95],
+            'param_values': [0.85, 0.95],
         },
     }
     '''
@@ -292,7 +295,7 @@ if __name__ == '__main__':
         'demand_rate': 2000,
         'decision_epoch': 2000,
         'overtime_cost_by_day': 2000,
-        'occupancy_level': 2000,
+        'occupancy_level': 1000,
         'discount_factor':2000,
         'percentage_occupied':2000
     }
@@ -308,7 +311,7 @@ if __name__ == '__main__':
         config_type='ejor_default',
         experiment_configs=EXPERIMENT_CONFIGS,
         test_sample_path_num_map=TEST_SAMPLE_NUM_MAP,
-        dat_file='table.dat',
+        dat_file='table_test.dat',
         is_reuse=False # Set to True to avoid regenerating files and only create the .dat
     )
     
