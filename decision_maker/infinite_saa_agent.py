@@ -29,7 +29,7 @@ class InfiniteSAAAgent(InfiniteRTAgent):
         self.delta = []
         if self.sample_path is not None:
             print('length of sample path:', len(self.sample_path))
-            self.set_sample_path(sample_path)
+            self.set_sample_path(self.sample_path[1:])
         if not is_myopic and sample_path is None:
             for omega in range(self.sample_path_number):
                 new_arrivals = self.env.reset_arrivals()[1:]

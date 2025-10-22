@@ -13,6 +13,25 @@ from utils import iter_to_tuple, get_uid, safe_open
 from decision_maker import ALPEJORColumnGenerationAgent, InfiniteSAAAgent, InfinitePenalizedSAAAgent, MyopicAgent, ALPRowGenerationAgent
 from policy_evaluator import PolicyEvaluator
 
+def run_lower_bound_solver(experiment_name, param_value, env_args, agent_args, sample_path, uid, job_id):
+    res = {}
+    res["uid"] = uid
+    res["experiment_name"] = experiment_name
+    res["param_value"] = param_value
+    t = 1  # Assuming a single time step for the experiment
+    config = get_config_by_type(case_type='infinite_custom',args=env_args)
+    env = config.env
+    config.reset_params['new_arrivals'] = sample_path
+    perfect_info_lower_bound_solver = InfiniteSAAAgent(env, discount_factor=env.discount_factor,current_decision_var_type=GRB.INTEGER,
+                                            future_decision_var_type=GRB.CONTINUOUS, sample_path=sample_path, is_include_discount_factor=True)
+    state, info = env.reset(**config.reset_params)
+    _, benchmark_value, info = perfect_info_lower_bound_solver.solve(state, t)
+    res['benchmark_value'] = benchmark_value
+    output_file = os.path.join('experiments', 'results', experiment_name, f'{job_id}.jsonl')
+    # Make sure the parent directories exist
+    os.makedirs(os.path.dirname(output_file), exist_ok=True)
+    with open(output_file, 'a') as f:  # 'a' will create the file if not present
+        f.write(json.dumps(res) + '\n')
 
 def experiment(experiment_name, param_value, env_args, agent_args, sample_path, uid, job_id):
     res = {'result':[]}
@@ -147,6 +166,7 @@ if __name__ == '__main__':
     args = parser.parse_args()
     params = json.loads(args.params)
     #alp_train(**params, job_id=args.job_id)
-    experiment(**params, job_id=args.job_id)
+    #experiment(**params, job_id=args.job_id)
     #value_function_experiment(**params, job_id=args.job_id)
+    run_lower_bound_solver(**params, job_id=args.job_id)
     
