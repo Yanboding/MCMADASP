@@ -85,9 +85,9 @@ def _generate_experiment_parameters(config_type, experiment_name, param_name, pa
             row_alp_args = alp_train_res.get(env_uid+'row_gen_alp', {'agent_name': 'alp', 'args': {'coefficients': None}})
             agent_args = [
                 #{'agent_name': 'hindsight_approx', 'args': {'sample_path_number': 350, 'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False}},
-                # {'agent_name': 'hindsight_approx_with_penalty', 'args': {'sample_path_number': 350, 'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False, 'coeffecients':alp_args['args']['coefficients']}},
-                #{'agent_name': 'myopic', 'args': {}},
-                #col_alp_args,
+                {'agent_name': 'hindsight_approx_with_penalty', 'args': {'sample_path_number': 350, 'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False, 'coeffecients':col_alp_args['args']['coefficients']}},
+                {'agent_name': 'myopic', 'args': {}},
+                col_alp_args,
                 #row_alp_args
                 ]
 
@@ -100,6 +100,7 @@ def _generate_experiment_parameters(config_type, experiment_name, param_name, pa
                 "experiment_name": experiment_name,
                 "param_value": value,
                 "sample_path": sample_path,
+                "coefficients": col_alp_args['args']['coefficients'],
                 "env_args": trial_env_args
             }
             
@@ -283,7 +284,7 @@ if __name__ == '__main__':
         'occupancy_level': {
             'config_type': 'ejor_default',
             'param_name': 'reset_params.percentage_occupied',
-            'param_values': [0.85, 0.95],
+            'param_values': [0.75, 0.85, 0.95],
         },
     }
     '''
@@ -311,7 +312,7 @@ if __name__ == '__main__':
         config_type='ejor_default',
         experiment_configs=EXPERIMENT_CONFIGS,
         test_sample_path_num_map=TEST_SAMPLE_NUM_MAP,
-        dat_file='table_test.dat',
+        dat_file='table.dat',
         is_reuse=False # Set to True to avoid regenerating files and only create the .dat
     )
     

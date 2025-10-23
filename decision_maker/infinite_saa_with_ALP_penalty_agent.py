@@ -1,10 +1,11 @@
 import numpy as np
 import gurobipy as gp
+import time
 from gurobipy import GRB
 
 from decision_maker import InfiniteRTAgent
 from metaheuristic_algorithm import BenderDecompositionSolver, ColumnGenerationSolver
-from utils import solve_and_handle_errors
+from utils import solve_and_handle_errors, flatten, set_link_rhs
 
 class InfinitePenalizedSAAAgent(InfiniteRTAgent):
 
@@ -15,8 +16,9 @@ class InfinitePenalizedSAAAgent(InfiniteRTAgent):
                  current_decision_var_type='integer', 
                  future_decision_var_type='continuous', 
                  is_myopic=False, 
-                 sample_path=None, 
-                 coeffecients=None, 
+                 sample_path=None,
+                 is_include_discount_factor=False,
+                 coeffecients=None,
                  verbose=False):
         super().__init__(env, discount_factor, V=V, Q=Q)
         self.sample_path_number = sample_path_number
@@ -27,13 +29,15 @@ class InfinitePenalizedSAAAgent(InfiniteRTAgent):
         self.coeffecients = coeffecients
         self.W_0, self.U, self.V, self.W = self.get_coefficients(coeffecients)
         self.delta = []
-        if self.sample_path != None:
-            self.set_sample_path(sample_path)
+        if self.sample_path is not  None:
+            self.set_sample_path(self.sample_path[1:])
         if not is_myopic and sample_path is None:
             for omega in range(self.sample_path_number):
                 new_arrivals = self.env.reset_arrivals()[1:]
                 self.delta.append(new_arrivals)
         self.bender_solver = None
+        self.is_include_discount_factor = is_include_discount_factor
+        self.direct_model, self.state_linking_constraints, self.action_t_var = self.direct_builder_fn()
 
     def set_sample_path(self, sample_path):
         self.sample_path_number = 1
@@ -46,50 +50,63 @@ class InfinitePenalizedSAAAgent(InfiniteRTAgent):
         V = np.array([float(next(it)) for _ in range(self.env.planning_horizon)])
         W = np.array([float(next(it)) for _ in range(self.env.num_types)])
         return W_0, U, V, W
+    
+    def direct_builder_fn(self):
+        direct_model = gp.Model(f"SA_Advance_Direct_Model", env=self.grb_env)
+        direct_model.setParam("MultiObjPre", 0)
+        direct_model.setParam("MIPGapAbs", 1e-9)         # Enforce extremely tight absolute gap
+        direct_model.setParam("MIPGap", 1e-9)
+        direct_model.setParam("FeasibilityTol", 1e-9)
+        direct_model.setParam("OptimalityTol", 1e-9)
+        # ---------- 1. today’s increments ----------
+        state_var = self.get_state_var(direct_model)
+        state_linking_constraints = self.build_state_linking_constraints(direct_model, state_var)
+        action_t_var = self.get_action_var(model=direct_model, advance_scheduling_type=GRB.INTEGER)
+        # add action constraint
+        self.add_action_space_constraints(model=direct_model, state_var=state_var, action_var=action_t_var)
+        # ---------- 1. objective ----------
+        imm_cost = self.env.cost_fn(state_var, action_t_var, is_var=True)
+        fut_cost = 0
+        # for every sample path
+        for omega in range(self.sample_path_number):
+            prev_state_var = state_var
+            prev_action_var = action_t_var
+            for tau, new_arrival in enumerate(self.delta[omega], start=1):
+                next_state_var = self.get_next_state(model=direct_model,
+                                                    state=prev_state_var,
+                                                    action=prev_action_var,
+                                                    new_arrival=new_arrival)
+                next_action_var = self.get_action_var(model=direct_model, advance_scheduling_type=self.future_decision_var_type)
+                self.add_action_space_constraints(model=direct_model, state_var=next_state_var, action_var=next_action_var)
+                # penalty for ALP
+                penalty = 0
+                if self.coeffecients is not None:
+                    penalty = np.dot(self.W, (self.env.arrival_generator.mean_by_type - new_arrival))
+                if self.is_include_discount_factor:
+                    fut_cost += (self.discount_factor ** tau) * (self.env.cost_fn(next_state_var, next_action_var, is_var=True) + penalty)
+                else:
+                    fut_cost += (self.env.cost_fn(next_state_var, next_action_var, is_var=True) + penalty)
+                prev_state_var = next_state_var
+                prev_action_var = next_action_var
+        fut_cost = fut_cost / self.sample_path_number
+        direct_model.setObjective(imm_cost + fut_cost, GRB.MINIMIZE)
+        return direct_model, state_linking_constraints, action_t_var
 
+    def solve(self, state, t=1, action=None, verbose=False):
+        flatten_state = flatten(state)
+        set_link_rhs(self.state_linking_constraints, flatten_state)
+        if action is not None:
+            self.set_action(action_var=self.action_t_var, action=action)
+        # Clean solution before resolving
+        self.direct_model.reset()
+        start = time.time()
+        if not solve_and_handle_errors(self.direct_model, verbose=verbose):
+            raise RuntimeError("Master model optimal solution not found")
+        print(f"Direct model solve time: {time.time() - start} seconds")
+        # ---------- 8. return ----------
+        action = self.get_solution(self.action_t_var, is_final=True)
+        return action, self.direct_model.ObjVal, {}
 
-    def direct_solve(self, state, t=1, action=None, verbose=False):
-        with (gp.Model("SA_Advance", env=self.grb_env) as m):
-            m.setParam('DualReductions', 0)
-            m.setParam("MultiObjPre", 0)
-            m.setParam('MIPFocus', 1)
-            m.setParam("FeasibilityTol", 1e-8)
-            m.setParam("OptimalityTol", 1e-8)
-            # ---------- 1. today’s increments ----------
-            action_t_var = self.get_action_var(model=m, advance_scheduling_type=GRB.INTEGER)
-            if action is not None:
-                self.set_action(action_var=action_t_var, action=action)
-            # add action constraint
-            self.add_action_space_constraints(model=m, state_var=state, action_var=action_t_var)
-            # ---------- 1. objective ----------
-            imm_cost = self.env.cost_fn(state, action_t_var, is_var=True)
-            fut_cost = 0
-            if not self.is_myopic:
-                # for every sample path
-                for omega in range(self.sample_path_number):
-                    prev_state_var = state
-                    prev_action_var = action_t_var
-                    for tau, new_arrival in enumerate(self.delta[omega], start=1):
-                        next_state_var = self.get_next_state(model=m,
-                                                          state=prev_state_var,
-                                                          action=prev_action_var,
-                                                          new_arrival=new_arrival)
-                        next_action_var = self.get_action_var(model=m, advance_scheduling_type=self.future_decision_var_type)
-                        self.add_action_space_constraints(model=m, state_var=next_state_var, action_var=next_action_var)
-                        fut_cost += self.env.cost_fn(next_state_var, next_action_var, is_var=True)
-                        # penalty for ALP
-                        penalty = np.dot(self.W, (self.env.arrival_generator.mean_by_type - new_arrival))
-                        fut_cost += penalty
-                        prev_state_var = next_state_var
-                        prev_action_var = next_action_var
-                fut_cost = fut_cost / self.sample_path_number
-            m.setObjective(imm_cost + fut_cost, GRB.MINIMIZE)
-            if not solve_and_handle_errors(m, verbose=verbose):
-                raise RuntimeError("Master model optimal solution not found")
-
-            # ---------- 8. return ----------
-            action = self.get_solution(action_t_var, is_final=True)
-            return action, m.ObjVal, {}
     
     def master_builder_fn(self):
         master_model = gp.Model(f"SA_Advance_Master", env=self.grb_env)
@@ -170,9 +187,9 @@ class InfinitePenalizedSAAAgent(InfiniteRTAgent):
             linking_constraints.append(constraint)
         return linking_constraints
 
-    def solve(self, state, t=1, action=None, verbose=False):
+    def benders_solve(self, state, t=1, action=None, verbose=False):
         if self.is_myopic or self.sample_path_number <= 1:
-            action, obj_value, info = self.direct_solve(state, t=t, action=action)
+            action, obj_value, info = self.solve(state, t=t, action=action)
             return action, obj_value, info
         
         if self.bender_solver is None:

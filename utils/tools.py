@@ -302,6 +302,15 @@ def acquire_grb_env(kwargs=None, verbose=False, wait=15):
             else:
                 raise  # some other licence error
 
+def flatten(vars):
+    list = []
+    for item in vars:
+        list.extend(item.reshape(-1))
+    return np.array(list)
+
+def set_link_rhs(linking_constraints, rhs_values):
+    for i, constr in enumerate(linking_constraints):
+        constr.setAttr("RHS", float(rhs_values[i]))
 
 if __name__ == '__main__':
     print(list(bounded_compositions(3, 10)))

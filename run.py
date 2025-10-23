@@ -33,7 +33,7 @@ def run_lower_bound_solver(experiment_name, param_value, env_args, agent_args, s
     with open(output_file, 'a') as f:  # 'a' will create the file if not present
         f.write(json.dumps(res) + '\n')
 
-def experiment(experiment_name, param_value, env_args, agent_args, sample_path, uid, job_id):
+def experiment(experiment_name, param_value, env_args, coefficients, agent_args, sample_path, uid, job_id):
     res = {'result':[]}
     res["uid"] = uid
     res["experiment_name"] = experiment_name
@@ -49,8 +49,12 @@ def experiment(experiment_name, param_value, env_args, agent_args, sample_path, 
     print('init state:', state)
     perfect_info_lower_bound_solver = InfiniteSAAAgent(env, discount_factor=env.discount_factor,current_decision_var_type=GRB.INTEGER,
                                             future_decision_var_type=GRB.INTEGER, sample_path=sample_path, is_include_discount_factor=True)
-    _, benchmark_value, info = perfect_info_lower_bound_solver.solve(state, t)
-    print('benchmark_value:', benchmark_value)
+    _, perfect_info_lower_bound, info = perfect_info_lower_bound_solver.solve(state, t)
+    print('benchmark_value:', perfect_info_lower_bound)
+    penalized_lower_bound_solver = InfinitePenalizedSAAAgent(env, discount_factor=env.discount_factor,current_decision_var_type=GRB.INTEGER,
+                                            future_decision_var_type=GRB.INTEGER, sample_path=sample_path, is_include_discount_factor=True, coeffecients=coefficients)
+    _, penalized_lower_bound, info = penalized_lower_bound_solver.solve(state, t)
+    print('benchmark_value:', penalized_lower_bound)
     for agent in agent_args:
         config = get_config_by_type(case_type='infinite_custom',args=env_args)
         env = config.env
@@ -74,9 +78,10 @@ def experiment(experiment_name, param_value, env_args, agent_args, sample_path, 
         states, rewards = evaluator.sample_path_evaluate(state, t, sample_path)
         G = 0.0
         for tau in reversed(range(len(rewards))):
-            G = 0.95 * G + rewards[tau]
+            G = env.discount_factor * G + rewards[tau]
         stats['value_function'] = G
-        stats['benchmark_value'] = benchmark_value
+        stats['perfect_info_lower_bound'] = perfect_info_lower_bound
+        stats['penalized_lower_bound'] = penalized_lower_bound
         wait_time_by_type =[]
         waiting_time_target_violations = []
         for type_i, running_stat in env.wait_time_by_type.items():
@@ -166,7 +171,7 @@ if __name__ == '__main__':
     args = parser.parse_args()
     params = json.loads(args.params)
     #alp_train(**params, job_id=args.job_id)
-    #experiment(**params, job_id=args.job_id)
+    experiment(**params, job_id=args.job_id)
     #value_function_experiment(**params, job_id=args.job_id)
-    run_lower_bound_solver(**params, job_id=args.job_id)
+    #run_lower_bound_solver(**params, job_id=args.job_id)
     
