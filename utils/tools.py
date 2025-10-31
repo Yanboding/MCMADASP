@@ -294,7 +294,7 @@ def acquire_grb_env(kwargs=None, verbose=False, wait=15):
             if verbose:
                 print('Get one token...')
             return grb_env  # success
-        except gp.GurobiError as e:
+        except Exception as e:
             if "All tokens currently in use" in str(e):
                 if verbose:
                     print('Waiting...')

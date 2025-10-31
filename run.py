@@ -33,6 +33,33 @@ def run_lower_bound_solver(experiment_name, param_value, env_args, agent_args, s
     with open(output_file, 'a') as f:  # 'a' will create the file if not present
         f.write(json.dumps(res) + '\n')
 
+def run_penalized_lower_bound_solver(experiment_name, param_value, env_args, agent_args, sample_path, uid, job_id):
+    coefficients = None
+    for agent_arg in agent_args:
+        if agent_arg['agent_name'] == 'col_gen_alp':
+            coefficients = agent_arg["args"]['coefficients']
+            break
+    if coefficients is None:
+        raise ValueError("No coefficients found for penalized lower bound solver.")
+    res = {}
+    res["uid"] = uid
+    res["experiment_name"] = experiment_name
+    res["param_value"] = param_value
+    t = 1  # Assuming a single time step for the experiment
+    config = get_config_by_type(case_type='infinite_custom',args=env_args)
+    env = config.env
+    config.reset_params['new_arrivals'] = sample_path
+    state, info = env.reset(**config.reset_params)
+    penalized_lower_bound_solver = InfinitePenalizedSAAAgent(env, discount_factor=env.discount_factor,current_decision_var_type=GRB.INTEGER,
+                                            future_decision_var_type=GRB.INTEGER, sample_path=sample_path, is_include_discount_factor=True, coeffecients=coefficients)
+    _, benchmark_value, info = penalized_lower_bound_solver.solve(state, t)
+    res['penalized_lower_bound'] = benchmark_value
+    output_file = os.path.join('experiments', 'results', experiment_name, f'{job_id}.jsonl')
+    # Make sure the parent directories exist
+    os.makedirs(os.path.dirname(output_file), exist_ok=True)
+    with open(output_file, 'a') as f:  # 'a' will create the file if not present
+        f.write(json.dumps(res) + '\n')
+
 def experiment(experiment_name, param_value, env_args, coefficients, agent_args, sample_path, uid, job_id):
     res = {'result':[]}
     res["uid"] = uid
@@ -98,6 +125,8 @@ def experiment(experiment_name, param_value, env_args, coefficients, agent_args,
             
         stats['waiting_time_target_violations'] = waiting_time_target_violations
         stats['overtime'] = env.overtime.tolist()
+        stats['postponing_decision_number'] = env.postponing_decision_number.tolist()
+        stats['waiting_number'] = env.waiting_number.tolist()
         res['result'].append(stats)
     output_file = os.path.join('experiments', 'results', experiment_name, f'{job_id}.jsonl')
     # Make sure the parent directories exist
@@ -174,4 +203,5 @@ if __name__ == '__main__':
     experiment(**params, job_id=args.job_id)
     #value_function_experiment(**params, job_id=args.job_id)
     #run_lower_bound_solver(**params, job_id=args.job_id)
+    #run_penalized_lower_bound_solver(**params, job_id=args.job_id)
     

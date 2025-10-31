@@ -155,9 +155,12 @@ class RTEnv:
         total_periods = self.decision_epoch + self.planning_horizon - 1
         self.overtime = np.array([0] * (total_periods - t + 1))
         self.waiting_time_target_violations = {j: RunningStats() for j in range(self.num_types)}
+        self.postponing_decision_number = np.array([[0] * self.num_types for _ in range(self.decision_epoch - t + 1)])
+        self.waiting_number = np.array([[0] * self.num_types for _ in range(self.decision_epoch - t + 1)])
         return copy.deepcopy(self.state), {'wait_time_by_type': self.wait_time_by_type,
                                            'overtime': self.overtime,
-                                           'target_violations': self.waiting_time_target_violations}
+                                           'target_violations': self.waiting_time_target_violations,
+                                           'postponing_decision_number': self.postponing_decision_number}
 
     def reset_arrivals(self, stop_time=None):
         # Generate a single random number from the geometric distribution
@@ -188,6 +191,7 @@ class RTEnv:
         return (regular_bookings, overtimes, new_arrivals)
 
     def step(self, action):
+        regular_bookings, overtimes, waitlist = self.state
         advance_scheduling_decision, overtime_decision = action
         cost = self.cost_fn(self.state, action)
         post_action_state = self.post_action_state(self.state, action)
@@ -203,6 +207,8 @@ class RTEnv:
         self.overtime[self.tau] = post_action_overtimes[0]
         if done:
             self.overtime[self.tau:] = post_action_overtimes
+        self.postponing_decision_number[self.tau] = post_action_waitlist
+        self.waiting_number[self.tau] = waitlist
         # update state
         self.tau += 1
         if self.t + self.tau > self.decision_epoch:
@@ -212,7 +218,9 @@ class RTEnv:
         self.state = self.post_action_state_to_new_state(post_action_state, delta)
         return self.state, cost, done, {'wait_time_by_type': self.wait_time_by_type, 
                                         'overtime': self.overtime, 
-                                        'target_violations': self.waiting_time_target_violations}
+                                        'target_violations': self.waiting_time_target_violations,
+                                        'postponing_decision_number': self.postponing_decision_number,
+                                        'waiting_number': self.waiting_number}
 
 
 if __name__ == '__main__':
@@ -222,8 +230,7 @@ if __name__ == '__main__':
     state, info = env.reset(**config.reset_params)
     advance_scheduling_decision = np.array([[3,9,7,6,4] for _ in range(env.booking_window_size)])
     advance_scheduling_decision[5:, :] = 0
-    print(advance_scheduling_decision)
     overtime_decision = np.array([5 for _ in range(env.planning_horizon)])
     action = (advance_scheduling_decision, overtime_decision)
     state, cost, done, info = env.step(action)
-    print(info['target_violations'])
+    print(info['waiting_number'])
