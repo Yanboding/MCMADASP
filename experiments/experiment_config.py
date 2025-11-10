@@ -70,26 +70,31 @@ class ExperimentConfig:
 
     @classmethod
     def from_ejor_default_case(cls):
-        treatment_patterns = ["1 * 1", "2 * 1", "3 * 1", "4 * 1", "5 * 1"]
-        #treatment_patterns = ["1 * 1", "2 * 1"]
-        arrival_rates = [3, 4, 5, 6, 7]
-        l = [[(0, 6, 0), (6, 100, 50)],
-             [(0, 9, 0), (9, 100, 50)],
-             [(0, 11, 0), (11, 100, 50)],
-             [(0, 13, 0), (13, 100, 50)],
-             [(0, 16, 0), (16, 100, 50)]]
+        #treatment_patterns = ["1 * 1", "2 * 1", "3 * 1", "4 * 1", "5 * 1"]
+        treatment_patterns = ["2 * 1", "1 * 2"]
+        booking_window_size = 5
+        treatment_num = len(treatment_patterns)
+        # arrival_rates = [3, 4, 5, 6, 7][:treatment_num]
+        arrival_rates = [4, 4]
+        # l = [[(0, 6, 0), (6, 100, 50)],
+        #      [(0, 9, 0), (9, 100, 50)],
+        #      [(0, 11, 0), (11, 100, 50)],
+        #      [(0, 13, 0), (13, 100, 50)],
+        #      [(0, 16, 0), (16, 100, 50)]]
+        l = [[(0, 1, 0), (1, 100, 50)],
+             [(0, 2, 0), (2, 100, 50)],]
         holding_cost = [wait_time(l[i]) for i in range(len(treatment_patterns))]
         holding_cost = np.array(holding_cost).T
         env_args = {
-            "booking_window_size": 25,
+            "booking_window_size": booking_window_size,
             "arrival_rates": arrival_rates,
             "patterns": treatment_patterns,
             "holding_cost_by_day_by_type": holding_cost.tolist(),
             "overtime_cost_by_day": 100,
-            "postponing_cost": 2000,
+            "postponing_cost": 200,
             "duration": 1,
-            "regular_capacity": 50,
-            "overtime_capacity": 6,
+            "regular_capacity": 5,
+            "overtime_capacity": 2,
             "discount_factor": 0.95,
             "reset_params": {
                 'percentage_occupied': 0.95,

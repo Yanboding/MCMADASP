@@ -217,12 +217,12 @@ def _generate_alp_train_params(config_type, experiment_name, param_name, param_v
             for key in keys[:-1]:
                 d = d.setdefault(key, {})
             d[keys[-1]] = value
-        yield env_args_for_value
+        yield env_args_for_value, value
 
 def generate_alp_train_params(experiment_configs, dat_file):
     with open(dat_file, 'w') as f:
         for name, config in experiment_configs.items():
-            for env_arg in  _generate_alp_train_params(
+            for env_arg, param_value in  _generate_alp_train_params(
                                        config_type=config['config_type'],
                                        experiment_name=name,
                                        param_name=config['param_name'],
@@ -230,7 +230,7 @@ def generate_alp_train_params(experiment_configs, dat_file):
                                        base_env_args_overrides=config.get('base_env_args_overrides'),
                                        param_modifier_fn=config.get('param_modifier_fn')):
                 for train_type in ["col_gen","row_gen"]:
-                    line = "python run.py --params '" + json.dumps({'env_args':env_arg, 'experiment_name': name, 'train_type': train_type}) + "'\n"
+                    line = "python run.py --params '" + json.dumps({'env_args':env_arg, 'experiment_name': name, "param_value": param_value, 'train_type': train_type}) + "'\n"
                     f.write(line)
 
 if __name__ == '__main__':
@@ -280,12 +280,28 @@ if __name__ == '__main__':
         }
     }
     '''
+    '''
+    'occupancy_level': {
+        'config_type': 'ejor_default',
+        'param_name': 'reset_params.percentage_occupied',
+        'param_values': [0.5, 0.7, 0.9],
+    },
+    '''
+    '''
     EXPERIMENT_CONFIGS = {
-        'occupancy_level': {
+        'postponing_cost': {
+            'config_type': 'ejor_default',
+            'param_name': 'postponing_cost',
+            'param_values': [500, 600, 700],
+        }
+    }
+    '''
+    EXPERIMENT_CONFIGS = {
+        'occupency_level_simple': {
             'config_type': 'ejor_default',
             'param_name': 'reset_params.percentage_occupied',
-            'param_values': [0.85, 0.95],
-        },
+            'param_values': [0, 0.5, 0.8],
+        }
     }
     '''
     booking window size
@@ -296,9 +312,10 @@ if __name__ == '__main__':
         'demand_rate': 2000,
         'decision_epoch': 2000,
         'overtime_cost_by_day': 2000,
-        'occupancy_level': 1000,
+        'occupancy_level': 2000,
         'discount_factor':2000,
-        'percentage_occupied':2000
+        'percentage_occupied':2000,
+        'postponing_cost': 2000
     }
     '''
     # --- Run All Experiments ---
@@ -315,4 +332,3 @@ if __name__ == '__main__':
         dat_file='table.dat',
         is_reuse=False # Set to True to avoid regenerating files and only create the .dat
     )
-    
