@@ -261,7 +261,7 @@ def generate_simulation_params(config_type, experiment_name, warm_up_periods, te
                 #{'agent_name': 'hindsight_approx_with_penalty', 'args': {'sample_path_number': 350, 'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False, 'coeffecients':col_alp_args['args']['coefficients']}},
                 {'agent_name': 'myopic', 'args': {}},
                 #col_alp_args,
-                row_alp_args
+                #row_alp_args
                 ]
     lines_to_write = []
     for command_id in range(test_sample_path_num):
@@ -374,13 +374,13 @@ if __name__ == '__main__':
         'percentage_occupied':2000,
         'postponing_cost': 2000
     }
-    
+    '''
     # --- Run All Experiments ---
     generate_alp_train_params(
         experiment_configs=EXPERIMENT_CONFIGS,
         dat_file = 'table.dat',
     )
-    
+    '''
     '''
     generate_all_experiments(
         config_type='ejor_default',
@@ -390,10 +390,10 @@ if __name__ == '__main__':
         is_reuse=False # Set to True to avoid regenerating files and only create the .dat
     )
     '''
-    # generate_simulation_params(config_type='ejor', 
-    #                            experiment_name='steady_state', 
-    #                            warm_up_periods=750,
-    #                            test_sample_path_num=10,
-    #                            num_periods=1500,
-    #                            dat_file='table.dat')
+    generate_simulation_params(config_type='ejor', 
+                               experiment_name='steady_state', 
+                               warm_up_periods=750,
+                               test_sample_path_num=10,
+                               num_periods=1500,
+                               dat_file='table.dat')
     
