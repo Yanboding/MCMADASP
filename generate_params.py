@@ -229,9 +229,66 @@ def generate_alp_train_params(experiment_configs, dat_file):
                                        param_values=config['param_values'],
                                        base_env_args_overrides=config.get('base_env_args_overrides'),
                                        param_modifier_fn=config.get('param_modifier_fn')):
+                print(get_uid(env_arg))
                 for train_type in ["col_gen","row_gen"]:
                     line = "python run.py --params '" + json.dumps({'env_args':env_arg, 'experiment_name': name, "param_value": param_value, 'train_type': train_type}) + "'\n"
                     f.write(line)
+
+def generate_simulation_params(config_type, experiment_name, warm_up_periods, test_sample_path_num, num_periods, dat_file):
+    '''
+    1. start from config_type, get environment arguments
+    2. create a copy of arguments for sample path simulation
+    3. generate a sample path using the copied arguments
+    4. make sure the occumency percantage is 0 in the reset parameter
+    5. add warm_up_period to the final requrest body
+    6. generate uid for this parameter
+    7. for each agent, generate a line to evaluate the performance of the agent on this sample path
+    '''
+    env_args = get_config_by_type(config_type).args
+    env_args['reset_params']['percentage_occupied'] = 0
+    env_uid = get_uid(env_args)
+    print(env_uid)
+    alp_train_res = {}
+    directory_path = os.path.join('experiments', 'results', experiment_name)
+    for line in read_lines_with_pattern(directory_path, 'alp_train*.jsonl'):
+        line = json.loads(line)
+        agent_type = line['result']['agent_name']
+        alp_train_res[line['uid']+agent_type] = line['result']
+    col_alp_args = alp_train_res.get(env_uid+'col_gen_alp', {'agent_name': 'alp', 'args': {'coefficients': None}})
+    row_alp_args = alp_train_res.get(env_uid+'row_gen_alp', {'agent_name': 'alp', 'args': {'coefficients': None}})
+    agent_args = [
+                #{'agent_name': 'hindsight_approx', 'args': {'sample_path_number': 350, 'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False}},
+                #{'agent_name': 'hindsight_approx_with_penalty', 'args': {'sample_path_number': 350, 'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False, 'coeffecients':col_alp_args['args']['coefficients']}},
+                {'agent_name': 'myopic', 'args': {}},
+                #col_alp_args,
+                row_alp_args
+                ]
+    lines_to_write = []
+    for command_id in range(test_sample_path_num):
+        sample_gen_args = copy.deepcopy(env_args)
+        sample_gen_args['arrival_random_seed'] = command_id + 100 # Seed for sample path generation
+        sample_gen_args['stop_time_random_seed'] = command_id + 400
+        config_for_sample_path = get_config_by_type('infinite_custom', args=sample_gen_args)
+        env_for_sample_path = config_for_sample_path.env
+        sample_path = env_for_sample_path.reset_arrivals(stop_time=num_periods) if env_for_sample_path else [[]]
+        sample_path = sample_path.tolist() if hasattr(sample_path, 'tolist') else sample_path
+        params = {
+            'env_args':env_args,
+            'experiment_name': experiment_name,
+            'warm_up_periods':warm_up_periods,
+            'sample_path': sample_path,
+        }
+        uid = get_uid(params)
+        params = {
+            'uid': uid,
+            **params
+        }
+        for agent_arg in agent_args:
+            params['agent_arg'] = agent_arg
+            lines_to_write.append("python run.py --params '" + json.dumps(params) + "'\n")
+    with open(dat_file, 'w') as f:
+        f.writelines(lines_to_write)
+
 
 if __name__ == '__main__':
     # --- Define Experiment-Specific Logic ---
@@ -297,10 +354,10 @@ if __name__ == '__main__':
     }
     '''
     EXPERIMENT_CONFIGS = {
-        'occupency_level_simple': {
-            'config_type': 'ejor_default',
+        'steady_state': {
+            'config_type': 'ejor',
             'param_name': 'reset_params.percentage_occupied',
-            'param_values': [0, 0.5, 0.8],
+            'param_values': [0],
         }
     }
     '''
@@ -317,7 +374,7 @@ if __name__ == '__main__':
         'percentage_occupied':2000,
         'postponing_cost': 2000
     }
-    '''
+    
     # --- Run All Experiments ---
     generate_alp_train_params(
         experiment_configs=EXPERIMENT_CONFIGS,
@@ -332,3 +389,11 @@ if __name__ == '__main__':
         dat_file='table.dat',
         is_reuse=False # Set to True to avoid regenerating files and only create the .dat
     )
+    '''
+    # generate_simulation_params(config_type='ejor', 
+    #                            experiment_name='steady_state', 
+    #                            warm_up_periods=750,
+    #                            test_sample_path_num=10,
+    #                            num_periods=1500,
+    #                            dat_file='table.dat')
+    

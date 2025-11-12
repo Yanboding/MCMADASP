@@ -31,6 +31,7 @@ class PolicyEvaluator:
 
     def sample_path_evaluate(self, state, t, sample_path, action=None):
         states = []
+        actions = []
         rewards = []
         s, info = self.env.reset(state, t, sample_path)
         for tau in range(len(sample_path)):
@@ -40,19 +41,20 @@ class PolicyEvaluator:
                 a = action
             else:
                 a = self.agent.policy(s, t + tau)
+            actions.append(a)
             next_state, reward, done, info = self.env.step(a)
             rewards.append(reward)
             s = next_state
             if done:
                 break
-        return states, rewards
+        return states, actions, rewards
 
     def simulation_evaluate_helper(self, state, t, sample_paths, action=None):
         if self.is_inf:
             self.discount_factor = 1
         sample_average_V = defaultdict(lambda: RunningStats())
         for sample_path in sample_paths:
-            states, rewards = self.sample_path_evaluate(state,t,sample_path, action=action)
+            states, actions, rewards = self.sample_path_evaluate(state,t,sample_path, action=action)
             G = 0.0
             for tau in reversed(range(len(states))):
                 G = self.discount_factor * G + rewards[tau]

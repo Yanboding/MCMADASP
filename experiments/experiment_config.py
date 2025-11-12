@@ -138,7 +138,7 @@ class ExperimentConfig:
                          0.29, 0.15, 0.04][:class_num]
         total_arrival_rate = sum(arrival_rates)
         env_args = {
-            "booking_window_size": 50,
+            "booking_window_size": 100,
             'arrival_rates': arrival_rates,
             'patterns': ['1 * 2 + 4 * 1',
                          '1 * 2',
@@ -160,11 +160,11 @@ class ExperimentConfig:
                          '1 * 2 + 32 * 1'][:class_num],
             'holding_cost_by_day_by_type': holding_cost[:, :class_num].tolist(),
             'overtime_cost_by_day': 100,
-            "postponing_cost": 5000,
+            "postponing_cost": 2000,
             'duration': 1,
             'regular_capacity': 120,
             "overtime_capacity": 15,
-            'discount_factor': 0.95,
+            'discount_factor': 0.99,
             'reset_params': {
                 'percentage_occupied': 0.99,
                 't': 1

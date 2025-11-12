@@ -102,7 +102,7 @@ def experiment(experiment_name, param_value, env_args, coefficients, agent_args,
         elif agent_name == 'row_gen_alp':
             agent_instance = ALPRowGenerationAgent(env, discount_factor=env.discount_factor, **args)
         evaluator = PolicyEvaluator(env, agent_instance, env.discount_factor)
-        states, rewards = evaluator.sample_path_evaluate(state, t, sample_path)
+        states, actions, rewards = evaluator.sample_path_evaluate(state, t, sample_path)
         G = 0.0
         for tau in reversed(range(len(rewards))):
             G = env.discount_factor * G + rewards[tau]
@@ -158,7 +158,7 @@ def value_function_experiment(experiment_name, param_value, env_args, agent_args
         elif agent_name == 'alp':
             agent_instance = ALPEJORColumnGenerationAgent(env, discount_factor=env.discount_factor, **args)
         evaluator = PolicyEvaluator(env, agent_instance, env.discount_factor)
-        states, rewards = evaluator.sample_path_evaluate(state, t, sample_path)
+        states, actions, rewards = evaluator.sample_path_evaluate(state, t, sample_path)
         stats['value_function'] = sum(rewards)
         '''
         if agent_name == "hindsight_value":
@@ -193,14 +193,37 @@ def alp_train(env_args, experiment_name, param_value, train_type="col_gen", job_
     with safe_open(output_file, 'a') as f:  # 'a' will create the file if not present
         f.write(json.dumps({'uid':get_uid(env_args), 'result': {'agent_name': f'{train_type}_alp', 'obj_val': obj_val, 'param_value':param_value, 'args': {'coefficients':coefficients}}}) + '\n')
 
+def simulate_evaluation(env_args, experiment_name, agent_arg,  sample_path, uid, job_id):
+    t = 1  # Assuming a single time step for the experiment
+    for agent in agent_args:
+        config = get_config_by_type(case_type='infinite_custom',args=env_args)
+        env = config.env
+        agent_name, args = agent['agent_name'], agent['args']
+        stats = {'agent_name': agent_name}
+        config.reset_params['new_arrivals'] = sample_path
+        state, info = env.reset(**config.reset_params)
+        if agent_name in {"hindsight_approx"}:
+            agent_instance = InfiniteSAAAgent(env, discount_factor=env.discount_factor, **args)
+        elif agent_name in {"hindsight_approx_with_penalty"}:
+            agent_instance = InfinitePenalizedSAAAgent(env, discount_factor=env.discount_factor, **args)
+        elif agent_name == "myopic":
+            agent_instance = MyopicAgent(env, discount_factor=env.discount_factor, **args)
+        elif agent_name == 'col_gen_alp':
+            agent_instance = ALPEJORColumnGenerationAgent(env, discount_factor=env.discount_factor, **args)
+        elif agent_name == 'row_gen_alp':
+            agent_instance = ALPRowGenerationAgent(env, discount_factor=env.discount_factor, **args)
+        evaluator = PolicyEvaluator(env, agent_instance, env.discount_factor)
+        states, actions, rewards = evaluator.sample_path_evaluate(state, t, sample_path)
+        
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Example of using argparse to pass in a list of lists.")
     parser.add_argument('--params', help='Input JSON-encoded list of lists', type=str)
     parser.add_argument('--job_id', help='Input METAJOB_ID', type=str)
     args = parser.parse_args()
     params = json.loads(args.params)
-    #alp_train(**params, job_id=args.job_id)
-    experiment(**params, job_id=args.job_id)
+    alp_train(**params, job_id=args.job_id)
+    #experiment(**params, job_id=args.job_id)
     #value_function_experiment(**params, job_id=args.job_id)
     #run_lower_bound_solver(**params, job_id=args.job_id)
     #run_penalized_lower_bound_solver(**params, job_id=args.job_id)
