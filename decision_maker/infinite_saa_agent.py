@@ -106,7 +106,7 @@ class InfiniteSAAAgent(InfiniteRTAgent):
         direct_model.setObjective(imm_cost + fut_cost, GRB.MINIMIZE)
         return direct_model, state_linking_constraints, action_t_var
     
-    def solve(self, state, t=1, action=None, verbose=True):
+    def direct_solve(self, state, t=1, action=None, verbose=True):
         flatten_state = flatten(state)
         set_link_rhs(self.state_linking_constraints, flatten_state)
         if action is not None:
@@ -122,9 +122,11 @@ class InfiniteSAAAgent(InfiniteRTAgent):
     
     def master_builder_fn(self):
         master_model = gp.Model(f"SA_Advance_Master", env=self.grb_env)
-        master_model.setParam('DualReductions', 0)
         master_model.setParam("MultiObjPre", 0)
-        master_model.setParam('MIPFocus', 1)
+        master_model.setParam("MIPGapAbs", 1e-9)         # Enforce extremely tight absolute gap
+        master_model.setParam("MIPGap", 1e-9)
+        master_model.setParam("FeasibilityTol", 1e-9)
+        master_model.setParam("OptimalityTol", 1e-9)
         state_var = self.get_state_var(master_model)
         state_linking_constraints = self.build_state_linking_constraints(master_model, state_var)
         # create action variables in period t
@@ -145,8 +147,8 @@ class InfiniteSAAAgent(InfiniteRTAgent):
         # Forbidden the model to simplify the model(remove variables/constraints, tighten bounds, etc.). 
         sub_model.setParam('DualReductions', 0)
         sub_model.setParam("MultiObjPre", 0)
-        sub_model.setParam("FeasibilityTol", 1e-8)
-        sub_model.setParam("OptimalityTol", 1e-8)
+        sub_model.setParam("FeasibilityTol", 1e-9)
+        sub_model.setParam("OptimalityTol", 1e-9)
         state_var = self.get_state_var(sub_model)
         state_linking_constraints = self.build_state_linking_constraints(sub_model, state_var)
         action_t_var = self.get_action_var(model=sub_model, advance_scheduling_type=GRB.CONTINUOUS)
@@ -168,7 +170,7 @@ class InfiniteSAAAgent(InfiniteRTAgent):
         sub_model.setObjective(fut_cost, GRB.MINIMIZE)
         return sub_model, action_linking_constraints, state_linking_constraints
 
-    def benders_solve(self, state, t=1, action=None, verbose=True):
+    def solve(self, state, t=1, action=None, verbose=True):
         if self.is_myopic or self.sample_path_number <= 1:
             action, obj_value, info = self.direct_solve(state, t=t, action=action)
             return action, obj_value, info

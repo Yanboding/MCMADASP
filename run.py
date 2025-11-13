@@ -220,6 +220,9 @@ def simulate_evaluation(env_args, experiment_name, agent_arg,  warm_up_periods, 
     stats['total_scheduled_patients'] = np.sum(scheduled_patients, axis=0).tolist()
     stats['overtime'] = env.overtime.tolist()
     stats['postponing_decision_number'] = env.postponing_decision_number.tolist()
+    stats['states'] = states
+    stats['actions'] = actions
+    stats['rewards'] = rewards
     res = {
         "uid": uid,
         "experiment_name": experiment_name,

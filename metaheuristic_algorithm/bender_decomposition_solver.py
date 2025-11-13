@@ -129,10 +129,11 @@ class BenderDecompositionSolver:
             **self.master_builder_args)
         flatten_state = flatten(state)
         set_link_rhs(self.state_linking_constraints, flatten_state)
-        
+        self.master_model.reset()
         flat_action_t_var = flatten(self.action_t_var)
         for worker in self.workers:
             set_link_rhs(worker.state_linking_constraints, flatten_state)
+            worker.model.reset()
         for iteration in range(1, max_iter + 1):
             if not solve_and_handle_errors(self.master_model, verbose=verbose):
                 raise RuntimeError("Master model optimal solution not found")
