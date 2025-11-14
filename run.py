@@ -9,7 +9,7 @@ import pandas as pd
 from gurobipy import GRB
 
 from experiments.experiment_config import get_config_by_type
-from utils import iter_to_tuple, get_uid, safe_open, RunningStats
+from utils import iter_to_tuple, get_uid, safe_open, RunningStats, encode
 from decision_maker import ALPEJORColumnGenerationAgent, InfiniteSAAAgent, InfinitePenalizedSAAAgent, MyopicAgent, ALPRowGenerationAgent
 from policy_evaluator import PolicyEvaluator
 
@@ -217,11 +217,12 @@ def simulate_evaluation(env_args, experiment_name, agent_arg,  warm_up_periods, 
     scheduled_patients = []
     for (advance_scheduling_decision, overtime_decision) in actions[warm_up_periods:]:
         scheduled_patients.append(advance_scheduling_decision)
+    stats['total_cost'] = sum(rewards[warm_up_periods:])
     stats['total_scheduled_patients'] = np.sum(scheduled_patients, axis=0).tolist()
     stats['overtime'] = env.overtime.tolist()
     stats['postponing_decision_number'] = env.postponing_decision_number.tolist()
-    stats['states'] = states
-    stats['actions'] = actions
+    stats['states'] = encode(states)
+    stats['actions'] = encode(actions)
     stats['rewards'] = rewards
     res = {
         "uid": uid,

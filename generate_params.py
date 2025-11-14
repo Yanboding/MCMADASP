@@ -392,8 +392,8 @@ if __name__ == '__main__':
     '''
     generate_simulation_params(config_type='ejor', 
                                experiment_name='steady_state', 
-                               warm_up_periods=7,
+                               warm_up_periods=750,
                                test_sample_path_num=10,
-                               num_periods=15,
+                               num_periods=1500,
                                dat_file='table.dat')
     

@@ -312,6 +312,23 @@ def set_link_rhs(linking_constraints, rhs_values):
     for i, constr in enumerate(linking_constraints):
         constr.setAttr("RHS", float(rhs_values[i]))
 
+# Custom encoder
+def encode(obj):
+    if isinstance(obj, np.ndarray):
+        return obj.tolist()
+    if isinstance(obj, tuple):
+        return {"__tuple__": True, "items": [encode(x) for x in obj]}
+    if isinstance(obj, list):
+        return [encode(x) for x in obj]
+    return obj
+
+def decode(obj):
+    if isinstance(obj, dict) and obj.get("__tuple__"):
+        return tuple(decode(x) for x in obj["items"])
+    if isinstance(obj, list):
+        return [decode(x) for x in obj]
+    return obj
+
 if __name__ == '__main__':
     print(list(bounded_compositions(3, 10)))
 
