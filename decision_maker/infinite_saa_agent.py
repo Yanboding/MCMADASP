@@ -19,20 +19,24 @@ def set_link_rhs(linking_constraints, rhs_values):
 
 class InfiniteSAAAgent(InfiniteRTAgent):
 
-    def __init__(self, env, discount_factor, V=None, Q=None, sample_path_number=100, current_decision_var_type='integer', future_decision_var_type='continuous', is_myopic=False, sample_path=None, is_include_discount_factor=False, verbose=False):
+    def __init__(self, env, discount_factor, V=None, Q=None, sample_path_number=100, current_decision_var_type='integer', future_decision_var_type='continuous', is_myopic=False, sample_path=None, is_include_discount_factor=False, sample_path_length=None, verbose=False):
         super().__init__(env, discount_factor, V=V, Q=Q)
         self.sample_path_number = sample_path_number
         self.current_decision_var_type = GRB.INTEGER if current_decision_var_type is None or current_decision_var_type == 'integer' else GRB.CONTINUOUS
         self.future_decision_var_type = GRB.INTEGER if future_decision_var_type is None or future_decision_var_type == 'integer' else GRB.CONTINUOUS
         self.is_myopic = is_myopic
         self.sample_path = sample_path
+        self.sample_path_length = sample_path_length
         self.delta = []
         if self.sample_path is not None:
             print('length of sample path:', len(self.sample_path))
             self.set_sample_path(self.sample_path[1:])
         if not is_myopic and sample_path is None:
             for omega in range(self.sample_path_number):
-                new_arrivals = self.env.reset_arrivals()[1:]
+                if self.sample_path_length is None:
+                    new_arrivals = self.env.reset_arrivals()[1:]
+                else:
+                    new_arrivals = self.env.reset_arrivals(self.sample_path_length)[1:]
                 self.delta.append(new_arrivals)
                 print(f'sample path {omega} length:', len(new_arrivals))
         self.bender_solver = None
@@ -164,7 +168,10 @@ class InfiniteSAAAgent(InfiniteRTAgent):
                                                  new_arrival=new_arrival)
             next_action_var = self.get_action_var(model=sub_model, advance_scheduling_type=self.future_decision_var_type)
             self.add_action_space_constraints(model=sub_model, state_var=next_state_var, action_var=next_action_var)
-            fut_cost += self.env.cost_fn(next_state_var, next_action_var, is_var=True)
+            if self.is_include_discount_factor:
+                fut_cost += (self.discount_factor ** tau) * self.env.cost_fn(next_state_var, next_action_var, is_var=True)
+            else:
+                fut_cost += self.env.cost_fn(next_state_var, next_action_var, is_var=True)
             prev_state_var = next_state_var
             prev_action_var = next_action_var
         sub_model.setObjective(fut_cost, GRB.MINIMIZE)

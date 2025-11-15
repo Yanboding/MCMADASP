@@ -217,12 +217,16 @@ def simulate_evaluation(env_args, experiment_name, agent_arg,  warm_up_periods, 
     scheduled_patients = []
     for (advance_scheduling_decision, overtime_decision) in actions[warm_up_periods:]:
         scheduled_patients.append(advance_scheduling_decision)
-    stats['total_cost'] = sum(rewards[warm_up_periods:])
+    rewards_after_warmup = rewards[warm_up_periods:]
+    stats['total_cost'] = sum(rewards_after_warmup)
+    discounted_cost_after_warmup = 0.0
+    for tau in reversed(range(len(rewards_after_warmup))):
+        discounted_cost_after_warmup = 0.99 * discounted_cost_after_warmup + rewards_after_warmup[tau]
     stats['total_scheduled_patients'] = np.sum(scheduled_patients, axis=0).tolist()
     stats['overtime'] = env.overtime.tolist()
     stats['postponing_decision_number'] = env.postponing_decision_number.tolist()
-    stats['states'] = encode(states)
-    stats['actions'] = encode(actions)
+    #stats['states'] = encode(states)
+    #stats['actions'] = encode(actions)
     stats['rewards'] = rewards
     res = {
         "uid": uid,
