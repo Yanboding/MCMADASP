@@ -27,7 +27,10 @@ class SubproblemWorker:
         self.verbose = verbose
         # Build the model and linking constraints inside THIS env.
         builder_args['scenario_id'] = subproblem_id
+        start = time.time()
         self.model, self.link_rows, self.state_linking_constraints = builder_fn(**builder_args)
+        end = time.time()
+        print(f"Finished building subproblem for scenario {subproblem_id} in {end - start} seconds")
         self.subproblem_id = subproblem_id
 
     def set_link_rhs(self, action_values):
@@ -115,6 +118,7 @@ class BenderDecompositionSolver:
         self.subproblem_builder_args = subproblem_builder_args
         #self.master_model, self.imm_cost, self.theta_vars, self.action_t_var, self.state_linking_constraints = self.master_builder_fn(**master_builder_args)
         # Build one worker per scenario once, then reuse
+
         self.workers = [
             SubproblemWorker(self.subproblem_builder_fn, self.subproblem_builder_args, sid)
             for sid in range(self.num_subproblems)
@@ -123,13 +127,10 @@ class BenderDecompositionSolver:
     def solve(self, state, action=None, tol=1e-6, max_iter=15000, verbose=False):
         lower_bound = -GRB.INFINITY
         upper_bound = GRB.INFINITY
-        prev_upper_bound = GRB.INFINITY
-        prev_lower_bound = -GRB.INFINITY
         self.master_model, self.imm_cost, self.theta_vars, self.action_t_var, self.state_linking_constraints = self.master_builder_fn(
             **self.master_builder_args)
         flatten_state = flatten(state)
         set_link_rhs(self.state_linking_constraints, flatten_state)
-        self.master_model.reset()
         flat_action_t_var = flatten(self.action_t_var)
         for worker in self.workers:
             set_link_rhs(worker.state_linking_constraints, flatten_state)
@@ -182,14 +183,8 @@ class BenderDecompositionSolver:
                     print('Rwong upper_bound:', upper_bound)
                     print('Rwong lower_bound:', lower_bound)
                     raise RuntimeError("Lower bound exceeded upper bound")
-                if lower_bound == prev_lower_bound and iteration > 20:
-                    print('No improvement upper_bound:', upper_bound)
-                    print('No improvement lower_bound:', lower_bound)
-                    raise RuntimeError('No improvement in bounds; terminating early')
             print('upper_bound:', upper_bound)
             print('lower_bound:', lower_bound)
-            prev_upper_bound = upper_bound
-            prev_lower_bound = lower_bound
             print('-' * 20)
         print('Max iterations reached')
         action_t = self.get_solution(self.action_t_var, is_final=True)

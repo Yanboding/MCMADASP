@@ -41,7 +41,7 @@ class InfiniteSAAAgent(InfiniteRTAgent):
                 print(f'sample path {omega} length:', len(new_arrivals))
         self.bender_solver = None
         self.is_include_discount_factor = is_include_discount_factor
-        self.direct_model, self.state_linking_constraints, self.action_t_var = self.direct_builder_fn()
+        self.direct_model, self.state_linking_constraints, self.action_t_var = None, None, None
 
     def set_sample_path(self, sample_path):
         self.sample_path_number = 1
@@ -111,6 +111,8 @@ class InfiniteSAAAgent(InfiniteRTAgent):
         return direct_model, state_linking_constraints, action_t_var
     
     def direct_solve(self, state, t=1, action=None, verbose=True):
+        if self.direct_model is None:
+            self.direct_model, self.state_linking_constraints, self.action_t_var = self.direct_builder_fn()
         flatten_state = flatten(state)
         set_link_rhs(self.state_linking_constraints, flatten_state)
         if action is not None:

@@ -40,7 +40,10 @@ class PolicyEvaluator:
             if tau == 0 and action:
                 a = action
             else:
+                start = time.time()
                 a = self.agent.policy(s, t + tau)
+                end = time.time()
+                print(f"Policy {t + tau} computation time: {end - start} seconds")
             actions.append(a)
             next_state, reward, done, info = self.env.step(a)
             rewards.append(reward)
