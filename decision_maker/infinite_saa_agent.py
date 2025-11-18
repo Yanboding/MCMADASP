@@ -1,10 +1,11 @@
 import numpy as np
 import gurobipy as gp
+import json
 from gurobipy import GRB
 
 from decision_maker import InfiniteRTAgent
 from metaheuristic_algorithm import BenderDecompositionSolver
-from utils import solve_and_handle_errors
+from utils import solve_and_handle_errors, encode
 
 
 def flatten(vars):
@@ -192,11 +193,19 @@ class InfiniteSAAAgent(InfiniteRTAgent):
                                                         get_solution=self.get_solution,
                                                         flatten_fn=None,
                                                         num_subproblems=self.sample_path_number)
+        
         action_t, upper_bound, info = self.bender_solver.solve(state=state,
-                                                               action=action,
+                                                            action=action,
                                                                 tol=1e-6,
                                                                 max_iter=12000,
                                                                 verbose=verbose)
+        if 'debug_info' in info:
+            debug_info = {
+                'state': encode(state),
+                'sample_paths': encode(self.delta)
+            }
+            with open('bender_error_info.json', 'w') as f:
+                f.write(json.dumps(debug_info))
         return action_t, upper_bound, info
 
 if __name__ == "__main__":

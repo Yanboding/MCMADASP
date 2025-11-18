@@ -5,7 +5,7 @@ from gurobipy import GRB
 from decision_maker import InfiniteRTAgent
 import concurrent.futures
 
-from utils import solve_and_handle_errors, clean_value
+from utils import solve_and_handle_errors
 
 
 def flatten(vars):
@@ -182,7 +182,11 @@ class BenderDecompositionSolver:
                 if lower_bound > upper_bound:
                     print('Rwong upper_bound:', upper_bound)
                     print('Rwong lower_bound:', lower_bound)
-                    raise RuntimeError("Lower bound exceeded upper bound")
+                    print("Lower bound exceeded upper bound")
+                    # save more state here for debugging
+                    #raise RuntimeError("Lower bound exceeded upper bound")
+                    action_t = self.get_solution(self.action_t_var, is_final=True)
+                    return action_t, upper_bound, {'debug':'lower_bound_exceeded_upper_bound'}
             print('upper_bound:', upper_bound)
             print('lower_bound:', lower_bound)
             print('-' * 20)

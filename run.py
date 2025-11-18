@@ -194,6 +194,7 @@ def alp_train(env_args, experiment_name, param_value, train_type="col_gen", job_
         f.write(json.dumps({'uid':get_uid(env_args), 'result': {'agent_name': f'{train_type}_alp', 'obj_val': obj_val, 'param_value':param_value, 'args': {'coefficients':coefficients}}}) + '\n')
 
 def simulate_evaluation(env_args, experiment_name, agent_arg,  warm_up_periods, sample_path, uid, job_id):
+    print('Simulate evaluation on uid:', uid, agent_arg['agent_name'])
     t = 1  # Assuming a single time step for the experiment
     config = get_config_by_type(case_type='infinite_custom',args=env_args)
     env = config.env
