@@ -1,5 +1,6 @@
 import argparse
 import json
+import pickle
 import os
 import time
 from pprint import pprint
@@ -9,7 +10,7 @@ import pandas as pd
 from gurobipy import GRB
 
 from experiments.experiment_config import get_config_by_type
-from utils import iter_to_tuple, get_uid, safe_open, RunningStats, encode
+from utils import iter_to_tuple, get_uid, safe_open, RunningStats, encode, decode
 from decision_maker import ALPEJORColumnGenerationAgent, InfiniteSAAAgent, InfinitePenalizedSAAAgent, MyopicAgent, ALPRowGenerationAgent
 from policy_evaluator import PolicyEvaluator
 
@@ -193,14 +194,42 @@ def alp_train(env_args, experiment_name, param_value, train_type="col_gen", job_
     with safe_open(output_file, 'a') as f:  # 'a' will create the file if not present
         f.write(json.dumps({'uid':get_uid(env_args), 'result': {'agent_name': f'{train_type}_alp', 'obj_val': obj_val, 'param_value':param_value, 'args': {'coefficients':coefficients}}}) + '\n')
 
-def simulate_evaluation(env_args, experiment_name, agent_arg,  warm_up_periods, sample_path, uid, job_id):
+def load_pickle_if_exists(path):
+    """Return file contents if the file exists, otherwise return None."""
+    if os.path.isfile(path):
+        with open(path, 'rb') as f:
+            return pickle.load(f)
+    return None
+
+def simulate_evaluation(env_args, experiment_name, agent_arg,  warm_up_periods, sample_path, uid, job_id, states=None, actions=None, rewards=None):
     print('Simulate evaluation on uid:', uid, agent_arg['agent_name'])
-    t = 1  # Assuming a single time step for the experiment
-    config = get_config_by_type(case_type='infinite_custom',args=env_args)
-    env = config.env
-    agent_name, args = agent_arg['agent_name'], agent_arg['args']
+    # t = 1  # Assuming a single time step for the experiment
+    # 1) Build config and base env
+    config = get_config_by_type(case_type='infinite_custom', args=env_args)
     config.reset_params['new_arrivals'] = sample_path
-    state, info = env.reset(**config.reset_params)
+    env = config.env
+    t0 = config.reset_params.get('t', 1)
+
+    aid = get_uid(agent_arg)
+    pickle_file = os.path.join('experiments', 'results', experiment_name,
+                               f'{uid}-{aid}.pickle')
+
+    data = load_pickle_if_exists(pickle_file)
+    # 2) Decide env, state trajectory, etc.
+    if data is None:
+        s, info = env.reset(**config.reset_params)
+        states = []
+        actions = []
+        rewards = []
+        t = t0
+    else:
+        states = data['states']
+        actions = data['actions']
+        rewards = data['rewards']
+        t = data['t']
+        s = data['s']
+        s, info = env.reset(init_state=s, t=t, new_arrivals=sample_path)
+    agent_name, args = agent_arg['agent_name'], agent_arg['args']
     if agent_name in {"hindsight_approx"}:
         agent_instance = InfiniteSAAAgent(env, discount_factor=env.discount_factor, **args)
     elif agent_name in {"hindsight_approx_with_penalty"}:
@@ -211,8 +240,32 @@ def simulate_evaluation(env_args, experiment_name, agent_arg,  warm_up_periods, 
         agent_instance = ALPEJORColumnGenerationAgent(env, discount_factor=env.discount_factor, **args)
     elif agent_name == 'row_gen_alp':
         agent_instance = ALPRowGenerationAgent(env, discount_factor=env.discount_factor, **args)
-    evaluator = PolicyEvaluator(env, agent_instance, env.discount_factor)
-    states, actions, rewards = evaluator.sample_path_evaluate(state, t, sample_path)
+    # evaluator = PolicyEvaluator(env, agent_instance, env.discount_factor)
+    # states, actions, rewards = evaluator.sample_path_evaluate(state, t, sample_path)
+    for tau in range(len(sample_path[t-1:])):
+        print("Current time step:", t + tau)
+        states.append(s)
+        start = time.time()
+        a = agent_instance.policy(s, t + tau)
+        end = time.time()
+        print(f"Policy {t + tau} computation time: {end - start} seconds")
+        actions.append(a)
+        next_state, reward, done, info = env.step(a)
+        rewards.append(reward)
+        s = next_state
+        if (t+tau) % 10 == 0:
+            with open(pickle_file, 'wb') as f:
+                res = {
+                    's': s,
+                    "t": t + tau+1,
+                    "states": states,
+                    "actions": actions,
+                    "rewards": rewards,
+                }
+                pickle.dump(res, f)
+        
+        if done:
+            break
     # waiting time
     stats = {}
     scheduled_patients = []
@@ -236,6 +289,7 @@ def simulate_evaluation(env_args, experiment_name, agent_arg,  warm_up_periods, 
         "agent_name": agent_name
     }
     res['results'] = stats
+    # state, sample_path, periods, remaining_new_arrivals
 
     output_file = os.path.join('experiments', 'results', experiment_name, f'{job_id}.jsonl')
     # Make sure the parent directories exist

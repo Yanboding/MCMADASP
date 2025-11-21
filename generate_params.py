@@ -1,6 +1,7 @@
 import json
 import math
 import random
+import pickle
 from pprint import pprint
 
 import pandas as pd
@@ -8,9 +9,10 @@ import numpy as np
 
 from decision_maker import ALPEJORColumnGenerationAgent
 from experiments import get_config_by_type
-from utils import iter_to_tuple, iter_to_list, get_uid, read_lines_with_pattern, RunningStats
+from utils import iter_to_tuple, iter_to_list, get_uid, read_lines_with_pattern, RunningStats, encode, decode
 from pathlib import Path
 import hashlib
+import glob
 import json
 import copy
 import os
@@ -355,7 +357,7 @@ if __name__ == '__main__':
     '''
     EXPERIMENT_CONFIGS = {
         'steady_state': {
-            'config_type': 'ejor',
+            'config_type': 'ejor_default',
             'param_name': 'reset_params.percentage_occupied',
             'param_values': [0],
         }

@@ -119,22 +119,22 @@ class BenderDecompositionSolver:
         #self.master_model, self.imm_cost, self.theta_vars, self.action_t_var, self.state_linking_constraints = self.master_builder_fn(**master_builder_args)
         # Build one worker per scenario once, then reuse
 
-        # self.workers = [
-        #     SubproblemWorker(self.subproblem_builder_fn, self.subproblem_builder_args, sid)
-        #     for sid in range(self.num_subproblems)
-        # ]
+        self.workers = [
+            SubproblemWorker(self.subproblem_builder_fn, self.subproblem_builder_args, sid)
+            for sid in range(self.num_subproblems)
+        ]
         # Build one worker per scenario — in parallel
-        with concurrent.futures.ThreadPoolExecutor(max_workers=num_subproblems) as executor:
-            futures = [
-                executor.submit(
-                    SubproblemWorker,
-                    self.subproblem_builder_fn,
-                    self.subproblem_builder_args,
-                    sid
-                )
-                for sid in range(self.num_subproblems)
-            ]
-            self.workers = [f.result() for f in futures]
+        # with concurrent.futures.ThreadPoolExecutor(max_workers=num_subproblems) as executor:
+        #     futures = [
+        #         executor.submit(
+        #             SubproblemWorker,
+        #             self.subproblem_builder_fn,
+        #             self.subproblem_builder_args,
+        #             sid
+        #         )
+        #         for sid in range(self.num_subproblems)
+        #     ]
+        #     self.workers = [f.result() for f in futures]
 
 
     def solve(self, state, action=None, tol=1e-6, max_iter=15000, verbose=False):

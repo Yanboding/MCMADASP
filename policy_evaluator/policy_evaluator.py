@@ -34,7 +34,7 @@ class PolicyEvaluator:
         actions = []
         rewards = []
         s, info = self.env.reset(state, t, sample_path)
-        for tau in range(len(sample_path)):
+        for tau in range(len(sample_path[t-1:])):
             print("Current time step:", t + tau)
             states.append(s)
             if tau == 0 and action:
