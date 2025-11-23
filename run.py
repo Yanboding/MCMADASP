@@ -213,7 +213,8 @@ def simulate_evaluation(env_args, experiment_name, agent_arg,  warm_up_periods, 
     aid = get_uid(agent_arg)
     pickle_file = os.path.join('experiments', 'results', experiment_name,
                                f'{uid}-{aid}.pickle')
-
+    # Make sure the parent directories exist
+    os.makedirs(os.path.dirname(pickle_file), exist_ok=True)
     data = load_pickle_if_exists(pickle_file)
     # 2) Decide env, state trajectory, etc.
     if data is None:
