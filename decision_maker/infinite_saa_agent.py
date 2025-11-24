@@ -20,7 +20,7 @@ def set_link_rhs(linking_constraints, rhs_values):
 
 class InfiniteSAAAgent(InfiniteRTAgent):
 
-    def __init__(self, env, discount_factor, V=None, Q=None, sample_path_number=100, current_decision_var_type='integer', future_decision_var_type='continuous', is_myopic=False, sample_path=None, is_include_discount_factor=False, sample_path_length=None, verbose=False):
+    def __init__(self, env, discount_factor, V=None, Q=None, sample_path_number=100, current_decision_var_type='integer', future_decision_var_type='continuous', is_myopic=False, sample_path=None, is_include_discount_factor=False, sample_path_length=None, is_quasi_MC=True,verbose=False):
         super().__init__(env, discount_factor, V=V, Q=Q)
         self.sample_path_number = sample_path_number
         self.current_decision_var_type = GRB.INTEGER if current_decision_var_type is None or current_decision_var_type == 'integer' else GRB.CONTINUOUS
@@ -36,8 +36,11 @@ class InfiniteSAAAgent(InfiniteRTAgent):
             for omega in range(self.sample_path_number):
                 if self.sample_path_length is None:
                     new_arrivals = self.env.reset_arrivals()[1:]
-                else:
+                elif is_quasi_MC == False:
                     new_arrivals = self.env.reset_arrivals(self.sample_path_length)[1:]
+                else:
+                    print(f'Generating quasi-MC sample path {omega}...')
+                    new_arrivals = self.env.quasi_reset_arrivals(self.sample_path_length)[1:]
                 self.delta.append(new_arrivals)
                 print(f'sample path {omega} length:', len(new_arrivals))
         self.bender_solver = None

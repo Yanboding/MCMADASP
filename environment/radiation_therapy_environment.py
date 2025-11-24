@@ -167,6 +167,9 @@ class RTEnv:
         if stop_time is None:
             stop_time = geom.rvs((1- self.discount_factor), random_state=self.stop_time_rng)
         return self.arrival_generator.rvs(stop_time)
+    
+    def quasi_reset_arrivals(self, stop_time):
+        return self.arrival_generator.quasi_rvs(stop_time)
 
     def reset_initial_state(self, decay_factor, new_arrivals):
         # find out the average appointment slot required in first period

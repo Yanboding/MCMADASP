@@ -5,11 +5,11 @@ import numpy as np
 from itertools import combinations, product
 from scipy.stats import poisson, multinomial
 from scipy.stats import qmc
-
+from scipy.stats import binom
 
 class MultiClassPoissonArrivalGenerator:
 
-    def __init__(self, mean_arrival_rate, maximum_arrival, type_probs, random_seed=42, is_precompute_state=False, use_qmc=False, qmc_seed=123):
+    def __init__(self, mean_arrival_rate, maximum_arrival, type_probs, random_seed=42, is_precompute_state=False, use_qmc=True, qmc_seed=123):
         self.mean_arrival = mean_arrival_rate
         self.maximum_arrival = maximum_arrival
         self.type_probs = np.asarray(type_probs)
@@ -29,12 +29,14 @@ class MultiClassPoissonArrivalGenerator:
             self._arrivals_with_probs = self._precompute_all_states()
 
         self.mean_by_type = self.mean_arrival * self.type_probs
+        self.num_types = len(self.type_probs)
+        self.type_cdf = np.cumsum(self.type_probs)
+        self.type_cdf[-1] = 1.0  # Ensure numerical stability
 
         self.use_qmc = use_qmc
         if use_qmc:
             self.qmc_dim = 1 + self.maximum_arrival
             self.qmc_sampler = qmc.Sobol(d=self.qmc_dim, scramble=True, seed=qmc_seed)
-            self.qmc_engine = qmc.Sobol(d=2, seed=random_seed)
 
 
     def rvs(self, size=1):
@@ -49,55 +51,44 @@ class MultiClassPoissonArrivalGenerator:
     def quasi_rvs(self, size=1):
         """Quasi-Monte Carlo (QMC) generation using Sobol sequence for both N and the multinomial split."""
         
-        # We need a QMC point for each sample, dimension 2 (u1 for N, u2 for multinomial)
-        qmc_points = self.qmc_engine.random(size)
-        u1_values = qmc_points[:, 0]
-        u2_values = qmc_points[:, 1]
-        
-        arrivals = np.zeros((size, len(self.type_probs)), dtype=int)
-        
-        # Pre-calculated probabilities for the conditional sampling
-        I = len(self.type_probs)
-        p_remaining = np.copy(self.type_probs) # Copy for mutable updates
-        p_total = 1.0
-        
-        for k in range(size):
-            u1 = u1_values[k]
-            u2 = u2_values[k]
-            
-            # 1. Inverse Transform Sampling for N (Total Arrivals) using u1
-            N = np.searchsorted(self.cdf_N, u1)
-            N_rem = N
-            
-            # 2. Sequential/Conditional Sampling for the arrival vector using u2
-            
-            # Reset remaining probability variables for the new sample
-            p_remaining[:] = self.type_probs
-            p_total = 1.0
+        # 1. Generate Uniform QMC samples
+        # Get 'size' points drawn from the d-dimensional hypercube [0,1)^d
+        # Shape: (size, 1 + maximum_arrival)
+        u_qmc = self.qmc_sampler.random(n=size)
 
-            for i in range(I - 1): # We determine I-1 components
-                # Stop if no items remain
-                if N_rem == 0:
-                    break
+        # Split dimensions:
+        # Dimension 0 determines total N.
+        # Dimensions 1 onwards determine types.
+        u_N = u_qmc[:, 0]
+        u_types_pool = u_qmc[:, 1:]
 
-                # The conditional probability for type i
-                p_conditional = p_remaining[i] / p_total
-                
-                # The count x_i follows Binomial(N_rem, p_conditional)
-                binomial_pmf = binom.pmf(np.arange(N_rem + 1), N_rem, p_conditional)
-                binomial_cdf = np.cumsum(binomial_pmf)
-                
-                # Map the single QMC value u2 to the Binomial CDF
-                x_i = np.searchsorted(binomial_cdf, u2)
-                
-                arrivals[k, i] = x_i
-                
-                # Update remaining counts and probabilities
-                N_rem -= x_i
-                p_total -= p_remaining[i]
-                
-            # The last component is determined by the remainder
-            arrivals[k, I - 1] = N_rem
+        # 2. Sample Total Arrivals (N)
+        # Use Inverse Transform Sampling on the truncated Poisson CDF.
+        # np.searchsorted finds indices where elements should be inserted to maintain order,
+        # effectively mapping uniform draws to discrete outcomes based on CDF buckets.
+        # side='right' ensures u=0 maps to index 0.
+        N_values = np.searchsorted(self.cdf_N, u_N, side='right')
+        # 3. Sample Types given N
+        # Initialize result array (size x num_types)
+        arrivals = np.zeros((size, self.num_types), dtype=int)
+
+        for i in range(size):
+            N = N_values[i]
+            if N == 0:
+                continue
+
+            # We need to determine types for N arrivals.
+            # We take the first N uniform variables available in the pool for this specific path 'i'.
+            # The remaining (maximum_arrival - N) variables in this row are unused.
+            current_path_u_types = u_types_pool[i, :N]
+            # Inverse Transform Sampling for Categorical/Multinomial.
+            # Map uniform draws to type indices [0, num_types-1] based on type CDF boundaries.
+            type_indices = np.searchsorted(self.type_cdf, current_path_u_types, side='right')
+
+            # Count occurrences of each type index.
+            # minlength ensures the output has length 'num_types' even if some types aren't drawn.
+            counts = np.bincount(type_indices, minlength=self.num_types)
+            arrivals[i, :] = counts
 
         return arrivals
 
@@ -165,11 +156,81 @@ class MultiClassPoissonArrivalGenerator:
             path_probs.append(path_prob)
         return np.array(path_probs), np.array(all_paths)
 
+# def verify_qmc_implementation():
+#     print("Starting QMC Verification...")
+#     # --- Setup ---
+#     mean_rate = 5.0
+#     max_arr = 15 # Increased slightly to see tails better
+#     probs = [0.5, 0.3, 0.2] # 3 types
+#     num_types = len(probs)
+#     N_large = 200000 # Large sample size for accurate comparison
 
+#     # Initialize generator
+#     gen = MultiClassPoissonArrivalGenerator(
+#         mean_arrival_rate=mean_rate,
+#         maximum_arrival=max_arr,
+#         type_probs=probs,
+#         use_qmc=True,
+#         qmc_seed=42,
+#         random_seed=42 # Ensure PRNG baseline is reproducible
+#     )
+
+#     print(f"Generating {N_large} PRNG baseline samples...")
+#     prng_samples = gen.rvs(N_large)
+
+#     print(f"Generating {N_large} QMC samples...")
+#     # Important: Reset QMC generator to ensured scrambled sequence starts fresh
+#     gen.qmc_sampler.reset() 
+#     qmc_samples = gen.quasi_rvs(N_large)
+
+#     # --- Test 1: Moment Matching (Means and Covariance) ---
+#     print("\n--- Moment Matching Verification ---")
+    
+#     # Calculate means
+#     prng_means = np.mean(prng_samples, axis=0)
+#     qmc_means = np.mean(qmc_samples, axis=0)
+#     mean_diff = np.abs(prng_means - qmc_means)
+
+#     print("Sample Means (Type 0, Type 1, Type 2):")
+#     print(f"PRNG: {prng_means}")
+#     print(f"QMC:  {qmc_means}")
+#     print(f"Max Absolute Mean Difference: {np.max(mean_diff):.6f}")
+
+#     # Calculate Covariance Matrices (to check correlations between types)
+#     prng_cov = np.cov(prng_samples, rowvar=False)
+#     qmc_cov = np.cov(qmc_samples, rowvar=False)
+#     cov_diff = np.abs(prng_cov - qmc_cov)
+
+#     print("\nSample Covariance Matrix (PRNG):")
+#     print(np.round(prng_cov, 4))
+#     print("\nSample Covariance Matrix (QMC):")
+#     print(np.round(qmc_cov, 4))
+#     print(f"Max Absolute Covariance Difference: {np.max(cov_diff):.6f}")
+
+#     # Success criteria for moments at N=200k
+#     if np.max(mean_diff) < 0.01 and np.max(cov_diff) < 0.01:
+#         print("\n[SUCCESS] Moments match closely.")
+#     else:
+#         print("\n[WARNING] Moments show larger discrepancies than expected.")
+#     print("Verification complete. Check plots.")
 if __name__ == "__main__":
-    from utils import iter_to_tuple
-    class_number = 2
-    probability = 1 / class_number
-    mcag = MultiClassPoissonArrivalGenerator(3, 4, [probability] * class_number, 42)
+    # Parameters
+     # Parameters
 
-    print(mcag.type_probs * mcag.mean_arrival)
+    mean_rate = 5.0
+    max_arr = 10
+    probs = [0.5, 0.3, 0.2] # 3 types
+
+
+    # Initialize with QMC enabled
+    generator_qmc = MultiClassPoissonArrivalGenerator(
+        mean_arrival_rate=mean_rate,
+        maximum_arrival=max_arr,
+        type_probs=probs,
+        random_seed=42,
+        is_precompute_state=False,
+        use_qmc=True,
+        qmc_seed=888
+    )
+
+    print(generator_qmc.quasi_rvs(20)) 

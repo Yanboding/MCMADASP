@@ -138,7 +138,7 @@ class ExperimentConfig:
                          0.29, 0.15, 0.04][:class_num]
         total_arrival_rate = sum(arrival_rates)
         env_args = {
-            "booking_window_size": 100,
+            "booking_window_size": 20,
             'arrival_rates': arrival_rates,
             'patterns': ['1 * 2 + 4 * 1',
                          '1 * 2',
