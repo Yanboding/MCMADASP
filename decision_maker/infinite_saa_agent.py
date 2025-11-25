@@ -93,6 +93,7 @@ class InfiniteSAAAgent(InfiniteRTAgent):
         # ---------- 1. objective ----------
         imm_cost = self.env.cost_fn(state_var, action_t_var, is_var=True)
         fut_cost = 0
+        costs = [[imm_cost] for _ in range(self.sample_path_number)]
         # for every sample path
         for omega in range(self.sample_path_number):
             prev_state_var = state_var
@@ -105,18 +106,23 @@ class InfiniteSAAAgent(InfiniteRTAgent):
                 next_action_var = self.get_action_var(model=direct_model, advance_scheduling_type=self.future_decision_var_type)
                 self.add_action_space_constraints(model=direct_model, state_var=next_state_var, action_var=next_action_var)
                 if self.is_include_discount_factor:
-                    fut_cost += (self.discount_factor ** tau) * self.env.cost_fn(next_state_var, next_action_var, is_var=True)
+                    cost = (self.discount_factor ** tau) * self.env.cost_fn(next_state_var, next_action_var, is_var=True)
                 else:
-                    fut_cost += self.env.cost_fn(next_state_var, next_action_var, is_var=True)
+                    cost = self.env.cost_fn(next_state_var, next_action_var, is_var=True)
+                costs[omega].append(cost)
+                fut_cost += cost
                 prev_state_var = next_state_var
                 prev_action_var = next_action_var
         fut_cost = fut_cost / self.sample_path_number
         direct_model.setObjective(imm_cost + fut_cost, GRB.MINIMIZE)
-        return direct_model, state_linking_constraints, action_t_var
+        info = {
+            'costs': costs
+        }
+        return direct_model, state_linking_constraints, action_t_var, info
     
     def direct_solve(self, state, t=1, action=None, verbose=True):
         if self.direct_model is None:
-            self.direct_model, self.state_linking_constraints, self.action_t_var = self.direct_builder_fn()
+            self.direct_model, self.state_linking_constraints, self.action_t_var, info = self.direct_builder_fn()
         flatten_state = flatten(state)
         set_link_rhs(self.state_linking_constraints, flatten_state)
         if action is not None:
@@ -128,7 +134,7 @@ class InfiniteSAAAgent(InfiniteRTAgent):
 
         # ---------- 8. return ----------
         action = self.get_solution(self.action_t_var, is_final=True)
-        return action, self.direct_model.ObjVal, {}
+        return action, self.direct_model.ObjVal, info
     
     def master_builder_fn(self):
         master_model = gp.Model(f"SA_Advance_Master", env=self.grb_env)
@@ -184,6 +190,7 @@ class InfiniteSAAAgent(InfiniteRTAgent):
         return sub_model, action_linking_constraints, state_linking_constraints
 
     def solve(self, state, t=1, action=None, verbose=True):
+        
         if self.is_myopic or self.sample_path_number <= 1:
             action, obj_value, info = self.direct_solve(state, t=t, action=action)
             return action, obj_value, info

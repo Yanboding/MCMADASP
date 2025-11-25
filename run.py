@@ -298,6 +298,37 @@ def simulate_evaluation(env_args, experiment_name, agent_arg,  warm_up_periods, 
     with open(output_file, 'a') as f:  # 'a' will create the file if not present
         f.write(json.dumps(res) + '\n')
     
+def evaluate_lower_bound(env_args, experiment_name, agent_arg,  warm_up_periods, sample_path, uid, job_id, states=None, actions=None, rewards=None):
+    '''
+    I need to get the state on the warm_up_periods
+    and then evaluate the lower bound solvers from there
+    1) Build config and base env
+    2) For each agent, run evaluation from the given state and sample_path
+    3) Collect stats and save to output file
+    4) Output file name: experiments/results/{experiment_name}/{job_id}.jsonl
+    5) Each line in the output file is a json object with keys:
+    '''
+    config = get_config_by_type(case_type='infinite_custom', args=env_args)
+    config.reset_params['new_arrivals'] = sample_path
+    env = config.env
+    perfect_info_lower_bound_solver = InfiniteSAAAgent(env, discount_factor=env.discount_factor,current_decision_var_type=GRB.INTEGER,
+                                            future_decision_var_type=GRB.CONTINUOUS, sample_path=sample_path, is_include_discount_factor=True)
+    state, info = env.reset(**config.reset_params)
+    _, benchmark_value, info = perfect_info_lower_bound_solver.solve(state, 1)
+    costs = [cost.getValue() for cost in info['costs'][0]]
+    print(len(costs))
+    res = {
+        "uid": uid,
+        "experiment_name": experiment_name,
+        "warm_up_periods": warm_up_periods,
+        "total_cost": sum(costs),
+        "costs": costs,
+    }
+    output_file = os.path.join('experiments', 'results', experiment_name, f'{job_id}.jsonl')
+    # Make sure the parent directories exist
+    os.makedirs(os.path.dirname(output_file), exist_ok=True)
+    with open(output_file, 'a') as f:  # 'a' will create the file if not present
+        f.write(json.dumps(res) + '\n')
         
 
 if __name__ == '__main__':
@@ -311,5 +342,6 @@ if __name__ == '__main__':
     #value_function_experiment(**params, job_id=args.job_id)
     #run_lower_bound_solver(**params, job_id=args.job_id)
     #run_penalized_lower_bound_solver(**params, job_id=args.job_id)
-    simulate_evaluation(**params, job_id=args.job_id)
+    #simulate_evaluation(**params, job_id=args.job_id)
+    evaluate_lower_bound(**params, job_id=args.job_id)
     

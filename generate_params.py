@@ -259,9 +259,9 @@ def generate_simulation_params(config_type, experiment_name, warm_up_periods, te
     col_alp_args = alp_train_res.get(env_uid+'col_gen_alp', {'agent_name': 'alp', 'args': {'coefficients': None}})
     row_alp_args = alp_train_res.get(env_uid+'row_gen_alp', {'agent_name': 'alp', 'args': {'coefficients': None}})
     agent_args = [
-                {'agent_name': 'hindsight_approx', 'args': {'sample_path_number': 100, 'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False, 'sample_path_length': 20, 'is_include_discount_factor':True, 'is_quasi_MC':True}},
+                #{'agent_name': 'hindsight_approx', 'args': {'sample_path_number': 100, 'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False, 'sample_path_length': 20, 'is_include_discount_factor':True, 'is_quasi_MC':True}},
                 #{'agent_name': 'hindsight_approx_with_penalty', 'args': {'sample_path_number': 350, 'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False, 'coeffecients':col_alp_args['args']['coefficients']}},
-                #{'agent_name': 'myopic', 'args': {}},
+                {'agent_name': 'myopic', 'args': {}},
                 #col_alp_args,
                 #row_alp_args
                 ]
@@ -394,7 +394,7 @@ if __name__ == '__main__':
     )
     '''
     generate_simulation_params(config_type='ejor', 
-                               experiment_name='steady_state', 
+                               experiment_name='lower_bound_evaluation', 
                                warm_up_periods=750,
                                test_sample_path_num=2000,
                                num_periods=1500,
