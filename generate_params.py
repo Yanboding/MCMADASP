@@ -260,10 +260,11 @@ def generate_simulation_params(config_type, experiment_name, warm_up_periods, te
     row_alp_args = alp_train_res.get(env_uid+'row_gen_alp', {'agent_name': 'alp', 'args': {'coefficients': None}})
     agent_args = [
                 #{'agent_name': 'hindsight_approx', 'args': {'sample_path_number': 100, 'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False, 'sample_path_length': 20, 'is_include_discount_factor':True, 'is_quasi_MC':True}},
+                {'agent_name': 'lowerbound', 'args': {'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False, 'is_include_discount_factor':False}},
                 #{'agent_name': 'hindsight_approx_with_penalty', 'args': {'sample_path_number': 350, 'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False, 'coeffecients':col_alp_args['args']['coefficients']}},
                 {'agent_name': 'myopic', 'args': {}},
                 #col_alp_args,
-                #row_alp_args
+                row_alp_args
                 ]
     lines_to_write = []
     for command_id in range(test_sample_path_num):
@@ -276,13 +277,13 @@ def generate_simulation_params(config_type, experiment_name, warm_up_periods, te
         sample_path = sample_path.tolist() if hasattr(sample_path, 'tolist') else sample_path
         params = {
             'env_args':env_args,
-            'experiment_name': experiment_name,
             'warm_up_periods':warm_up_periods,
             'sample_path': sample_path,
         }
         uid = get_uid(params)
         params = {
             'uid': uid,
+            'experiment_name': experiment_name,
             **params
         }
         for agent_arg in agent_args:
@@ -396,7 +397,7 @@ if __name__ == '__main__':
     generate_simulation_params(config_type='ejor', 
                                experiment_name='lower_bound_evaluation', 
                                warm_up_periods=750,
-                               test_sample_path_num=2000,
+                               test_sample_path_num=1000,
                                num_periods=1500,
                                dat_file='table.dat')
     

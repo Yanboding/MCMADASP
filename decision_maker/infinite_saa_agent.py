@@ -94,6 +94,7 @@ class InfiniteSAAAgent(InfiniteRTAgent):
         imm_cost = self.env.cost_fn(state_var, action_t_var, is_var=True)
         fut_cost = 0
         costs = [[imm_cost] for _ in range(self.sample_path_number)]
+        actions = [[action_t_var] for _ in range(self.sample_path_number)]
         # for every sample path
         for omega in range(self.sample_path_number):
             prev_state_var = state_var
@@ -110,13 +111,15 @@ class InfiniteSAAAgent(InfiniteRTAgent):
                 else:
                     cost = self.env.cost_fn(next_state_var, next_action_var, is_var=True)
                 costs[omega].append(cost)
+                actions[omega].append(next_action_var)
                 fut_cost += cost
                 prev_state_var = next_state_var
                 prev_action_var = next_action_var
         fut_cost = fut_cost / self.sample_path_number
         direct_model.setObjective(imm_cost + fut_cost, GRB.MINIMIZE)
         info = {
-            'costs': costs
+            'costs': costs,
+            'actions': actions
         }
         return direct_model, state_linking_constraints, action_t_var, info
     

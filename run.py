@@ -10,7 +10,7 @@ import pandas as pd
 from gurobipy import GRB
 
 from experiments.experiment_config import get_config_by_type
-from utils import iter_to_tuple, get_uid, safe_open, RunningStats, encode, decode
+from utils import iter_to_tuple, get_uid, safe_open, RunningStats, encode, decode, get_solution_value
 from decision_maker import ALPEJORColumnGenerationAgent, InfiniteSAAAgent, InfinitePenalizedSAAAgent, MyopicAgent, ALPRowGenerationAgent
 from policy_evaluator import PolicyEvaluator
 
@@ -297,6 +297,16 @@ def simulate_evaluation(env_args, experiment_name, agent_arg,  warm_up_periods, 
     os.makedirs(os.path.dirname(output_file), exist_ok=True)
     with open(output_file, 'a') as f:  # 'a' will create the file if not present
         f.write(json.dumps(res) + '\n')
+
+def get_solution(action_var, is_final=False):
+        x_var, y_var = action_var
+        if is_final:
+            x = np.array([[round(var.Xn) for var in row] for row in x_var]).astype(int)
+            y = np.array([round(var.Xn) for var in y_var]).astype(int)
+        else:
+            x = get_solution_value(x_var).astype(float)
+            y = get_solution_value(y_var).astype(float)
+        return (x, y)
     
 def evaluate_lower_bound(env_args, experiment_name, agent_arg,  warm_up_periods, sample_path, uid, job_id, states=None, actions=None, rewards=None):
     '''
@@ -311,18 +321,96 @@ def evaluate_lower_bound(env_args, experiment_name, agent_arg,  warm_up_periods,
     config = get_config_by_type(case_type='infinite_custom', args=env_args)
     config.reset_params['new_arrivals'] = sample_path
     env = config.env
-    perfect_info_lower_bound_solver = InfiniteSAAAgent(env, discount_factor=env.discount_factor,current_decision_var_type=GRB.INTEGER,
-                                            future_decision_var_type=GRB.CONTINUOUS, sample_path=sample_path, is_include_discount_factor=True)
-    state, info = env.reset(**config.reset_params)
-    _, benchmark_value, info = perfect_info_lower_bound_solver.solve(state, 1)
-    costs = [cost.getValue() for cost in info['costs'][0]]
-    print(len(costs))
+    agent_name, args = agent_arg['agent_name'], agent_arg['args']
+    if agent_name == "lowerbound":
+        agent_instance = InfiniteSAAAgent(env, discount_factor=env.discount_factor, sample_path=sample_path, **args)
+        state, info = env.reset(**config.reset_params)
+        _, benchmark_value, info = agent_instance.solve(state, 1)
+        costs = [cost.getValue() for cost in info['costs'][0]]
+        actions = info['actions'][0]
+        scheduled_patients = []
+        overtime = np.zeros(len(sample_path)+env.planning_horizon)
+        for t, action_var in enumerate(actions):
+            advance_scheduling_decision, overtime_decision = get_solution(action_var, is_final=False)
+            scheduled_patients.append(advance_scheduling_decision.tolist())
+            start = t
+            end = t + len(overtime_decision)
+            overtime[start:end] += overtime_decision
+    else:
+        if agent_name in {"hindsight_approx_with_penalty"}:
+            agent_instance = InfinitePenalizedSAAAgent(env, discount_factor=env.discount_factor, **args)
+        elif agent_name == "myopic":
+            agent_instance = MyopicAgent(env, discount_factor=env.discount_factor, **args)
+        elif agent_name == 'col_gen_alp':
+            agent_instance = ALPEJORColumnGenerationAgent(env, discount_factor=env.discount_factor, **args)
+        elif agent_name == 'row_gen_alp':
+            agent_instance = ALPRowGenerationAgent(env, discount_factor=env.discount_factor, **args)
+        config.reset_params['new_arrivals'] = sample_path
+        env = config.env
+        t0 = config.reset_params.get('t', 1)
+
+        aid = get_uid(agent_arg)
+        pickle_file = os.path.join('experiments', 'results', experiment_name,
+                                f'{uid}-{aid}.pickle')
+        # Make sure the parent directories exist
+        os.makedirs(os.path.dirname(pickle_file), exist_ok=True)
+        data = load_pickle_if_exists(pickle_file)
+        # 2) Decide env, state trajectory, etc.
+        if data is None:
+            s, info = env.reset(**config.reset_params)
+            states = []
+            actions = []
+            costs = []
+            t = t0
+        else:
+            states = data['states']
+            actions = data['actions']
+            costs = data['rewards']
+            t = data['t']
+            s = data['s']
+            s, info = env.reset(init_state=s, t=t, new_arrivals=sample_path)
+        for tau in range(len(sample_path[t-1:])):
+            print("Current time step:", t + tau)
+            states.append(s)
+            start = time.time()
+            a = agent_instance.policy(s, t + tau)
+            end = time.time()
+            print(f"Policy {t + tau} computation time: {end - start} seconds")
+            actions.append(a)
+            next_state, reward, done, info = env.step(a)
+            costs.append(reward)
+            s = next_state
+            '''
+            if (t+tau) % 10 == 0:
+                with open(pickle_file, 'wb') as f:
+                    res = {
+                        's': s,
+                        "t": t + tau+1,
+                        "states": states,
+                        "actions": actions,
+                        "rewards": rewards,
+                    }
+                    pickle.dump(res, f)
+            ''' 
+            if done:
+                break
+        scheduled_patients = []
+        overtime = np.zeros(len(sample_path)+env.planning_horizon)
+        for t, (advance_scheduling_decision, overtime_decision) in enumerate(actions):
+            scheduled_patients.append(advance_scheduling_decision.tolist())
+            start = t
+            end = t + len(overtime_decision)
+            overtime[start:end] += overtime_decision
+        
     res = {
         "uid": uid,
         "experiment_name": experiment_name,
         "warm_up_periods": warm_up_periods,
         "total_cost": sum(costs),
         "costs": costs,
+        "scheduled_patients": scheduled_patients,
+        "overtime": overtime.tolist(),
+        "agent_name": agent_name,
     }
     output_file = os.path.join('experiments', 'results', experiment_name, f'{job_id}.jsonl')
     # Make sure the parent directories exist
