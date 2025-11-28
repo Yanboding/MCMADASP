@@ -308,7 +308,7 @@ def get_solution(action_var, is_final=False):
             y = get_solution_value(y_var).astype(float)
         return (x, y)
     
-def evaluate_lower_bound(env_args, experiment_name, agent_arg,  warm_up_periods, sample_path, uid, job_id, states=None, actions=None, rewards=None):
+def evaluate_lower_bound(env_args, experiment_name, agent_arg,  warm_up_periods, sample_path, uid, job_id):
     '''
     I need to get the state on the warm_up_periods
     and then evaluate the lower bound solvers from there
@@ -337,7 +337,9 @@ def evaluate_lower_bound(env_args, experiment_name, agent_arg,  warm_up_periods,
             end = t + len(overtime_decision)
             overtime[start:end] += overtime_decision
     else:
-        if agent_name in {"hindsight_approx_with_penalty"}:
+        if agent_name in {"hindsight_approx"}:
+            agent_instance = InfiniteSAAAgent(env, discount_factor=env.discount_factor, **args)
+        elif agent_name in {"hindsight_approx_with_penalty"}:
             agent_instance = InfinitePenalizedSAAAgent(env, discount_factor=env.discount_factor, **args)
         elif agent_name == "myopic":
             agent_instance = MyopicAgent(env, discount_factor=env.discount_factor, **args)
@@ -355,6 +357,7 @@ def evaluate_lower_bound(env_args, experiment_name, agent_arg,  warm_up_periods,
         # Make sure the parent directories exist
         os.makedirs(os.path.dirname(pickle_file), exist_ok=True)
         data = load_pickle_if_exists(pickle_file)
+        print(data)
         # 2) Decide env, state trajectory, etc.
         if data is None:
             s, info = env.reset(**config.reset_params)
@@ -365,7 +368,7 @@ def evaluate_lower_bound(env_args, experiment_name, agent_arg,  warm_up_periods,
         else:
             states = data['states']
             actions = data['actions']
-            costs = data['rewards']
+            costs = data['costs']
             t = data['t']
             s = data['s']
             s, info = env.reset(init_state=s, t=t, new_arrivals=sample_path)
@@ -377,10 +380,10 @@ def evaluate_lower_bound(env_args, experiment_name, agent_arg,  warm_up_periods,
             end = time.time()
             print(f"Policy {t + tau} computation time: {end - start} seconds")
             actions.append(a)
-            next_state, reward, done, info = env.step(a)
-            costs.append(reward)
+            next_state, cost, done, info = env.step(a)
+            costs.append(cost)
             s = next_state
-            '''
+            
             if (t+tau) % 10 == 0:
                 with open(pickle_file, 'wb') as f:
                     res = {
@@ -388,10 +391,10 @@ def evaluate_lower_bound(env_args, experiment_name, agent_arg,  warm_up_periods,
                         "t": t + tau+1,
                         "states": states,
                         "actions": actions,
-                        "rewards": rewards,
+                        "costs": costs,
                     }
                     pickle.dump(res, f)
-            ''' 
+            
             if done:
                 break
         scheduled_patients = []
@@ -419,6 +422,42 @@ def evaluate_lower_bound(env_args, experiment_name, agent_arg,  warm_up_periods,
         f.write(json.dumps(res) + '\n')
         
 
+def restore_costs(env_args, experiment_name, agent_arg,  warm_up_periods, sample_path, uid, job_id):
+
+    aid = get_uid(agent_arg)
+    pickle_file = os.path.join('experiments', 'results', experiment_name,
+                            f'{uid}-{aid}.pickle')
+    # Make sure the parent directories exist
+    os.makedirs(os.path.dirname(pickle_file), exist_ok=True)
+    data = load_pickle_if_exists(pickle_file)
+    # 2) Decide env, state trajectory, etc.
+    if data != None:
+        config = get_config_by_type(case_type='infinite_custom', args=env_args)
+        config.reset_params['new_arrivals'] = sample_path
+        env = config.env
+        actions = data['actions']
+        costs = []
+        t = 1
+        s, info = env.reset(**config.reset_params)
+        
+        for tau in range(len(actions)):
+            print("Current time step:", t + tau)
+            start = time.time()
+            a = actions[tau]
+            end = time.time()
+            print(f"Policy {t + tau} computation time: {end - start} seconds")
+            next_state, cost, done, info = env.step(a)
+            costs.append(cost)
+        data['costs'] = costs
+        pickle_file = os.path.join('experiments', 'results', f'{experiment_name}_cost_restore',
+                                f'{uid}-{aid}.pickle')
+        os.makedirs(os.path.dirname(pickle_file), exist_ok=True)
+        with open(pickle_file, 'wb') as f:
+            pickle.dump(data, f)
+    else:
+        print(f'{uid}-{aid}.pickle not exists')
+    
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Example of using argparse to pass in a list of lists.")
     parser.add_argument('--params', help='Input JSON-encoded list of lists', type=str)
@@ -431,5 +470,6 @@ if __name__ == '__main__':
     #run_lower_bound_solver(**params, job_id=args.job_id)
     #run_penalized_lower_bound_solver(**params, job_id=args.job_id)
     #simulate_evaluation(**params, job_id=args.job_id)
-    evaluate_lower_bound(**params, job_id=args.job_id)
+    #evaluate_lower_bound(**params, job_id=args.job_id)
+    restore_costs(**params, job_id=args.job_id)
     
