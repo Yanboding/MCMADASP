@@ -195,3 +195,4 @@ decision_maker/col_generation_debug.py
 *.ilp
 *.xlsx
 *.json
+*/results

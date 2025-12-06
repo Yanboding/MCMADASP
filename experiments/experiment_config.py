@@ -95,7 +95,7 @@ class ExperimentConfig:
             "duration": 1,
             "regular_capacity": 5,
             "overtime_capacity": 2,
-            "discount_factor": 0.95,
+            "discount_factor": 0.99,
             "reset_params": {
                 'percentage_occupied': 0.95,
                 't': 1
@@ -226,6 +226,9 @@ class ExperimentConfig:
         arrival_generator = MultiClassPoissonArrivalGenerator(total_arrival_rate_mean, maximum_total_arrival,
                                                               type_probs,
                                                               random_seed=arrival_random_seed,
+                                                              use_qmc=True, 
+                                                              max_periods=50,
+                                                              geom_p=(1-discount_factor),
                                                               is_precompute_state=False)
         holding_cost_by_day_by_type = np.array(holding_cost_by_day_by_type)
         holding_cost_fn = HoldingCostCalculator(holding_cost_by_day_by_type)

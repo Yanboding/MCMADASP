@@ -3,13 +3,20 @@ from pprint import pprint
 
 import numpy as np
 from itertools import combinations, product
-from scipy.stats import poisson, multinomial
-from scipy.stats import qmc
-from scipy.stats import binom
+from scipy.stats import qmc, poisson, multinomial, geom, binom
 
 class MultiClassPoissonArrivalGenerator:
 
-    def __init__(self, mean_arrival_rate, maximum_arrival, type_probs, random_seed=42, is_precompute_state=False, use_qmc=True, qmc_seed=123):
+    def __init__(self, 
+                 mean_arrival_rate, 
+                 maximum_arrival, 
+                 type_probs, 
+                 random_seed=42, 
+                 is_precompute_state=False, 
+                 use_qmc=True, 
+                 max_periods=100, 
+                 geom_p=0.1,
+                 qmc_seed=123):
         self.mean_arrival = mean_arrival_rate
         self.maximum_arrival = maximum_arrival
         self.type_probs = np.asarray(type_probs)
@@ -32,12 +39,15 @@ class MultiClassPoissonArrivalGenerator:
         self.num_types = len(self.type_probs)
         self.type_cdf = np.cumsum(self.type_probs)
         self.type_cdf[-1] = 1.0  # Ensure numerical stability
+        self.max_periods = max_periods
+        self.geom_p = geom_p
 
         self.use_qmc = use_qmc
         if use_qmc:
-            self.qmc_dim = 1 + self.maximum_arrival
-            self.qmc_sampler = qmc.Sobol(d=self.qmc_dim, scramble=True, seed=qmc_seed)
-
+            self.qmc_dim = 1 + (self.max_periods * self.num_types)
+            
+            # Note: Optimization=True is slower to init but better quality
+            self.qmc_sampler = qmc.Sobol(d=self.qmc_dim, scramble=True, seed=qmc_seed) 
 
     def rvs(self, size=1):
         N_values = self.rng.choice(
@@ -49,47 +59,75 @@ class MultiClassPoissonArrivalGenerator:
         return arrivals
     
     def quasi_rvs(self, size=1):
-        """Quasi-Monte Carlo (QMC) generation using Sobol sequence for both N and the multinomial split."""
+        """Quasi-Monte Carlo (QMC) generation using Sobol sequence for both N and the multinomial split.
+        size: sample of paths
+        0: stop time
+        1:max_periods: determine total N in each period
+        max_periods+1:: determine types for each period
+        total dim 1 + max_periods * num_types
+        """
         
         # 1. Generate Uniform QMC samples
         # Get 'size' points drawn from the d-dimensional hypercube [0,1)^d
         # Shape: (size, 1 + maximum_arrival)
         u_qmc = self.qmc_sampler.random(n=size)
 
-        # Split dimensions:
-        # Dimension 0 determines total N.
-        # Dimensions 1 onwards determine types.
-        u_N = u_qmc[:, 0]
-        u_types_pool = u_qmc[:, 1:]
+        # --- PHASE A: Determine Path Lengths ---
+        # Dimension 0 is reserved for length
+        u_len = u_qmc[:, 0]
+        # Inverse Transform on Geometric Distribution
+        # We clip at max_horizon to prevent array out-of-bounds
+        lengths = (geom.ppf(u_len, self.geom_p)-1).astype(int)
+        lengths = np.minimum(lengths, self.max_periods)
+        # --- PHASE B: Determine Total Arrivals Per Period ---
+        # Dimensions 1 to 1 + max_horizon
+        u_totals = u_qmc[:, 1 : 1 + self.max_periods]
+        # Inverse Transform on Truncated Poisson
+        # np.searchsorted acts as the PPF for the discrete distribution defined by self.cdf_N
+        total_counts = np.searchsorted(self.cdf_N, u_totals, side='right').astype(int)
 
-        # 2. Sample Total Arrivals (N)
-        # Use Inverse Transform Sampling on the truncated Poisson CDF.
-        # np.searchsorted finds indices where elements should be inserted to maintain order,
-        # effectively mapping uniform draws to discrete outcomes based on CDF buckets.
-        # side='right' ensures u=0 maps to index 0.
-        N_values = np.searchsorted(self.cdf_N, u_N, side='right')
-        # 3. Sample Types given N
-        # Initialize result array (size x num_types)
-        arrivals = np.zeros((size, self.num_types), dtype=int)
+        # --- PHASE C: Hierarchical Split into Types ---
+        # Dimensions (1 + max_horizon) to End
+        # We reshape to (n_paths, max_horizon, num_types - 1)
+        u_splits = u_qmc[:, 1 + self.max_periods :].reshape(size, self.max_periods, self.num_types - 1)
+        #print(u_splits)
+        
+        # Placeholder for result
+        paths = np.zeros((size, self.max_periods, self.num_types), dtype=int)
+        
+        # Recursive Binomial Splitting
+        remaining_counts = total_counts.copy()
+        current_prob_sum = 1.0
+        
+        for k in range(self.num_types - 1):
+            # 1. Calculate Conditional Probability: P(Type_k | Not Type_0...Type_k-1)
+            p_cond = self.type_probs[k] / current_prob_sum
+            
+            # 2. Get Sobol slice for this specific type decision
+            u_k = u_splits[:, :, k]
+            
+            # 3. Binomial Inverse Transform
+            # Draw how many of 'remaining_counts' belong to type k
+            # scipy.stats.binom.ppf broadcasts over n (remaining_counts) and p (p_cond)
+            type_k_counts = binom.ppf(u_k, n=remaining_counts, p=p_cond).astype(int)
+            
+            # 4. Store and Update
+            paths[:, :, k] = type_k_counts
+            remaining_counts -= type_k_counts
+            current_prob_sum -= self.type_probs[k]
+            
+        # Assign remainder to the last type
+        paths[:, :, -1] = remaining_counts
 
+        # --- PHASE D: Truncation (Slicing) ---
+        # Instead of masking with zeros, we slice the arrays to their actual geometric length.
+        arrivals = []
         for i in range(size):
-            N = N_values[i]
-            if N == 0:
-                continue
-
-            # We need to determine types for N arrivals.
-            # We take the first N uniform variables available in the pool for this specific path 'i'.
-            # The remaining (maximum_arrival - N) variables in this row are unused.
-            current_path_u_types = u_types_pool[i, :N]
-            # Inverse Transform Sampling for Categorical/Multinomial.
-            # Map uniform draws to type indices [0, num_types-1] based on type CDF boundaries.
-            type_indices = np.searchsorted(self.type_cdf, current_path_u_types, side='right')
-
-            # Count occurrences of each type index.
-            # minlength ensures the output has length 'num_types' even if some types aren't drawn.
-            counts = np.bincount(type_indices, minlength=self.num_types)
-            arrivals[i, :] = counts
-
+            L = lengths[i]
+            # Slice the i-th path from 0 to L
+            # The remaining rows (L to max_horizon) are discarded
+            path_slice = paths[i, :L, :]
+            arrivals.append(path_slice)
         return arrivals
 
     def arrival_type_rvs(self, arrival_num, size=1):
@@ -230,7 +268,8 @@ if __name__ == "__main__":
         random_seed=42,
         is_precompute_state=False,
         use_qmc=True,
+        max_periods=100,
         qmc_seed=888
     )
 
-    print(generator_qmc.quasi_rvs(20)) 
+    print(generator_qmc.quasi_rvs(100)) 

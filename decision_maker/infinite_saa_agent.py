@@ -5,22 +5,18 @@ from gurobipy import GRB
 
 from decision_maker import InfiniteRTAgent
 from metaheuristic_algorithm import BenderDecompositionSolver
-from utils import solve_and_handle_errors, encode
-
-
-def flatten(vars):
-    list = []
-    for item in vars:
-        list.extend(item.reshape(-1))
-    return np.array(list)
-
-def set_link_rhs(linking_constraints, rhs_values):
-    for i, constr in enumerate(linking_constraints):
-        constr.setAttr("RHS", float(rhs_values[i]))
+from utils import solve_and_handle_errors, encode, flatten, set_link_rhs
 
 class InfiniteSAAAgent(InfiniteRTAgent):
 
-    def __init__(self, env, discount_factor, V=None, Q=None, sample_path_number=100, current_decision_var_type='integer', future_decision_var_type='continuous', is_myopic=False, sample_path=None, is_include_discount_factor=False, sample_path_length=None, is_quasi_MC=True,verbose=False):
+    def __init__(self, env, discount_factor, V=None, Q=None,
+                sample_path_number=100,
+                current_decision_var_type='integer', 
+                future_decision_var_type='continuous', 
+                is_myopic=False, sample_path=None, 
+                is_include_discount_factor=False, 
+                sample_path_length=None, 
+                is_quasi_MC=True, verbose=False):
         super().__init__(env, discount_factor, V=V, Q=Q)
         self.sample_path_number = sample_path_number
         self.current_decision_var_type = GRB.INTEGER if current_decision_var_type is None or current_decision_var_type == 'integer' else GRB.CONTINUOUS
@@ -32,17 +28,27 @@ class InfiniteSAAAgent(InfiniteRTAgent):
         if self.sample_path is not None:
             print('length of sample path:', len(self.sample_path))
             self.set_sample_path(self.sample_path[1:])
+        # sample path length is sample_path_length
         if not is_myopic and sample_path is None:
+            '''
             for omega in range(self.sample_path_number):
                 if self.sample_path_length is None:
-                    new_arrivals = self.env.reset_arrivals()[1:]
-                elif is_quasi_MC == False:
-                    new_arrivals = self.env.reset_arrivals(self.sample_path_length)[1:]
+                    if is_quasi_MC == False:
+                        new_arrivals = self.env.reset_arrivals()[1:]
+                    else:
+                        new_arrivals = self.env.quasi_reset_arrivals()[1:]
                 else:
-                    print(f'Generating quasi-MC sample path {omega}...')
-                    new_arrivals = self.env.quasi_reset_arrivals(self.sample_path_length)[1:]
+                    if is_quasi_MC == False:
+                        new_arrivals = self.env.reset_arrivals(self.sample_path_length)[1:]
+                    else:
+                        print(f'Generating quasi-MC sample path {omega}...')
+                        new_arrivals = self.env.quasi_reset_arrivals(self.sample_path_length)[1:]
                 self.delta.append(new_arrivals)
                 print(f'sample path {omega} length:', len(new_arrivals))
+            '''
+            if self.sample_path_length is None:
+                if is_quasi_MC:
+                    self.delta = self.env.arrival_generator.quasi_rvs(size=self.sample_path_number)
         self.bender_solver = None
         self.is_include_discount_factor = is_include_discount_factor
         self.direct_model, self.state_linking_constraints, self.action_t_var = None, None, None

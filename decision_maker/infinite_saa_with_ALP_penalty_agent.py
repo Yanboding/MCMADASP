@@ -18,7 +18,9 @@ class InfinitePenalizedSAAAgent(InfiniteRTAgent):
                  is_myopic=False, 
                  sample_path=None,
                  is_include_discount_factor=False,
-                 coeffecients=None,
+                 sample_path_length=None, 
+                 is_quasi_MC=True,
+                 coefficients=None,
                  verbose=False):
         super().__init__(env, discount_factor, V=V, Q=Q)
         self.sample_path_number = sample_path_number
@@ -26,24 +28,39 @@ class InfinitePenalizedSAAAgent(InfiniteRTAgent):
         self.future_decision_var_type = GRB.INTEGER if future_decision_var_type is None or future_decision_var_type == 'integer' else GRB.CONTINUOUS
         self.is_myopic = is_myopic
         self.sample_path = sample_path
-        self.coeffecients = coeffecients
-        self.W_0, self.U, self.V, self.W = self.get_coefficients(coeffecients)
+        self.sample_path_length = sample_path_length
+        self.coefficients = coefficients
+        self.W_0, self.U, self.V, self.W = self.get_coefficients(coefficients)
         self.delta = []
         if self.sample_path is not  None:
             self.set_sample_path(self.sample_path[1:])
         if not is_myopic and sample_path is None:
             for omega in range(self.sample_path_number):
-                new_arrivals = self.env.reset_arrivals()[1:]
+                if self.sample_path_length is None:
+                    if is_quasi_MC == False:
+                        new_arrivals = self.env.reset_arrivals()[1:]
+                    else:
+                        new_arrivals = self.env.quasi_reset_arrivals()[1:]
+                else:
+                    if is_quasi_MC == False:
+                        new_arrivals = self.env.reset_arrivals(self.sample_path_length)[1:]
+                    else:
+                        print(f'Generating quasi-MC sample path {omega}...')
+                        new_arrivals = self.env.quasi_reset_arrivals(self.sample_path_length)[1:]
                 self.delta.append(new_arrivals)
+                print(f'sample path {omega} length:', len(new_arrivals))
         self.bender_solver = None
         self.is_include_discount_factor = is_include_discount_factor
-        self.direct_model, self.state_linking_constraints, self.action_t_var = self.direct_builder_fn()
+        self.direct_model, self.state_linking_constraints, self.action_t_var = None, None, None
+
 
     def set_sample_path(self, sample_path):
         self.sample_path_number = 1
         self.delta = np.array([sample_path])
     
     def get_coefficients(self, solution):
+        if solution is None:
+            return None, None, None, None
         it = iter(solution)
         W_0 = float(next(it))
         U = np.array([float(next(it)) for _ in range(self.env.planning_horizon)])
@@ -67,6 +84,9 @@ class InfinitePenalizedSAAAgent(InfiniteRTAgent):
         # ---------- 1. objective ----------
         imm_cost = self.env.cost_fn(state_var, action_t_var, is_var=True)
         fut_cost = 0
+        costs = [[imm_cost] for _ in range(self.sample_path_number)]
+        actions = [[action_t_var] for _ in range(self.sample_path_number)]
+        penalties = [[0] for _ in range(self.sample_path_number)]
         # for every sample path
         for omega in range(self.sample_path_number):
             prev_state_var = state_var
@@ -80,19 +100,29 @@ class InfinitePenalizedSAAAgent(InfiniteRTAgent):
                 self.add_action_space_constraints(model=direct_model, state_var=next_state_var, action_var=next_action_var)
                 # penalty for ALP
                 penalty = 0
-                if self.coeffecients is not None:
+                if self.coefficients is not None:
                     penalty = np.dot(self.W, (self.env.arrival_generator.mean_by_type - new_arrival))
+                cost = self.env.cost_fn(next_state_var, next_action_var, is_var=True) + penalty
                 if self.is_include_discount_factor:
-                    fut_cost += (self.discount_factor ** tau) * (self.env.cost_fn(next_state_var, next_action_var, is_var=True) + penalty)
-                else:
-                    fut_cost += (self.env.cost_fn(next_state_var, next_action_var, is_var=True) + penalty)
+                    cost = (self.discount_factor ** tau) * cost
+                costs[omega].append(cost)
+                actions[omega].append(next_action_var)
+                penalties[omega].append(penalty)
+                fut_cost += cost
                 prev_state_var = next_state_var
                 prev_action_var = next_action_var
         fut_cost = fut_cost / self.sample_path_number
         direct_model.setObjective(imm_cost + fut_cost, GRB.MINIMIZE)
-        return direct_model, state_linking_constraints, action_t_var
+        info = {
+            'costs': costs,
+            'actions': actions,
+            'penalties': penalties
+        }
+        return direct_model, state_linking_constraints, action_t_var, info
 
-    def solve(self, state, t=1, action=None, verbose=False):
+    def direct_solve(self, state, t=1, action=None, verbose=False):
+        if self.direct_model is None:
+            self.direct_model, self.state_linking_constraints, self.action_t_var, info = self.direct_builder_fn()
         flatten_state = flatten(state)
         set_link_rhs(self.state_linking_constraints, flatten_state)
         if action is not None:
@@ -105,7 +135,7 @@ class InfinitePenalizedSAAAgent(InfiniteRTAgent):
         print(f"Direct model solve time: {time.time() - start} seconds")
         # ---------- 8. return ----------
         action = self.get_solution(self.action_t_var, is_final=True)
-        return action, self.direct_model.ObjVal, {}
+        return action, self.direct_model.ObjVal, info
 
     
     def master_builder_fn(self):
@@ -152,10 +182,12 @@ class InfinitePenalizedSAAAgent(InfiniteRTAgent):
                                                  new_arrival=new_arrival)
             next_action_var = self.get_action_var(model=sub_model, advance_scheduling_type=self.future_decision_var_type)
             self.add_action_space_constraints(model=sub_model, state_var=next_state_var, action_var=next_action_var)
-            fut_cost += self.env.cost_fn(next_state_var, next_action_var, is_var=True)
             # penalty for ALP
             penalty = np.dot(self.W, (self.env.arrival_generator.mean_by_type - new_arrival))
-            fut_cost += penalty
+            cost = self.env.cost_fn(next_state_var, next_action_var, is_var=True) + penalty
+            if self.is_include_discount_factor:
+                cost = (self.discount_factor ** tau) * cost
+            fut_cost += cost
             prev_state_var = next_state_var
             prev_action_var = next_action_var
         sub_model.setObjective(fut_cost, GRB.MINIMIZE)
@@ -187,9 +219,9 @@ class InfinitePenalizedSAAAgent(InfiniteRTAgent):
             linking_constraints.append(constraint)
         return linking_constraints
 
-    def benders_solve(self, state, t=1, action=None, verbose=False):
+    def solve(self, state, t=1, action=None, verbose=False):
         if self.is_myopic or self.sample_path_number <= 1:
-            action, obj_value, info = self.solve(state, t=t, action=action)
+            action, obj_value, info = self.direct_solve(state, t=t, action=action)
             return action, obj_value, info
         
         if self.bender_solver is None:
@@ -203,7 +235,7 @@ class InfinitePenalizedSAAAgent(InfiniteRTAgent):
         action_t, upper_bound, info = self.bender_solver.solve(state=state,
                                                                action=action,
                                                                 tol=1e-6,
-                                                                max_iter=100,
+                                                                max_iter=12000,
                                                                 verbose=verbose)
         return action_t, upper_bound, info
 

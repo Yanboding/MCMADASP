@@ -258,13 +258,15 @@ def generate_simulation_params(config_type, experiment_name, warm_up_periods, te
         alp_train_res[line['uid']+agent_type] = line['result']
     col_alp_args = alp_train_res.get(env_uid+'col_gen_alp', {'agent_name': 'alp', 'args': {'coefficients': None}})
     row_alp_args = alp_train_res.get(env_uid+'row_gen_alp', {'agent_name': 'alp', 'args': {'coefficients': None}})
+    coeffecients = row_alp_args['args']['coefficients']
     agent_args = [
-                {'agent_name': 'hindsight_approx', 'args': {'sample_path_number': 350, 'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False, 'sample_path_length': 20, 'is_include_discount_factor':True, 'is_quasi_MC':False}},
+                {'agent_name': 'hindsight_approx', 'args': {'sample_path_number': 256, 'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False, 'sample_path_length': None, 'is_include_discount_factor':False, 'is_quasi_MC':True}},
                 #{'agent_name': 'lowerbound', 'args': {'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False, 'is_include_discount_factor':False}},
                 #{'agent_name': 'hindsight_approx_with_penalty', 'args': {'sample_path_number': 350, 'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False, 'coeffecients':col_alp_args['args']['coefficients']}},
                 #{'agent_name': 'myopic', 'args': {}},
                 #col_alp_args,
-                #row_alp_args
+                #row_alp_args,
+                #{'agent_name': 'penalized_lowerbound', 'args':{'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False, 'is_include_discount_factor':False, 'coefficients':coeffecients}}
                 ]
     lines_to_write = []
     for command_id in range(test_sample_path_num):
@@ -395,7 +397,7 @@ if __name__ == '__main__':
     )
     '''
     generate_simulation_params(config_type='ejor', 
-                               experiment_name='lower_bound_evaluation', 
+                               experiment_name='steady_state_hindsight', 
                                warm_up_periods=750,
                                test_sample_path_num=1000,
                                num_periods=1500,

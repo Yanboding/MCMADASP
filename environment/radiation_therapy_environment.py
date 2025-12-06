@@ -2,7 +2,7 @@ import copy
 import itertools
 
 import numpy as np
-from scipy.stats import truncnorm, geom
+from scipy.stats import truncnorm, geom, qmc
 
 from utils import numpy_shift, RunningStats, bounded_compositions
 import gurobipy as gp
@@ -168,7 +168,12 @@ class RTEnv:
             stop_time = geom.rvs((1- self.discount_factor), random_state=self.stop_time_rng)
         return self.arrival_generator.rvs(stop_time)
     
-    def quasi_reset_arrivals(self, stop_time):
+    def quasi_reset_arrivals(self, stop_time=None):
+        if stop_time is None:
+            quantile = self.qmc_rng.random(n=1)[0][0]
+            print(quantile)
+            stop_time = geom.ppf(0.99, (1- self.discount_factor)).astype(int)
+            print(stop_time)
         return self.arrival_generator.quasi_rvs(stop_time)
 
     def reset_initial_state(self, decay_factor, new_arrivals):
@@ -230,10 +235,5 @@ if __name__ == '__main__':
     from experiments import get_config_by_type
     config = get_config_by_type('ejor_default')
     env = config.env
-    state, info = env.reset(**config.reset_params)
-    advance_scheduling_decision = np.array([[3,9,7,6,4] for _ in range(env.booking_window_size)])
-    advance_scheduling_decision[5:, :] = 0
-    overtime_decision = np.array([5 for _ in range(env.planning_horizon)])
-    action = (advance_scheduling_decision, overtime_decision)
-    state, cost, done, info = env.step(action)
-    print(info['waiting_number'])
+    for i in range(1):
+        print(env.quasi_reset_arrivals())

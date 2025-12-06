@@ -322,8 +322,11 @@ def evaluate_lower_bound(env_args, experiment_name, agent_arg,  warm_up_periods,
     config.reset_params['new_arrivals'] = sample_path
     env = config.env
     agent_name, args = agent_arg['agent_name'], agent_arg['args']
-    if agent_name == "lowerbound":
-        agent_instance = InfiniteSAAAgent(env, discount_factor=env.discount_factor, sample_path=sample_path, **args)
+    if "lowerbound" in agent_name:
+        if agent_name == "lowerbound":
+            agent_instance = InfiniteSAAAgent(env, discount_factor=env.discount_factor, sample_path=sample_path, **args)
+        elif agent_name == "penalized_lowerbound":
+            agent_instance = InfinitePenalizedSAAAgent(env, discount_factor=env.discount_factor, sample_path=sample_path, **args)
         state, info = env.reset(**config.reset_params)
         _, benchmark_value, info = agent_instance.solve(state, 1)
         costs = [cost.getValue() for cost in info['costs'][0]]
@@ -339,7 +342,7 @@ def evaluate_lower_bound(env_args, experiment_name, agent_arg,  warm_up_periods,
     else:
         if agent_name in {"hindsight_approx"}:
             agent_instance = InfiniteSAAAgent(env, discount_factor=env.discount_factor, **args)
-        elif agent_name in {"hindsight_approx_with_penalty"}:
+        elif agent_name == "hindsight_approx_with_penalty":
             agent_instance = InfinitePenalizedSAAAgent(env, discount_factor=env.discount_factor, **args)
         elif agent_name == "myopic":
             agent_instance = MyopicAgent(env, discount_factor=env.discount_factor, **args)
@@ -357,7 +360,6 @@ def evaluate_lower_bound(env_args, experiment_name, agent_arg,  warm_up_periods,
         # Make sure the parent directories exist
         os.makedirs(os.path.dirname(pickle_file), exist_ok=True)
         data = load_pickle_if_exists(pickle_file)
-        print(data)
         # 2) Decide env, state trajectory, etc.
         if data is None:
             s, info = env.reset(**config.reset_params)
@@ -372,6 +374,7 @@ def evaluate_lower_bound(env_args, experiment_name, agent_arg,  warm_up_periods,
             t = data['t']
             s = data['s']
             s, info = env.reset(init_state=s, t=t, new_arrivals=sample_path)
+        print(sum(costs))
         for tau in range(len(sample_path[t-1:])):
             print("Current time step:", t + tau)
             states.append(s)
@@ -470,6 +473,6 @@ if __name__ == '__main__':
     #run_lower_bound_solver(**params, job_id=args.job_id)
     #run_penalized_lower_bound_solver(**params, job_id=args.job_id)
     #simulate_evaluation(**params, job_id=args.job_id)
-    #evaluate_lower_bound(**params, job_id=args.job_id)
-    restore_costs(**params, job_id=args.job_id)
+    evaluate_lower_bound(**params, job_id=args.job_id)
+    #restore_costs(**params, job_id=args.job_id)
     
