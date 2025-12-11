@@ -100,8 +100,14 @@ class InfinitePenalizedSAAAgent(InfiniteRTAgent):
                 self.add_action_space_constraints(model=direct_model, state_var=next_state_var, action_var=next_action_var)
                 # penalty for ALP
                 penalty = 0
+                '''
                 if self.coefficients is not None:
                     penalty = np.dot(self.W, (self.env.arrival_generator.mean_by_type - new_arrival))
+                '''
+                if self.coefficients is not None:
+                    (regular_booking_vars, overtime_vars, waitlist_vars) = prev_state_var
+                    (advance_scheduling_decision_vars, overtime_decision_vars) = actions[omega][-1]
+                    penalty = 2 * (waitlist_vars - advance_scheduling_decision_vars.sum(axis=0)) @ (self.env.arrival_generator.mean_by_type - new_arrival)
                 cost = self.env.cost_fn(next_state_var, next_action_var, is_var=True) + penalty
                 if self.is_include_discount_factor:
                     cost = (self.discount_factor ** tau) * cost

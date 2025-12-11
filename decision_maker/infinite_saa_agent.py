@@ -49,6 +49,9 @@ class InfiniteSAAAgent(InfiniteRTAgent):
             if self.sample_path_length is None:
                 if is_quasi_MC:
                     self.delta = self.env.arrival_generator.quasi_rvs(size=self.sample_path_number)
+                else:
+                    self.delta = self.env.arrival_generator.mc_rvs(size=self.sample_path_number)
+        print(self.delta)
         self.bender_solver = None
         self.is_include_discount_factor = is_include_discount_factor
         self.direct_model, self.state_linking_constraints, self.action_t_var = None, None, None

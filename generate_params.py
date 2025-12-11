@@ -260,7 +260,7 @@ def generate_simulation_params(config_type, experiment_name, warm_up_periods, te
     row_alp_args = alp_train_res.get(env_uid+'row_gen_alp', {'agent_name': 'alp', 'args': {'coefficients': None}})
     coeffecients = row_alp_args['args']['coefficients']
     agent_args = [
-                {'agent_name': 'hindsight_approx', 'args': {'sample_path_number': 256, 'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False, 'sample_path_length': None, 'is_include_discount_factor':False, 'is_quasi_MC':True}},
+                {'agent_name': 'hindsight_approx', 'args': {'sample_path_number': 256, 'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False, 'sample_path_length': None, 'is_include_discount_factor':False, 'is_quasi_MC':False}},
                 #{'agent_name': 'lowerbound', 'args': {'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False, 'is_include_discount_factor':False}},
                 #{'agent_name': 'hindsight_approx_with_penalty', 'args': {'sample_path_number': 350, 'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False, 'coeffecients':col_alp_args['args']['coefficients']}},
                 #{'agent_name': 'myopic', 'args': {}},
@@ -397,10 +397,10 @@ if __name__ == '__main__':
         is_reuse=False # Set to True to avoid regenerating files and only create the .dat
     )
     '''
-    generate_simulation_params(config_type='ejor', 
-                               experiment_name='lower_bound_perfect_penalized', 
-                               warm_up_periods=750,
-                               test_sample_path_num=1000,
-                               num_periods=1500,
+    generate_simulation_params(config_type='ejor_default', 
+                               experiment_name='preliminary_hindsight_mc_geo_full', 
+                               warm_up_periods=250,
+                               test_sample_path_num=998,
+                               num_periods=500,
                                dat_file='table.dat')
     

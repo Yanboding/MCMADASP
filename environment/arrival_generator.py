@@ -58,39 +58,32 @@ class MultiClassPoissonArrivalGenerator:
         ])
         return arrivals
     
-    def quasi_rvs(self, size=1):
-        """Quasi-Monte Carlo (QMC) generation using Sobol sequence for both N and the multinomial split.
-        size: sample of paths
+    def simulate_arrival_path(self, uniform_samples,  size):
+        """Simulate a single arrival path given uniform samples.
+        uniform_samples: shape (1 + max_periods + max_periods * (num_types - 1),)
         0: stop time
         1:max_periods: determine total N in each period
         max_periods+1:: determine types for each period
         total dim 1 + max_periods * num_types
         """
-        
-        # 1. Generate Uniform QMC samples
-        # Get 'size' points drawn from the d-dimensional hypercube [0,1)^d
-        # Shape: (size, 1 + maximum_arrival)
-        u_qmc = self.qmc_sampler.random(n=size)
-
         # --- PHASE A: Determine Path Lengths ---
         # Dimension 0 is reserved for length
-        u_len = u_qmc[:, 0]
+        u_len = uniform_samples[:, 0]
         # Inverse Transform on Geometric Distribution
         # We clip at max_horizon to prevent array out-of-bounds
         lengths = (geom.ppf(u_len, self.geom_p)-1).astype(int)
         lengths = np.minimum(lengths, self.max_periods)
         # --- PHASE B: Determine Total Arrivals Per Period ---
         # Dimensions 1 to 1 + max_horizon
-        u_totals = u_qmc[:, 1 : 1 + self.max_periods]
+        u_totals = uniform_samples[:, 1 : 1 + self.max_periods]
         # Inverse Transform on Truncated Poisson
         # np.searchsorted acts as the PPF for the discrete distribution defined by self.cdf_N
         total_counts = np.searchsorted(self.cdf_N, u_totals, side='right').astype(int)
 
         # --- PHASE C: Hierarchical Split into Types ---
         # Dimensions (1 + max_horizon) to End
-        # We reshape to (n_paths, max_horizon, num_types - 1)
-        u_splits = u_qmc[:, 1 + self.max_periods :].reshape(size, self.max_periods, self.num_types - 1)
-        #print(u_splits)
+        # We reshape to (max_horizon, num_types - 1)
+        u_splits = uniform_samples[:, 1 + self.max_periods :].reshape(size, self.max_periods, self.num_types - 1)
         
         # Placeholder for result
         paths = np.zeros((size, self.max_periods, self.num_types), dtype=int)
@@ -129,6 +122,33 @@ class MultiClassPoissonArrivalGenerator:
             path_slice = paths[i, :L, :]
             arrivals.append(path_slice)
         return arrivals
+    
+    def mc_rvs(self, size=1):
+        """Standard Monte Carlo generation using PRNG for both N and the multinomial split.
+        size: sample of paths
+        0: stop time
+        1:max_periods: determine total N in each period
+        max_periods+1:: determine types for each period
+        total dim 1 + max_periods * num_types
+        """
+        # 1. Generate Uniform PRNG samples
+        u_mc = self.rng.uniform(size=(size, 1 + self.max_periods + self.max_periods * (self.num_types - 1)))
+        return self.simulate_arrival_path(u_mc, size)
+
+    def quasi_rvs(self, size=1):
+        """Quasi-Monte Carlo (QMC) generation using Sobol sequence for both N and the multinomial split.
+        size: sample of paths
+        0: stop time
+        1:max_periods: determine total N in each period
+        max_periods+1:: determine types for each period
+        total dim 1 + max_periods * num_types
+        """
+        
+        # 1. Generate Uniform QMC samples
+        # Get 'size' points drawn from the d-dimensional hypercube [0,1)^d
+        # Shape: (size, 1 + maximum_arrival)
+        u_qmc = self.qmc_sampler.random(n=size)
+        return self.simulate_arrival_path(u_qmc, size)
 
     def arrival_type_rvs(self, arrival_num, size=1):
         arrivals = self.rng.multinomial(arrival_num, self.type_probs,size=size)

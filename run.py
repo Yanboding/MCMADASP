@@ -403,13 +403,18 @@ def evaluate_lower_bound(env_args, experiment_name, agent_arg,  warm_up_periods,
             
             if done:
                 break
+        print("number of states:", len(states), len(actions))
         scheduled_patients = []
         overtime = np.zeros(len(sample_path)+env.planning_horizon)
-        for t, (advance_scheduling_decision, overtime_decision) in enumerate(actions):
+        postponing_decisions = []
+        for t, ((regular_bookings, overtimes, waitlist), (advance_scheduling_decision, overtime_decision)) in enumerate(zip(states, actions)):
             scheduled_patients.append(advance_scheduling_decision.tolist())
             start = t
             end = t + len(overtime_decision)
             overtime[start:end] += overtime_decision
+            postponing_decisions.append(waitlist - advance_scheduling_decision.sum(axis=0))
+        postponing_decisions = np.array(postponing_decisions).sum(axis=0)
+        print("Total postponing decisions:", postponing_decisions)
         
     res = {
         "uid": uid,
