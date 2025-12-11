@@ -330,6 +330,7 @@ def evaluate_lower_bound(env_args, experiment_name, agent_arg,  warm_up_periods,
         state, info = env.reset(**config.reset_params)
         _, benchmark_value, info = agent_instance.solve(state, 1)
         costs = [cost.getValue() for cost in info['costs'][0]]
+        penalties = [penalty for penalty in info['penalties'][0]] if 'penalties' in info else []
         actions = info['actions'][0]
         scheduled_patients = []
         overtime = np.zeros(len(sample_path)+env.planning_horizon)
@@ -366,11 +367,13 @@ def evaluate_lower_bound(env_args, experiment_name, agent_arg,  warm_up_periods,
             states = []
             actions = []
             costs = []
+            penalties = []
             t = t0
         else:
             states = data['states']
             actions = data['actions']
             costs = data['costs']
+            penalties = []
             t = data['t']
             s = data['s']
             s, info = env.reset(init_state=s, t=t, new_arrivals=sample_path)
@@ -414,6 +417,7 @@ def evaluate_lower_bound(env_args, experiment_name, agent_arg,  warm_up_periods,
         "warm_up_periods": warm_up_periods,
         "total_cost": sum(costs),
         "costs": costs,
+        "penalties": penalties,
         "scheduled_patients": scheduled_patients,
         "overtime": overtime.tolist(),
         "agent_name": agent_name,

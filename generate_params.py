@@ -267,6 +267,7 @@ def generate_simulation_params(config_type, experiment_name, warm_up_periods, te
                 #col_alp_args,
                 #row_alp_args,
                 #{'agent_name': 'penalized_lowerbound', 'args':{'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False, 'is_include_discount_factor':False, 'coefficients':coeffecients}}
+                #{'agent_name': 'penalized_lowerbound', 'args':{'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False, 'is_include_discount_factor':False, 'coefficients':[1]*len(coeffecients)}}
                 ]
     lines_to_write = []
     for command_id in range(test_sample_path_num):
@@ -397,7 +398,7 @@ if __name__ == '__main__':
     )
     '''
     generate_simulation_params(config_type='ejor', 
-                               experiment_name='steady_state_hindsight', 
+                               experiment_name='lower_bound_perfect_penalized', 
                                warm_up_periods=750,
                                test_sample_path_num=1000,
                                num_periods=1500,
