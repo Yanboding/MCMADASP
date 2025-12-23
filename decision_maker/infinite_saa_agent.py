@@ -1,3 +1,4 @@
+import copy
 import numpy as np
 import gurobipy as gp
 import json
@@ -15,13 +16,21 @@ class InfiniteSAAAgent(InfiniteRTAgent):
                 future_decision_var_type='continuous', 
                 is_myopic=False, sample_path=None, 
                 is_include_discount_factor=False, 
-                sample_path_length=None, 
+                sample_path_length=None,
+                max_periods=None,
+                geom_p=None,
                 is_quasi_MC=True, verbose=False):
         super().__init__(env, discount_factor, V=V, Q=Q)
         self.sample_path_number = sample_path_number
         self.current_decision_var_type = GRB.INTEGER if current_decision_var_type is None or current_decision_var_type == 'integer' else GRB.CONTINUOUS
         self.future_decision_var_type = GRB.INTEGER if future_decision_var_type is None or future_decision_var_type == 'integer' else GRB.CONTINUOUS
         self.is_myopic = is_myopic
+        self.arrival_generator = copy.deepcopy(self.env.arrival_generator)
+        if max_periods is not None:
+            self.arrival_generator.set_max_periods(max_periods)
+        if geom_p is not None:
+            self.arrival_generator.set_geom_p(geom_p)
+        print('arrival generator max periods:', self.arrival_generator.max_periods)
         self.sample_path = sample_path
         self.sample_path_length = sample_path_length
         self.delta = []
@@ -48,10 +57,11 @@ class InfiniteSAAAgent(InfiniteRTAgent):
             '''
             if self.sample_path_length is None:
                 if is_quasi_MC:
-                    self.delta = self.env.arrival_generator.quasi_rvs(size=self.sample_path_number)
+                    self.delta = self.arrival_generator.quasi_rvs(size=self.sample_path_number)
                 else:
-                    self.delta = self.env.arrival_generator.mc_rvs(size=self.sample_path_number)
-        print(self.delta)
+                    self.delta = self.arrival_generator.mc_rvs(size=self.sample_path_number)
+        for omega in range(len(self.delta)):
+            print(f'sample path {omega} length:', len(self.delta[omega]))
         self.bender_solver = None
         self.is_include_discount_factor = is_include_discount_factor
         self.direct_model, self.state_linking_constraints, self.action_t_var = None, None, None
@@ -219,7 +229,7 @@ class InfiniteSAAAgent(InfiniteRTAgent):
         action_t, upper_bound, info = self.bender_solver.solve(state=state,
                                                             action=action,
                                                                 tol=1e-6,
-                                                                max_iter=12000,
+                                                                max_iter=100,
                                                                 verbose=verbose)
         if 'debug_info' in info:
             debug_info = {

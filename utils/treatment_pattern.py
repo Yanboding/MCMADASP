@@ -74,6 +74,24 @@ def str2treatment_patterns(treatment_pattern_strs):
     treatment_patterns = [str2treatment_pattern(s) for s in treatment_pattern_strs]
     return concat_ragged(treatment_patterns)
 
+def treatment_pattern2str(treatment_pattern):
+    '''
+    [1 2 2 1 1 1]  ->  '1*1 + 2*2 + 3*1'
+    '''
+    result = []
+    n = len(treatment_pattern)
+    i = 0
+    while i < n:
+        count = 1
+        value = treatment_pattern[i]
+        j = i + 1
+        while j < n and treatment_pattern[j] == value:
+            count += 1
+            j += 1
+        result.append(f"{count}*{value}")
+        i = j
+    return ' + '.join(result)
+
 def wait_time(l):
     '''
     [0,0,100,100,100, 100, 100,150]

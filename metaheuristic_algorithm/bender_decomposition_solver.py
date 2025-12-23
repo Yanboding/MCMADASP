@@ -123,18 +123,6 @@ class BenderDecompositionSolver:
             SubproblemWorker(self.subproblem_builder_fn, self.subproblem_builder_args, sid)
             for sid in range(self.num_subproblems)
         ]
-        # Build one worker per scenario — in parallel
-        # with concurrent.futures.ThreadPoolExecutor(max_workers=num_subproblems) as executor:
-        #     futures = [
-        #         executor.submit(
-        #             SubproblemWorker,
-        #             self.subproblem_builder_fn,
-        #             self.subproblem_builder_args,
-        #             sid
-        #         )
-        #         for sid in range(self.num_subproblems)
-        #     ]
-        #     self.workers = [f.result() for f in futures]
 
 
     def solve(self, state, action=None, tol=1e-6, max_iter=150, verbose=False):
@@ -147,10 +135,13 @@ class BenderDecompositionSolver:
         flat_action_t_var = flatten(self.action_t_var)
         for worker in self.workers:
             set_link_rhs(worker.state_linking_constraints, flatten_state)
-            worker.model.reset()
+            # worker.model.reset()
         for iteration in range(1, max_iter + 1):
+            start = time.time()
             if not solve_and_handle_errors(self.master_model, verbose=verbose):
                 raise RuntimeError("Master model optimal solution not found")
+            end = time.time()
+            print(f"Iteration {iteration}, master solved in {end - start} seconds")
             action_t = self.get_solution(self.action_t_var)
             flat_action_t = self.flatten_fn(action_t)
 
@@ -162,6 +153,7 @@ class BenderDecompositionSolver:
             optimality_cuts = []
             cost_to_go_estimation = 0.0
             all_feasible = True
+            start = time.time()
             for w in self.workers:
                 scenario_id = w.subproblem_id
                 is_feasible, v, duals = w.solve(flat_action_t, verbose=verbose)
@@ -178,6 +170,8 @@ class BenderDecompositionSolver:
                     # cut = @constraint(model, θ >= ret.obj + sum(ret.π .* (x .- x_k)))
                     cut_rhs = v + np.dot(duals, flat_action_t_var - flat_action_t)
                     optimality_cuts.append(self.theta_vars[scenario_id] >= cut_rhs)
+            end = time.time()
+            print(f"Iteration {iteration}, subproblems solved in {end - start} seconds")
             if not all_feasible:
                 print(f"Iteration {iteration}, adding {len(feasibility_cuts)} feasibility cuts")
                 # Some scenario infeasible: add feasibility cuts and repeat
