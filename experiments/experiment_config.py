@@ -305,6 +305,29 @@ def get_config_by_type(case_type, args=None):
     return config
 
 if __name__ == '__main__':
-    config = get_config_by_type('ejor_default')
-    env = config.env
-    print(env.holding_cost.get_waiting_target(2))
+    #config = get_config_by_type('ejor_default')
+    #env = config.env
+    #print(env.holding_cost.get_waiting_target(2))
+    arrival_rates = np.array([0.19, 0.11, 0.11, 1.43, 0.59, 0.45, 1.42, 1.36, 0.57, 0.38, 0.18, 0.18, 0.29, 0.21, 0.3,
+                         0.29, 0.15, 0.04])
+    slots = np.array([6, 2, 5,
+                      17, 22, 33,
+                      2, 6, 11, 5, 16, 1,
+                      21, 71,
+                      34,38,39,
+                      34])
+    sessions = np.array([5, 1, 4,
+                         16, 20, 16,
+                         1, 5, 10, 4, 15, 1,
+                         20, 35,
+                         33, 37, 37,
+                         33])
+    print(slots/sessions)
+    print((arrival_rates * slots/sessions).sum())
+    slots = np.array([6, 17, 11, 71, 39, 34])
+    sessions = np.array([5, 16, 10, 35, 37, 33])
+
+    arrival_rates = np.array([0.41, 2.47, 4.09, 0.5, 0.74, 0.04])
+    print((arrival_rates * slots/sessions).sum())
+
+

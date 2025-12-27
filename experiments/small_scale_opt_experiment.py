@@ -10,7 +10,7 @@ from utils import iter_to_tuple, iter_to_list, RunningStats, get_uid
 import numpy as np
 import pandas as pd
 
-from decision_maker import ALPEJORColumnGenerationAgent7u85rt46
+from decision_maker import ALPEJORColumnGenerationAgent
 from visualization import opt_plot, approximate_value_plot_from_running_stats_dict
 from environment import MultiClassPoissonArrivalGenerator
 

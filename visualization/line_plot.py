@@ -58,7 +58,7 @@ def approximate_value_plot(df, xlabel, ylabel, approx_labels, text_labels, plot_
     plt.savefig(save_file)
     plt.show()
 
-def approximate_value_plot_from_running_stats_dict(running_stats_dict, x_vals, xticks, xticklabels, xlabel, ylabel, plot_labels, title, save_file, is_show_text=True, is_set_x_color=False):
+def approximate_value_plot_from_running_stats_dict(running_stats_dict, x_vals, xticks, xticklabels, xlabel, ylabel, plot_labels, title, save_file, is_show_text=True, is_set_x_color=False, ncol=2):
     fig, ax = plt.subplots(1, 1, figsize=(12, 10))
     lines = []
     for label in plot_labels:
@@ -77,7 +77,7 @@ def approximate_value_plot_from_running_stats_dict(running_stats_dict, x_vals, x
         if is_show_text:
             for x, y, hw in zip(x_vals, means, half_window):
                 # offset = max(hw * 1.1, 0.02)  # Ensure a minimum offset
-                ax.text(x, y, f"{y:.2f}", ha='center', va='bottom', fontsize=16)
+                ax.text(x, y, f"{y:.2f}", ha='center', va='bottom', fontsize=20)
     set_fontsize(ax, 30)
     # To handle multiple lines with the same label, we need to manually create a custom legend
     handles, labels = ax.get_legend_handles_labels()
@@ -90,17 +90,31 @@ def approximate_value_plot_from_running_stats_dict(running_stats_dict, x_vals, x
         if is_set_x_color:
             for label, line in zip(xtick_labels, lines):
                 label.set_color(line.get_color())
-    ax.set_xlabel(xlabel, fontsize=30)
-    ax.set_ylabel(ylabel, fontsize=30)
-    ax.set_title(title, fontsize=30)
+    ax.set_xlabel(xlabel, fontsize=33)
+    ax.set_ylabel(ylabel, fontsize=33)
+    ax.set_title(title, fontsize=33)
     if title != None:
         ax.set_title(title, fontsize=30)
-    # Create legend
-    ax.legend(unique_handles, unique_labels, fontsize=20)
+    # --- MODIFIED LEGEND SECTION ---
+    # 1. bbox_to_anchor=(0.5, -0.15):
+    #    x=0.5 centers it horizontally.
+    #    y=-0.15 pushes it down below the axis.
+    #    (You may need to adjust -0.15 to -0.20 if your xlabel is very tall)
+    # 2. loc='upper center':
+    #    Aligns the TOP CENTER of the legend box to the anchor point defined above.
+    ax.legend(
+        unique_handles,
+        unique_labels,
+        fontsize=25,
+        borderaxespad=0.,
+        bbox_to_anchor=(0.5, -0.15),
+        ncol=ncol,
+        loc='upper center'
+    )
     ax.grid(True)
     fig.tight_layout()
-    plt.savefig(save_file)
-    plt.show()
+    plt.savefig(save_file, bbox_inches='tight', format='svg')
+    #plt.show()
 
 def approximate_value_plot_from_multid_running_stats(running_stats_dict, x_vals, xlabel, ylabel, plot_labels, title, save_file):
     fig, ax = plt.subplots(1, 1, figsize=(20, 10))

@@ -311,6 +311,37 @@ def flatten(vars):
 def set_link_rhs(linking_constraints, rhs_values):
     for i, constr in enumerate(linking_constraints):
         constr.setAttr("RHS", float(rhs_values[i]))
+def safe_execute(debug_mode):
+    def decorator(func):
+        def wrapper(*args, **kwargs):
+            if debug_mode:
+                return func(*args, **kwargs)
+            else:
+                try:
+                    return func(*args, **kwargs)
+                except Exception as e:
+                    print(e)
+                    return json.dumps({'error': str(e), 'errorCode': 422})
+        return wrapper
+
+    return decorator
+
+# Custom encoder
+def encode(obj):
+    if isinstance(obj, np.ndarray):
+        return obj.tolist()
+    if isinstance(obj, tuple):
+        return {"__tuple__": True, "items": [encode(x) for x in obj]}
+    if isinstance(obj, list):
+        return [encode(x) for x in obj]
+    return obj
+
+def decode(obj):
+    if isinstance(obj, dict) and obj.get("__tuple__"):
+        return tuple(decode(x) for x in obj["items"])
+    if isinstance(obj, list):
+        return [decode(x) for x in obj]
+    return obj
 
 # Custom encoder
 def encode(obj):
@@ -330,5 +361,9 @@ def decode(obj):
     return obj
 
 if __name__ == '__main__':
-    print(list(bounded_compositions(3, 10)))
+    data = [
+        (np.array([1, 2, 3]), np.array([4, 5, 6])),
+        (np.array([7, 8]), np.array([9, 10]))
+    ]
+    print(decode(encode(data)))
 

@@ -136,7 +136,6 @@ class BenderDecompositionSolver:
         #     ]
         #     self.workers = [f.result() for f in futures]
 
-
     def solve(self, state, action=None, tol=1e-6, max_iter=150, verbose=False):
         lower_bound = -GRB.INFINITY
         upper_bound = GRB.INFINITY

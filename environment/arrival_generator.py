@@ -274,7 +274,6 @@ class MultiClassPoissonArrivalGenerator:
 if __name__ == "__main__":
     # Parameters
      # Parameters
-
     mean_rate = 5.0
     max_arr = 10
     probs = [0.5, 0.3, 0.2] # 3 types
@@ -292,4 +291,5 @@ if __name__ == "__main__":
         qmc_seed=888
     )
 
-    print(generator_qmc.quasi_rvs(100)) 
+    print(geom.ppf(0.8, 0.05))
+    print(geom.cdf(100, p=0.05))
