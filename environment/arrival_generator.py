@@ -43,11 +43,21 @@ class MultiClassPoissonArrivalGenerator:
         self.geom_p = geom_p
 
         self.use_qmc = use_qmc
+        self.qmc_seed = qmc_seed
         if use_qmc:
             self.qmc_dim = 1 + (self.max_periods * self.num_types)
             
             # Note: Optimization=True is slower to init but better quality
-            self.qmc_sampler = qmc.Sobol(d=self.qmc_dim, scramble=True, seed=qmc_seed) 
+            self.qmc_sampler = qmc.Sobol(d=self.qmc_dim, scramble=True, seed=self.qmc_seed)
+    
+    def set_max_periods(self, max_periods):
+        self.max_periods = max_periods
+        if self.use_qmc:
+            self.qmc_dim = 1 + (self.max_periods * self.num_types)
+            self.qmc_sampler = qmc.Sobol(d=self.qmc_dim, scramble=True, seed=self.qmc_seed)
+    
+    def set_geom_p(self, geom_p):
+        self.geom_p = geom_p
 
     def rvs(self, size=1):
         N_values = self.rng.choice(

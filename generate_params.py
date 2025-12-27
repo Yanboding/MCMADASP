@@ -6,6 +6,7 @@ from pprint import pprint
 
 import pandas as pd
 import numpy as np
+from scipy.stats import geom
 
 from decision_maker import ALPEJORColumnGenerationAgent
 from experiments import get_config_by_type
@@ -232,7 +233,7 @@ def generate_alp_train_params(experiment_configs, dat_file):
                                        base_env_args_overrides=config.get('base_env_args_overrides'),
                                        param_modifier_fn=config.get('param_modifier_fn')):
                 print(get_uid(env_arg))
-                for train_type in ["col_gen","row_gen"]:
+                for train_type in ["row_gen"]:
                     line = "python run.py --params '" + json.dumps({'env_args':env_arg, 'experiment_name': name, "param_value": param_value, 'train_type': train_type}) + "'\n"
                     f.write(line)
 
@@ -260,14 +261,26 @@ def generate_simulation_params(config_type, experiment_name, warm_up_periods, te
     row_alp_args = alp_train_res.get(env_uid+'row_gen_alp', {'agent_name': 'alp', 'args': {'coefficients': None}})
     coeffecients = row_alp_args['args']['coefficients']
     agent_args = [
-                {'agent_name': 'hindsight_approx', 'args': {'sample_path_number': 256, 'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False, 'sample_path_length': None, 'is_include_discount_factor':False, 'is_quasi_MC':False}},
                 #{'agent_name': 'lowerbound', 'args': {'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False, 'is_include_discount_factor':False}},
-                #{'agent_name': 'hindsight_approx_with_penalty', 'args': {'sample_path_number': 350, 'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False, 'coeffecients':col_alp_args['args']['coefficients']}},
+                #{'agent_name': 'hindsight_approx', 'args': {'sample_path_number': 256, 'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False, 'sample_path_length': None, 'is_include_discount_factor':False, 'is_quasi_MC':False, 'max_periods':int(geom.ppf(0.995, 0.1)), "geom_p":0.1}},
+                #{'agent_name': 'hindsight_approx', 'args': {'sample_path_number': 256, 'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False, 'sample_path_length': None, 'is_include_discount_factor':False, 'is_quasi_MC':True, 'max_periods':int(geom.ppf(0.995, 0.1)), "geom_p":0.1}},
+                #{'agent_name': 'hindsight_approx', 'args': {'sample_path_number': 256, 'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False, 'sample_path_length': None, 'is_include_discount_factor':False, 'is_quasi_MC':False, 'max_periods':int(geom.ppf(0.8, 0.1)), "geom_p":0.1}},
+                #{'agent_name': 'hindsight_approx', 'args': {'sample_path_number': 256, 'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False, 'sample_path_length': None, 'is_include_discount_factor':False, 'is_quasi_MC':True, 'max_periods':int(geom.ppf(0.8, 0.1)), "geom_p":0.1}},
+                #{'agent_name': 'hindsight_approx', 'args': {'sample_path_number': 256, 'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False, 'sample_path_length': None, 'is_include_discount_factor':False, 'is_quasi_MC':False, 'max_periods':int(geom.ppf(0.5, 0.1)), "geom_p":0.1}},
+                #{'agent_name': 'hindsight_approx', 'args': {'sample_path_number': 256, 'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False, 'sample_path_length': None, 'is_include_discount_factor':False, 'is_quasi_MC':True, 'max_periods':int(geom.ppf(0.5, 0.1)), "geom_p":0.1}},
+                #{'agent_name': 'hindsight_approx', 'args': {'sample_path_number': 128, 'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False, 'sample_path_length': None, 'is_include_discount_factor':False, 'is_quasi_MC':False, 'max_periods':int(geom.ppf(0.995, 0.05)), "geom_p":0.05}},
+                #{'agent_name': 'hindsight_approx', 'args': {'sample_path_number': 256, 'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False, 'sample_path_length': None, 'is_include_discount_factor':False, 'is_quasi_MC':False, 'max_periods':int(geom.ppf(0.995, 0.05)), "geom_p":0.05}},
+                #{'agent_name': 'hindsight_approx', 'args': {'sample_path_number': 512, 'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False, 'sample_path_length': None, 'is_include_discount_factor':False, 'is_quasi_MC':False, 'max_periods':int(geom.ppf(0.995, 0.05)), "geom_p":0.05}},
+                #{'agent_name': 'hindsight_approx', 'args': {'sample_path_number': 128, 'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False, 'sample_path_length': None, 'is_include_discount_factor':False, 'is_quasi_MC':True, 'max_periods':int(geom.ppf(0.995, 0.05)), "geom_p":0.05}},
+                #{'agent_name': 'hindsight_approx', 'args': {'sample_path_number': 256, 'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False, 'sample_path_length': None, 'is_include_discount_factor':False, 'is_quasi_MC':True, 'max_periods':int(geom.ppf(0.995, 0.05)), "geom_p":0.05}},
+                #{'agent_name': 'hindsight_approx', 'args': {'sample_path_number': 512, 'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False, 'sample_path_length': None, 'is_include_discount_factor':False, 'is_quasi_MC':True, 'max_periods':int(geom.ppf(0.995, 0.05)), "geom_p":0.05}},
+                # {'agent_name': 'hindsight_approx_with_penalty', 'args': {'sample_path_number': 350, 'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False, 'coeffecients':col_alp_args['args']['coefficients']}},
                 #{'agent_name': 'myopic', 'args': {}},
-                #col_alp_args,
-                #row_alp_args,
+                # col_alp_args,
+                # row_alp_args,
                 #{'agent_name': 'penalized_lowerbound', 'args':{'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False, 'is_include_discount_factor':False, 'coefficients':coeffecients}}
-                #{'agent_name': 'penalized_lowerbound', 'args':{'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False, 'is_include_discount_factor':False, 'coefficients':[1]*len(coeffecients)}}
+                {'agent_name': 'penalized_lowerbound', 'args':{'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False, 'is_include_discount_factor':False, 'coefficients':[1]}},
+                #{'agent_name': 'penalized_lowerbound', 'args':{'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False, 'is_include_discount_factor':False}}
                 ]
     lines_to_write = []
     for command_id in range(test_sample_path_num):
@@ -279,19 +292,19 @@ def generate_simulation_params(config_type, experiment_name, warm_up_periods, te
         sample_path = env_for_sample_path.reset_arrivals(stop_time=num_periods) if env_for_sample_path else [[]]
         sample_path = sample_path.tolist() if hasattr(sample_path, 'tolist') else sample_path
         params = {
-            'env_args':env_args,
-            'warm_up_periods':warm_up_periods,
             'sample_path': sample_path,
+            'warm_up_periods':warm_up_periods,
+            'env_args':env_args,
         }
         uid = get_uid(params)
-        params = {
-            'uid': uid,
-            'experiment_name': experiment_name,
-            **params
-        }
         for agent_arg in agent_args:
-            params['agent_arg'] = agent_arg
-            lines_to_write.append("python run.py --params '" + json.dumps(params) + "'\n")
+            save_params = {
+                'uid': uid,
+                'experiment_name': experiment_name,
+                'agent_arg': agent_arg,
+                **params
+            }
+            lines_to_write.append("python run.py --params '" + json.dumps(save_params) + "'\n")
     with open(dat_file, 'w') as f:
         f.writelines(lines_to_write)
 
@@ -360,7 +373,7 @@ if __name__ == '__main__':
     }
     '''
     EXPERIMENT_CONFIGS = {
-        'steady_state': {
+        'small_scale_problem': {
             'config_type': 'ejor_default',
             'param_name': 'reset_params.percentage_occupied',
             'param_values': [0],
@@ -380,13 +393,13 @@ if __name__ == '__main__':
         'percentage_occupied':2000,
         'postponing_cost': 2000
     }
-    '''
+    
     # --- Run All Experiments ---
-    generate_alp_train_params(
-        experiment_configs=EXPERIMENT_CONFIGS,
-        dat_file = 'table.dat',
-    )
-    '''
+    # generate_alp_train_params(
+    #     experiment_configs=EXPERIMENT_CONFIGS,
+    #     dat_file = 'table.dat',
+    # )
+    
     
     '''
     generate_all_experiments(
@@ -397,10 +410,11 @@ if __name__ == '__main__':
         is_reuse=False # Set to True to avoid regenerating files and only create the .dat
     )
     '''
-    generate_simulation_params(config_type='ejor_default', 
-                               experiment_name='preliminary_hindsight_mc_geo_full', 
-                               warm_up_periods=250,
-                               test_sample_path_num=998,
+    
+    generate_simulation_params(config_type='small', 
+                               experiment_name='lowerbound_test_small_scale_problem', 
+                               warm_up_periods=750,
+                               test_sample_path_num=1,
                                num_periods=500,
-                               dat_file='table.dat')
+                               dat_file='table_test.dat')
     
