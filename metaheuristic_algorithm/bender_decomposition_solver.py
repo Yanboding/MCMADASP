@@ -49,7 +49,7 @@ class SubproblemWorker:
         self.set_link_rhs(action_values)
 
         if verbose:
-            self.model.Params.OutputFlag = 0
+            self.model.Params.OutputFlag = 1
         else:
             self.model.Params.OutputFlag = 0
 
@@ -135,7 +135,7 @@ class BenderDecompositionSolver:
         flat_action_t_var = flatten(self.action_t_var)
         for worker in self.workers:
             set_link_rhs(worker.state_linking_constraints, flatten_state)
-            # worker.model.reset()
+            worker.model.reset()
         for iteration in range(1, max_iter + 1):
             start = time.time()
             if not solve_and_handle_errors(self.master_model, verbose=verbose):
