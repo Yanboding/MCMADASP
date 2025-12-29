@@ -211,7 +211,7 @@ class InfiniteSAAAgent(InfiniteRTAgent):
         sub_model.setObjective(fut_cost, GRB.MINIMIZE)
         return sub_model, action_linking_constraints, state_linking_constraints
 
-    def solve(self, state, t=1, action=None, verbose=True):
+    def solve(self, state, t=1, action=None, verbose=False):
         
         if self.is_myopic or self.sample_path_number <= 1:
             action, obj_value, info = self.direct_solve(state, t=t, action=action)
