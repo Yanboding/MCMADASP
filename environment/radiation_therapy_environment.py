@@ -222,7 +222,7 @@ class RTEnv:
         if self.t + self.tau > self.decision_epoch:
             delta = np.zeros(self.num_types, dtype=int)
         else:
-            delta = self.new_arrivals[self.tau]
+            delta = self.new_arrivals[self.t + self.tau - 1]
         self.state = self.post_action_state_to_new_state(post_action_state, delta)
         return self.state, cost, done, {'wait_time_by_type': self.wait_time_by_type, 
                                         'overtime': self.overtime, 

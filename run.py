@@ -318,6 +318,7 @@ def evaluate_lower_bound(env_args, experiment_name, agent_arg,  warm_up_periods,
     4) Output file name: experiments/results/{experiment_name}/{job_id}.jsonl
     5) Each line in the output file is a json object with keys:
     '''
+    print('Evaluate lower bound on uid:', uid, agent_arg['agent_name'])
     config = get_config_by_type(case_type='infinite_custom', args=env_args)
     config.reset_params['new_arrivals'] = sample_path
     env = config.env
@@ -378,8 +379,11 @@ def evaluate_lower_bound(env_args, experiment_name, agent_arg,  warm_up_periods,
             t = data['t']
             s = data['s']
             s, info = env.reset(init_state=s, t=t, new_arrivals=sample_path)
-        print(sum(costs))
-        for tau in range(len(sample_path[t-1:])):
+        print("total cost:", sum(costs), "length of costs:", len(costs), 't:', t, 'remaining sample path length:', len(sample_path)-t+1)
+        if len(costs) >= len(sample_path):
+            print('Evaluation already completed. Total cost:', sum(costs))
+            return
+        for tau in range(len(sample_path)-t+1):
             print("Current time step:", t + tau)
             states.append(s)
             start = time.time()
@@ -420,13 +424,13 @@ def evaluate_lower_bound(env_args, experiment_name, agent_arg,  warm_up_periods,
     res = {
         "uid": uid,
         "experiment_name": experiment_name,
+        "agent_name": agent_arg,
         "warm_up_periods": warm_up_periods,
         "total_cost": sum(costs),
         "costs": costs,
         "penalties": penalties,
         "scheduled_patients": scheduled_patients,
         "overtime": overtime.tolist(),
-        "agent_name": agent_arg,
     }
     output_file = os.path.join('experiments', 'results', experiment_name, f'{job_id}.jsonl')
     # Make sure the parent directories exist
