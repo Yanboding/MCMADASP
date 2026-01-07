@@ -522,13 +522,13 @@ def calcualte_lowerbound_with_same_initial_state(env_args, experiment_name, agen
         res = {
         "uid": uid,
         "experiment_name": experiment_name,
+        "agent_name": {'agent_name': "lowerbound_" + agent_name, 'args': args},
         "warm_up_periods": warm_up_periods,
         "total_cost": sum(costs),
         "costs": costs,
         "penalties": [],
         "scheduled_patients": scheduled_patients,
         "overtime": overtime.tolist(),
-        "agent_name": {'agent_name': "lowerbound_" + agent_name, 'args': args},
         }
         output_file = os.path.join('experiments', 'results',  experiment_name, f'{job_id}.jsonl')
         # Make sure the parent directories exist
@@ -551,7 +551,7 @@ if __name__ == '__main__':
     #run_lower_bound_solver(**params, job_id=args.job_id)
     #run_penalized_lower_bound_solver(**params, job_id=args.job_id)
     #simulate_evaluation(**params, job_id=args.job_id)
-    evaluate_lower_bound(**params, job_id=args.job_id)
+    #evaluate_lower_bound(**params, job_id=args.job_id)
     #restore_costs(**params, job_id=args.job_id)
-    #calcualte_lowerbound_with_same_initial_state(**params, job_id=args.job_id)
+    calcualte_lowerbound_with_same_initial_state(**params, job_id=args.job_id)
     
