@@ -125,11 +125,13 @@ class InfiniteSAAAgent(InfiniteRTAgent):
                                                     new_arrival=new_arrival)
                 next_action_var = self.get_action_var(model=direct_model, advance_scheduling_type=self.future_decision_var_type)
                 self.add_action_space_constraints(model=direct_model, state_var=next_state_var, action_var=next_action_var)
+                onetime_cost = self.env.cost_fn(next_state_var, next_action_var, is_var=True)
                 if self.is_include_discount_factor:
-                    cost = (self.discount_factor ** tau) * self.env.cost_fn(next_state_var, next_action_var, is_var=True)
+                    print(f"Discount factor: {self.discount_factor}")
+                    cost = (self.discount_factor ** tau) * onetime_cost
                 else:
-                    cost = self.env.cost_fn(next_state_var, next_action_var, is_var=True)
-                costs[omega].append(cost)
+                    cost = onetime_cost
+                costs[omega].append(onetime_cost)
                 actions[omega].append(next_action_var)
                 fut_cost += cost
                 prev_state_var = next_state_var

@@ -501,7 +501,7 @@ def calcualte_lowerbound_with_same_initial_state(env_args, experiment_name, agen
             a = actions[tau]
             warmup_state, cost, done, info = env.step(a)
             costs.append(cost)
-        args = {'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False, 'is_include_discount_factor':False}
+        args = {'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False, 'is_include_discount_factor':True}
         agent_instance = InfiniteSAAAgent(env, discount_factor=env.discount_factor, sample_path=sample_path[warm_up_periods:], **args)
         print('warmup_state:', warmup_state, sample_path[warm_up_periods])
         print()
@@ -558,6 +558,7 @@ def calcualte_penalized_lowerbound_with_same_initial_state(env_args, experiment_
         env = config.env
         actions = data['actions']
         costs = []
+        penalties = []
         t = 1
         warmup_state, info = env.reset(**config.reset_params)
         
@@ -565,12 +566,14 @@ def calcualte_penalized_lowerbound_with_same_initial_state(env_args, experiment_
             a = actions[tau]
             warmup_state, cost, done, info = env.step(a)
             costs.append(cost)
-        args = {'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False, 'is_include_discount_factor':False}
+        args = {'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False, 'is_include_discount_factor':True}
         agent_instance = InfinitePenalizedSAAAgent(env, discount_factor=env.discount_factor, sample_path=sample_path[warm_up_periods:], **args)
         print('warmup_state:', warmup_state, sample_path[warm_up_periods])
         _, benchmark_value, info = agent_instance.solve(warmup_state, 1)
         costs += [cost.getValue() for cost in info['costs'][0]]
-        print(sum(costs))
+        penalties += [penalty if isinstance(penalty, int) else penalty.getValue() for penalty in info['penalties'][0]] if 'penalties' in info else []
+        print("total cost:", sum(costs))
+        print("total penalties:", sum(penalties))
         actions = info['actions'][0]
         scheduled_patients = []
         overtime = np.zeros(len(sample_path)+env.planning_horizon)
@@ -589,7 +592,7 @@ def calcualte_penalized_lowerbound_with_same_initial_state(env_args, experiment_
         "warm_up_periods": warm_up_periods,
         "total_cost": sum(costs),
         "costs": costs,
-        "penalties": [],
+        "penalties": penalties,
         "scheduled_patients": scheduled_patients,
         "overtime": overtime.tolist(),
         }
@@ -616,6 +619,6 @@ if __name__ == '__main__':
     #simulate_evaluation(**params, job_id=args.job_id)
     #evaluate_lower_bound(**params, job_id=args.job_id)
     #restore_costs(**params, job_id=args.job_id)
-    #calcualte_lowerbound_with_same_initial_state(**params, job_id=args.job_id)
-    calcualte_penalized_lowerbound_with_same_initial_state(**params, job_id=args.job_id)
+    calcualte_lowerbound_with_same_initial_state(**params, job_id=args.job_id)
+    #calcualte_penalized_lowerbound_with_same_initial_state(**params, job_id=args.job_id)
     
