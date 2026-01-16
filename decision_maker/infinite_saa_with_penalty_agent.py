@@ -98,22 +98,19 @@ class InfinitePenalizedSAAAgent(InfiniteRTAgent):
                                                     new_arrival=new_arrival)
                 next_action_var = self.get_action_var(model=direct_model, advance_scheduling_type=self.future_decision_var_type)
                 self.add_action_space_constraints(model=direct_model, state_var=next_state_var, action_var=next_action_var)
-                # penalty for ALP
-                penalty = 0
-                '''
-                if self.coefficients is not None:
-                    penalty = np.dot(self.W, (self.env.arrival_generator.mean_by_type - new_arrival))
-                '''
+
                 (next_regular_booking_vars, next_overtime_vars, next_waitlist_vars) = next_state_var
                 (regular_booking_vars, overtime_vars, waitlist_vars) = prev_state_var
                 (advance_scheduling_decision_vars, overtime_decision_vars) = actions[omega][-1]
                 arrival_difference = self.env.arrival_generator.mean_by_type - new_arrival
                 total_booked_slots = (next_regular_booking_vars + next_overtime_vars).sum()
                 penalty = 2 * (waitlist_vars - advance_scheduling_decision_vars.sum(axis=0) + total_booked_slots) @ arrival_difference
-                cost = self.env.cost_fn(next_state_var, next_action_var, is_var=True) + penalty
+                one_time_cost = self.env.cost_fn(next_state_var, next_action_var, is_var=True)
                 if self.is_include_discount_factor:
-                    cost = (self.discount_factor ** tau) * cost
-                costs[omega].append(cost)
+                    cost = (self.discount_factor ** tau) * (one_time_cost + penalty)
+                else:
+                    cost = one_time_cost + penalty
+                costs[omega].append(one_time_cost)
                 actions[omega].append(next_action_var)
                 penalties[omega].append(penalty)
                 fut_cost += cost

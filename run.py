@@ -501,7 +501,7 @@ def calcualte_lowerbound_with_same_initial_state(env_args, experiment_name, agen
             a = actions[tau]
             warmup_state, cost, done, info = env.step(a)
             costs.append(cost)
-        args = {'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False, 'is_include_discount_factor':False}
+        args = {'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False, 'is_include_discount_factor':True}
         agent_instance = InfiniteSAAAgent(env, discount_factor=env.discount_factor, sample_path=sample_path[warm_up_periods:], **args)
         print('warmup_state:', warmup_state, sample_path[warm_up_periods])
         print()
@@ -522,13 +522,79 @@ def calcualte_lowerbound_with_same_initial_state(env_args, experiment_name, agen
         res = {
         "uid": uid,
         "experiment_name": experiment_name,
+        "agent_name": {'agent_name': "lowerbound_" + agent_name, 'args': args},
         "warm_up_periods": warm_up_periods,
         "total_cost": sum(costs),
         "costs": costs,
         "penalties": [],
         "scheduled_patients": scheduled_patients,
         "overtime": overtime.tolist(),
-        "agent_name": {'agent_name': "lowerbound_" + agent_name, 'args': args},
+        }
+        output_file = os.path.join('experiments', 'results',  experiment_name, f'{job_id}.jsonl')
+        # Make sure the parent directories exist
+        os.makedirs(os.path.dirname(output_file), exist_ok=True)
+        with open(output_file, 'a') as f:  # 'a' will create the file if not present
+            f.write(json.dumps(res) + '\n')
+    else:
+        print(f'{uid}-{aid}.pickle not exists')
+
+def calcualte_penalized_lowerbound_with_same_initial_state(env_args, experiment_name, agent_arg,  warm_up_periods, sample_path, uid, job_id):
+    '''
+        1. read hindsight_approx data
+        2. use actions to determine states in each period
+        3. starting at warmup_period + 1, solve lowerbound
+    '''
+    aid = get_uid(agent_arg)
+    pickle_file = os.path.join('experiments', 'results', experiment_name, 'pickles',
+                            f'{uid}-{aid}.pickle')
+    # Make sure the parent directories exist
+    os.makedirs(os.path.dirname(pickle_file), exist_ok=True)
+    data = load_pickle_if_exists(pickle_file)
+    # 2) Decide env, state trajectory, etc.
+    warmup_state = None
+    if data != None:
+        config = get_config_by_type(case_type='infinite_custom', args=env_args)
+        config.reset_params['new_arrivals'] = sample_path
+        env = config.env
+        actions = data['actions']
+        costs = []
+        penalties = []
+        t = 1
+        warmup_state, info = env.reset(**config.reset_params)
+        
+        for tau in range(warm_up_periods):
+            a = actions[tau]
+            warmup_state, cost, done, info = env.step(a)
+            costs.append(cost)
+        args = {'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False, 'is_include_discount_factor':True}
+        agent_instance = InfinitePenalizedSAAAgent(env, discount_factor=env.discount_factor, sample_path=sample_path[warm_up_periods:], **args)
+        print('warmup_state:', warmup_state, sample_path[warm_up_periods])
+        _, benchmark_value, info = agent_instance.solve(warmup_state, 1)
+        costs += [cost.getValue() for cost in info['costs'][0]]
+        penalties += [penalty if isinstance(penalty, int) else penalty.getValue() for penalty in info['penalties'][0]] if 'penalties' in info else []
+        print("total cost:", sum(costs))
+        print("total penalties:", sum(penalties))
+        actions = info['actions'][0]
+        scheduled_patients = []
+        overtime = np.zeros(len(sample_path)+env.planning_horizon)
+        for t, action_var in enumerate(actions):
+            advance_scheduling_decision, overtime_decision = get_solution(action_var, is_final=False)
+            scheduled_patients.append(advance_scheduling_decision.tolist())
+            start = t
+            end = t + len(overtime_decision)
+            overtime[start:end] += overtime_decision
+        print(len(costs))
+        agent_name, args = agent_arg['agent_name'], agent_arg['args']
+        res = {
+        "uid": uid,
+        "experiment_name": experiment_name,
+        "agent_name": {'agent_name': "penalized_lowerbound_" + agent_name, 'args': args},
+        "warm_up_periods": warm_up_periods,
+        "total_cost": sum(costs),
+        "costs": costs,
+        "penalties": penalties,
+        "scheduled_patients": scheduled_patients,
+        "overtime": overtime.tolist(),
         }
         output_file = os.path.join('experiments', 'results',  experiment_name, f'{job_id}.jsonl')
         # Make sure the parent directories exist
@@ -551,7 +617,8 @@ if __name__ == '__main__':
     #run_lower_bound_solver(**params, job_id=args.job_id)
     #run_penalized_lower_bound_solver(**params, job_id=args.job_id)
     #simulate_evaluation(**params, job_id=args.job_id)
-    evaluate_lower_bound(**params, job_id=args.job_id)
+    #evaluate_lower_bound(**params, job_id=args.job_id)
     #restore_costs(**params, job_id=args.job_id)
-    #calcualte_lowerbound_with_same_initial_state(**params, job_id=args.job_id)
+    calcualte_lowerbound_with_same_initial_state(**params, job_id=args.job_id)
+    #calcualte_penalized_lowerbound_with_same_initial_state(**params, job_id=args.job_id)
     
