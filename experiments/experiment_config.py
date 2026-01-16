@@ -154,6 +154,42 @@ class ExperimentConfig:
             "arrival_random_seed": 42,
         }
         return cls.from_ejor_custom_case(**env_args)
+    
+    @classmethod
+    def from_toy_case(cls):
+        treatment_patterns = ["1 * 2 + 4 * 1", 
+                              "1 * 3 + 7 * 2",
+                              "1 * 4 + 10 * 2"]
+        booking_window_size = 20
+        arrival_rates = [2.47, 4.09, 1.69]
+        l = [[(0, 1, 0), (1, 5, 100), (5, 100, 150)],
+             [(0, 5, 0), (5, 10, 80), (10, 100, 150)],
+             [(0, 10, 0), (10, 20, 50), (20, 30, 90), (30, 40, 100), (40, 100, 150)]]
+        holding_cost = [wait_time(l[i]) for i in range(len(treatment_patterns))]
+        holding_cost = np.array(holding_cost).T
+        env_args = {
+            "booking_window_size": booking_window_size,
+            "arrival_rates": arrival_rates,
+            "patterns": treatment_patterns,
+            "holding_cost_by_day_by_type": holding_cost.tolist(),
+            "overtime_cost_by_day": 100,
+            "postponing_cost": 2000,
+            "duration": 1,
+            "regular_capacity": 120,
+            "overtime_capacity": 15,
+            "discount_factor": 0.99,
+            "reset_params": {
+                'percentage_occupied': 0,
+                't': 1
+            },
+            "maximum_total_arrival": math.ceil(sum(arrival_rates) * 3),
+            "init_state": None,
+            "valid_action": None,
+            "env_random_seed": 0,
+            "stop_time_random_seed": 1,
+            "arrival_random_seed": 42,
+        }
+        return cls.from_ejor_custom_case(**env_args)
 
     @classmethod
     def from_ejor_base_case(cls):
@@ -318,6 +354,8 @@ def get_config_by_type(case_type, args=None):
         config = ExperimentConfig.from_ejor_default_case()
     elif case_type == 'small':
         config = ExperimentConfig.from_small_case()
+    elif case_type == 'toy':
+        config = ExperimentConfig.from_toy_case()
     elif case_type == 'infinite_custom':
         config = ExperimentConfig.from_ejor_custom_case(**args)
     return config

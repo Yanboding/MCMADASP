@@ -574,6 +574,7 @@ def calcualte_penalized_lowerbound_with_same_initial_state(env_args, experiment_
         penalties += [penalty if isinstance(penalty, int) else penalty.getValue() for penalty in info['penalties'][0]] if 'penalties' in info else []
         print("total cost:", sum(costs))
         print("total penalties:", sum(penalties))
+        print("total combined:", sum(costs) + sum(penalties))
         actions = info['actions'][0]
         scheduled_patients = []
         overtime = np.zeros(len(sample_path)+env.planning_horizon)
@@ -617,8 +618,8 @@ if __name__ == '__main__':
     #run_lower_bound_solver(**params, job_id=args.job_id)
     #run_penalized_lower_bound_solver(**params, job_id=args.job_id)
     #simulate_evaluation(**params, job_id=args.job_id)
-    #evaluate_lower_bound(**params, job_id=args.job_id)
+    evaluate_lower_bound(**params, job_id=args.job_id)
     #restore_costs(**params, job_id=args.job_id)
-    calcualte_lowerbound_with_same_initial_state(**params, job_id=args.job_id)
+    #calcualte_lowerbound_with_same_initial_state(**params, job_id=args.job_id)
     #calcualte_penalized_lowerbound_with_same_initial_state(**params, job_id=args.job_id)
     

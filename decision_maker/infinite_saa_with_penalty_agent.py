@@ -104,7 +104,7 @@ class InfinitePenalizedSAAAgent(InfiniteRTAgent):
                 (advance_scheduling_decision_vars, overtime_decision_vars) = actions[omega][-1]
                 arrival_difference = self.env.arrival_generator.mean_by_type - new_arrival
                 total_booked_slots = (next_regular_booking_vars + next_overtime_vars).sum()
-                penalty = 2 * (waitlist_vars - advance_scheduling_decision_vars.sum(axis=0) + total_booked_slots) @ arrival_difference
+                penalty = 0.5 * (waitlist_vars - advance_scheduling_decision_vars.sum(axis=0) + total_booked_slots) @ arrival_difference
                 one_time_cost = self.env.cost_fn(next_state_var, next_action_var, is_var=True)
                 if self.is_include_discount_factor:
                     cost = (self.discount_factor ** tau) * (one_time_cost + penalty)
