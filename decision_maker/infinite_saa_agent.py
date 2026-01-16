@@ -127,7 +127,6 @@ class InfiniteSAAAgent(InfiniteRTAgent):
                 self.add_action_space_constraints(model=direct_model, state_var=next_state_var, action_var=next_action_var)
                 onetime_cost = self.env.cost_fn(next_state_var, next_action_var, is_var=True)
                 if self.is_include_discount_factor:
-                    print(f"Discount factor: {self.discount_factor}")
                     cost = (self.discount_factor ** tau) * onetime_cost
                 else:
                     cost = onetime_cost
@@ -178,6 +177,26 @@ class InfiniteSAAAgent(InfiniteRTAgent):
             [master_model.addVar(vtype=GRB.CONTINUOUS, name=f"theta_{omega}") for omega in range(len(self.delta))])
         imm_cost = self.env.cost_fn(state_var, action_t_var, is_var=True)
         z = imm_cost + theta_vars.sum() / self.sample_path_number
+        master_model.setObjective(z, GRB.MINIMIZE)
+        return master_model, imm_cost, theta_vars, action_t_var, state_linking_constraints
+    
+    def adaptive_master_builder_fn(self):
+        master_model = gp.Model(f"SA_Advance_Adaptive_Master", env=self.grb_env)
+        master_model.setParam("MultiObjPre", 0)
+        master_model.setParam("MIPGapAbs", 1e-9)         # Enforce extremely tight absolute gap
+        master_model.setParam("MIPGap", 1e-9)
+        master_model.setParam("FeasibilityTol", 1e-9)
+        master_model.setParam("OptimalityTol", 1e-9)
+        state_var = self.get_state_var(master_model)
+        state_linking_constraints = self.build_state_linking_constraints(master_model, state_var)
+        # create action variables in period t
+        action_t_var = self.get_action_var(model=master_model, advance_scheduling_type=GRB.INTEGER)
+        # add action constraint
+        self.add_action_space_constraints(model=master_model, state_var=state_var, action_var=action_t_var)
+        # set imm_cost and a cost to go lb
+        theta_vars = []
+        imm_cost = self.env.cost_fn(state_var, action_t_var, is_var=True)
+        z = imm_cost
         master_model.setObjective(z, GRB.MINIMIZE)
         return master_model, imm_cost, theta_vars, action_t_var, state_linking_constraints
     
@@ -241,6 +260,36 @@ class InfiniteSAAAgent(InfiniteRTAgent):
             with open('bender_error_info.json', 'w') as f:
                 f.write(json.dumps(debug_info))
         return action_t, upper_bound, info
+    
+    def adaptive_solve(self, state, t=1, action=None, batch_size=64, adaptive_tol=1e-5, gap_tol=1e-6, max_iter=150, verbose=False):
+        if self.is_myopic or self.sample_path_number <= 1:
+            action, obj_value, info = self.direct_solve(state, t=t, action=action)
+            return action, obj_value, info
+        
+        if self.bender_solver is None:
+            self.bender_solver = BenderDecompositionSolver(master_builder_fn=self.adaptive_master_builder_fn,
+                                                       master_builder_args={},
+                                                        subproblem_builder_fn=self.subproblem_builder_fn,
+                                                        subproblem_builder_args={'env':self.grb_env},
+                                                        get_solution=self.get_solution,
+                                                        flatten_fn=None,
+                                                        num_subproblems=self.sample_path_number)
+        
+        action_t, upper_bound, info = self.bender_solver.adaptive_solve(state=state,
+                                                                    action=action,
+                                                                    batch_size=batch_size,
+                                                                    adaptive_tol=adaptive_tol,
+                                                                    gap_tol=gap_tol,
+                                                                    max_iter=max_iter,
+                                                                    verbose=verbose)
+        if 'debug_info' in info:
+            debug_info = {
+                'state': encode(state),
+                'sample_paths': encode(self.delta)
+            }
+            with open('bender_error_info.json', 'w') as f:
+                f.write(json.dumps(debug_info))
+        return action_t, upper_bound, info
 
 if __name__ == "__main__":
     from experiments import get_config_by_type
@@ -251,8 +300,12 @@ if __name__ == "__main__":
     done = False
     action, obj, _ = agent.solve(state=state, t=1, verbose=False)
     print("time:", 1, "bender obj:", obj)
+    '''
     state, cost, done, info = env.step(action)
     action, obj, _ = agent.solve(state=state, t=2, verbose=False)
     print("time:", 2, "bender obj:", obj)
+    '''
+    action, obj, _ = agent.adaptive_solve(state=state, t=1, verbose=False)
+
 
 
