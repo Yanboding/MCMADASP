@@ -59,7 +59,7 @@ def approximate_value_plot(df, xlabel, ylabel, approx_labels, text_labels, plot_
     plt.show()
 
 def approximate_value_plot_from_running_stats_dict(running_stats_dict, x_vals, xticks, xticklabels, xlabel, ylabel, plot_labels, title, save_file, is_show_text=True, is_set_x_color=False, ncol=2):
-    fig, ax = plt.subplots(1, 1, figsize=(12, 10))
+    fig, ax = plt.subplots(1, 1, figsize=(15, 10))
     lines = []
     for label in plot_labels:
         running_stats_by_x_val = running_stats_dict[label]
@@ -112,9 +112,12 @@ def approximate_value_plot_from_running_stats_dict(running_stats_dict, x_vals, x
         loc='upper center'
     )
     ax.grid(True)
+    # This targets the '1e6' text at the top of the axis
+    ax.yaxis.get_offset_text().set_fontsize(20)
     fig.tight_layout()
     plt.savefig(save_file, bbox_inches='tight', format='svg')
     #plt.show()
+
 
 def approximate_value_plot_from_multid_running_stats(running_stats_dict, x_vals, xlabel, ylabel, plot_labels, title, save_file):
     fig, ax = plt.subplots(1, 1, figsize=(20, 10))

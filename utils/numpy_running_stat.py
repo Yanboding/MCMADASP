@@ -85,7 +85,7 @@ class RunningStats:
         return self.mean - half_window, self.mean + half_window
 
     def __repr__(self) -> str:
-        return f"RunningStats(n={self.n}, mean={self.mean:.4f}, std={self.std:.4f})"
+        return f"RunningStats(n={self.n}, mean={self.mean:.4f}, std={self.std:.4f}, 95% CI={self.mean:.4f} \pm {self.half_window(0.95):.4f})"
 
     def __iadd__(self, other):
         """Handles in-place addition (+=)."""

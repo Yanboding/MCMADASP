@@ -1,9 +1,8 @@
+import copy
 import time
 
 import numpy as np
 from gurobipy import GRB
-from decision_maker import InfiniteRTAgent
-import concurrent.futures
 
 from utils import solve_and_handle_errors
 
@@ -65,6 +64,51 @@ class SubproblemWorker:
             ray = np.array([c.FarkasDual for c in self.link_rows], dtype=float)
             return False, v, ray
 
+    def solve_pareto(self, action_values, core_point, epsilon=1e-4, verbose: bool = False):
+        """
+        Implements a simplified Magnanti-Wong/Papadakos cut.
+        core_point: a point in the interior of the feasible region (e.g., average of previous actions).
+        """
+        self.set_link_rhs(action_values)
+        self.model.Params.OutputFlag = 1 if verbose else 0
+
+        # --- Step 1: Solve standard subproblem ---
+        self.model.optimize()
+
+        if self.model.Status != GRB.OPTIMAL:
+            # If infeasible, handle with Farkas (Standard Benders)
+            v = sum(c.FarkasDual * c.RHS for c in self.model.getConstrs())
+            ray = np.array([c.FarkasDual for c in self.link_rows], dtype=float)
+            return False, v, ray
+
+        # Current optimal value
+        z_star = self.model.ObjVal
+
+        # --- Step 2: Solve for Pareto-Optimal Duals ---
+        # We fix the objective value to z_star and change the objective to maximize
+        # the cut value at the 'core_point'.
+
+        # 1. Add a temporary constraint to maintain optimality: dual_obj == z_star
+        # Note: In the primal, this means fixing the objective.
+        # In practice, it's easier to use Gurobi's 'Secondary Objective' or
+        # fix the primal variables that were basic.
+
+        # Shift the RHS toward the core point by a small epsilon
+        perturbed_rhs = [(1 - epsilon) * action_values[i] + epsilon * core_point[i]
+                         for i in range(len(action_values))]
+
+        self.set_link_rhs(perturbed_rhs)
+        self.model.optimize()
+
+        # The duals from this slightly perturbed problem are biased toward the core point
+        v = self.model.ObjVal
+        duals = np.array([c.Pi for c in self.link_rows], dtype=float)
+
+        # Reset RHS for next iteration
+        self.set_link_rhs(action_values)
+
+        return True, z_star, duals
+
     def dispose(self):
         self.model.dispose()
 
@@ -124,9 +168,15 @@ class BenderDecompositionSolver:
             for sid in range(self.num_subproblems)
         ]
 
-    def solve(self, state, action=None, tol=1e-6, max_iter=150, verbose=False):
-        lower_bound = -GRB.INFINITY
-        upper_bound = GRB.INFINITY
+    def update_core_point(self, core: np.ndarray, xk: np.ndarray, k: int, alpha: float = None) -> np.ndarray:
+        xk = np.asarray(xk, dtype=float)
+        core = np.asarray(core, dtype=float)
+        if alpha is None:
+            alpha = 1.0 / (k + 1.0)  # diminishing step
+        return (1.0 - alpha) * core + alpha * xk
+
+    def solve(self, state, action=None, tol=1e-6, max_iter=150, verbose=False,
+              use_pareto_cuts=True, pareto_epsilon=1e-4, core_alpha=None):
         self.master_model, self.imm_cost, self.theta_vars, self.action_t_var, self.state_linking_constraints = self.master_builder_fn(
             **self.master_builder_args)
         flatten_state = flatten(state)
@@ -135,6 +185,10 @@ class BenderDecompositionSolver:
         for worker in self.workers:
             set_link_rhs(worker.state_linking_constraints, flatten_state)
             worker.model.reset()
+
+        lower_bound = -GRB.INFINITY
+        upper_bound = GRB.INFINITY
+        core_point = None  # For Pareto cuts; could be average of previous actions, will initialize after first master solve
         for iteration in range(1, max_iter + 1):
             start = time.time()
             if not solve_and_handle_errors(self.master_model, verbose=verbose):
@@ -143,6 +197,10 @@ class BenderDecompositionSolver:
             print(f"Iteration {iteration}, master solved in {end - start} seconds")
             action_t = self.get_solution(self.action_t_var)
             flat_action_t = self.flatten_fn(action_t)
+
+            if core_point is None:
+                core_point = copy.deepcopy(flat_action_t)
+                print('core_point:', core_point)
 
             lower_bound = self.master_model.ObjVal
 
@@ -155,7 +213,12 @@ class BenderDecompositionSolver:
             start = time.time()
             for w in self.workers:
                 scenario_id = w.subproblem_id
-                is_feasible, v, duals = w.solve(flat_action_t, verbose=verbose)
+                if use_pareto_cuts:
+                    is_feasible, v, duals = w.solve_pareto(
+                        flat_action_t, core_point, epsilon=pareto_epsilon, verbose=verbose
+                    )
+                else:
+                    is_feasible, v, duals = w.solve(flat_action_t, verbose=verbose)
                 if not is_feasible:
                     print(f"Iteration {iteration}, scenario {scenario_id} infeasible; adding feasibility cut")
                     all_feasible = False
@@ -181,13 +244,16 @@ class BenderDecompositionSolver:
                 self.master_model.addConstrs((optimality_cuts[i] for i in range(len(optimality_cuts))), name="opt_cut_")
                 cost_to_go_estimation = cost_to_go_estimation / self.num_subproblems
                 upper_bound = self.imm_cost.getValue() + cost_to_go_estimation
+
+                # update core point AFTER you have a valid x_k from the master
+                core_point = self.update_core_point(core_point, flat_action_t, iteration, alpha=core_alpha)
                 # Average the future cost across scenarios like in direct solution
                 if abs(upper_bound - lower_bound) < tol:
                     action_t = self.get_solution(self.action_t_var, is_final=True)
                     return action_t, upper_bound, {}
                 if lower_bound > upper_bound:
-                    print('Rwong upper_bound:', upper_bound)
-                    print('Rwong lower_bound:', lower_bound)
+                    print('Wrong upper_bound:', upper_bound)
+                    print('Wrong lower_bound:', lower_bound)
                     print("Lower bound exceeded upper bound")
                     # save more state here for debugging
                     action_t = self.get_solution(self.action_t_var, is_final=True)
@@ -199,20 +265,23 @@ class BenderDecompositionSolver:
         action_t = self.get_solution(self.action_t_var, is_final=True)
         return action_t, upper_bound, {}
     
-    def _solve(self, master_model, imm_cost, theta_vars, action_t_var, state_linking_constraints, tol=1e-6, max_iter=150, verbose=False):
+    def _solve(self, master_model, imm_cost, theta_vars, action_t_var, tol=1e-6, max_iter=150, use_pareto_cuts=True, pareto_epsilon=1e-4, core_alpha=None, verbose=False):
         lower_bound = -GRB.INFINITY
         upper_bound = GRB.INFINITY
         flat_action_t_var = flatten(action_t_var)
+        info = {}
+        core_point = None
+        workers = self.workers[:len(theta_vars)]
         for iteration in range(1, max_iter + 1):
             start = time.time()
-            if not solve_and_handle_errors(self.master_model, verbose=verbose):
+            if not solve_and_handle_errors(master_model, verbose=verbose):
                 raise RuntimeError("Master model optimal solution not found")
             end = time.time()
             print(f"Iteration {iteration}, master solved in {end - start} seconds")
-            action_t = self.get_solution(self.action_t_var)
+            action_t = self.get_solution(action_t_var)
             flat_action_t = self.flatten_fn(action_t)
 
-            lower_bound = self.master_model.ObjVal
+            lower_bound = master_model.ObjVal
 
             # Ask all workers to solve for this action
             # futures = [ex.submit(w.solve, action_t, verbose) for w in workers]
@@ -221,7 +290,8 @@ class BenderDecompositionSolver:
             cost_to_go_estimation = 0.0
             all_feasible = True
             start = time.time()
-            for w in self.workers:
+            print('subproblem workers:', len(self.workers), 'theta vars:', len(theta_vars))
+            for w in workers:
                 scenario_id = w.subproblem_id
                 is_feasible, v, duals = w.solve(flat_action_t, verbose=verbose)
                 if not is_feasible:
@@ -236,38 +306,50 @@ class BenderDecompositionSolver:
                     cost_to_go_estimation += v
                     # cut = @constraint(model, θ >= ret.obj + sum(ret.π .* (x .- x_k)))
                     cut_rhs = v + np.dot(duals, flat_action_t_var - flat_action_t)
-                    optimality_cuts.append(self.theta_vars[scenario_id] >= cut_rhs)
+                    optimality_cuts.append(theta_vars[scenario_id] >= cut_rhs)
             end = time.time()
             print(f"Iteration {iteration}, subproblems solved in {end - start} seconds")
             if not all_feasible:
                 print(f"Iteration {iteration}, adding {len(feasibility_cuts)} feasibility cuts")
                 # Some scenario infeasible: add feasibility cuts and repeat
-                self.master_model.addConstrs((feasibility_cuts[i] for i in range(len(feasibility_cuts))), name="feas_cut_")
+                master_model.addConstrs((feasibility_cuts[i] for i in range(len(feasibility_cuts))), name="feas_cut_")
             else:
                 print(f"Iteration {iteration}, adding {len(optimality_cuts)} optimality cuts")
                 # All scenarios feasible: add optimality cuts and continue
-                self.master_model.addConstrs((optimality_cuts[i] for i in range(len(optimality_cuts))), name="opt_cut_")
+                master_model.addConstrs((optimality_cuts[i] for i in range(len(optimality_cuts))), name="opt_cut_")
                 cost_to_go_estimation = cost_to_go_estimation / self.num_subproblems
-                upper_bound = self.imm_cost.getValue() + cost_to_go_estimation
+                upper_bound = imm_cost.getValue() + cost_to_go_estimation
                 # Average the future cost across scenarios like in direct solution
                 if abs(upper_bound - lower_bound) < tol:
-                    action_t = self.get_solution(self.action_t_var, is_final=True)
-                    return action_t, upper_bound, {}
+                    info = {}
+                    break
                 if lower_bound > upper_bound:
-                    print('Rwong upper_bound:', upper_bound)
-                    print('Rwong lower_bound:', lower_bound)
+                    print('Wrong upper_bound:', upper_bound)
+                    print('Wrong lower_bound:', lower_bound)
                     print("Lower bound exceeded upper bound")
-                    # save more state here for debugging
-                    action_t = self.get_solution(self.action_t_var, is_final=True)
-                    return action_t, upper_bound, {'debug':'lower_bound_exceeded_upper_bound'}
+                    info = {'debug':'lower_bound_exceeded_upper_bound'}
+                    break
             print('upper_bound:', upper_bound)
             print('lower_bound:', lower_bound)
             print('-' * 20)
-        print('Max iterations reached')
-        action_t = self.get_solution(self.action_t_var, is_final=True)
-        return action_t, upper_bound, {}
+        else:
+            print('Max iterations reached')
+        action_t = self.get_solution(action_t_var, is_final=True)
+        return action_t, upper_bound, info
+
+    def update_master_problem(self, model, imm_cost, theta_vars, new_scenario_number):
+        # No need to update anything in the master problem
+        # Add the new variable to the model and the dictionary
+        # set imm_cost and a cost to go lb
+        start_index = len(theta_vars)
+        print('start_index:', start_index)
+        theta_vars += [model.addVar(vtype=GRB.CONTINUOUS, name=f"theta_{omega}") for omega in range(start_index, start_index + new_scenario_number)]
+        z = imm_cost + sum(theta_vars) / len(theta_vars)
+        model.setObjective(z, GRB.MINIMIZE)
+        model.update()
     
-    def adaptive_solve(self, state, action=None, batch_size=64, adaptive_tol=1e-5, gap_tol=1e-6, max_iter=150, verbose=False):
+    def adaptive_solve(self, state, action=None, batch_size=64, adaptive_tol=1e-5, gap_tol=1e-6, max_iter=150,
+                       use_pareto_cuts=True, pareto_epsilon=1e-4, core_alpha=None, verbose=False):
         master_model, imm_cost, theta_vars, action_t_var, state_linking_constraints = self.master_builder_fn(**self.master_builder_args)
         flatten_state = flatten(state)
         set_link_rhs(state_linking_constraints, flatten_state)
@@ -282,7 +364,10 @@ class BenderDecompositionSolver:
                 set_link_rhs(worker.state_linking_constraints, flatten_state)
                 worker.model.reset()
             number_of_workers += batch_size
-            action_t, obj_val, info = self.solve(master_model tol=gap_tol, max_iter=max_iter, verbose=verbose)
+            print('theta_vars,', theta_vars)
+            self.update_master_problem(master_model, imm_cost, theta_vars, new_scenario_number=batch_size)
+            # add theta vars for new workers
+            action_t, obj_val, info = self._solve(master_model, imm_cost, theta_vars, action_t_var, tol=gap_tol, max_iter=max_iter, verbose=verbose)
             if 'debug' in info:
                 return action_t, obj_val, info
             if abs(obj_val - prev) < adaptive_tol or number_of_workers >= len(self.workers):
