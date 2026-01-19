@@ -262,8 +262,8 @@ def generate_simulation_params(config_type, experiment_name, warm_up_periods, te
     coeffecients = row_alp_args['args']['coefficients']
     agent_args = [
                 #{'agent_name': 'lowerbound', 'args': {'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False, 'is_include_discount_factor':False}},
-                {'agent_name': 'myopic', 'args': {}},
-                # row_alp_args,             
+                #{'agent_name': 'myopic', 'args': {}},
+                row_alp_args,             
                 
                 # {'agent_name': 'hindsight_approx', 'args': {'sample_path_number': 128, 'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False, 'sample_path_length': None, 'is_include_discount_factor':False, 'is_quasi_MC':False, 'max_periods':int(geom.ppf(0.995, 0.05)), "geom_p":0.05}},
                 # {'agent_name': 'hindsight_approx', 'args': {'sample_path_number': 128, 'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False, 'sample_path_length': None, 'is_include_discount_factor':False, 'is_quasi_MC':True, 'max_periods':int(geom.ppf(0.995, 0.05)), "geom_p":0.05}},
@@ -418,8 +418,8 @@ if __name__ == '__main__':
     
     generate_simulation_params(config_type='toy', 
                                experiment_name='toy_problem', 
-                               warm_up_periods=750,
-                               test_sample_path_num=60,
-                               num_periods=2000,
+                               warm_up_periods=250,
+                               test_sample_path_num=2000,
+                               num_periods=1000,
                                dat_file='table.dat')
     

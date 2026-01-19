@@ -505,7 +505,7 @@ def calcualte_lowerbound_with_same_initial_state(env_args, experiment_name, agen
         agent_instance = InfiniteSAAAgent(env, discount_factor=env.discount_factor, sample_path=sample_path[warm_up_periods:], **args)
         print('warmup_state:', warmup_state, sample_path[warm_up_periods])
         print()
-        _, benchmark_value, info = agent_instance.solve(warmup_state, 1)
+        _, benchmark_value, info = agent_instance.solve(warmup_state)
         costs += [cost.getValue() for cost in info['costs'][0]]
         print(sum(costs))
         actions = info['actions'][0]
@@ -566,10 +566,10 @@ def calcualte_penalized_lowerbound_with_same_initial_state(env_args, experiment_
             a = actions[tau]
             warmup_state, cost, done, info = env.step(a)
             costs.append(cost)
-        args = {'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False, 'is_include_discount_factor':True}
+        args = {'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False, 'is_include_discount_factor':True, 'coefficients': 0.1}
         agent_instance = InfinitePenalizedSAAAgent(env, discount_factor=env.discount_factor, sample_path=sample_path[warm_up_periods:], **args)
         print('warmup_state:', warmup_state, sample_path[warm_up_periods])
-        _, benchmark_value, info = agent_instance.solve(warmup_state, 1)
+        _, benchmark_value, info = agent_instance.solve(warmup_state)
         costs += [cost.getValue() for cost in info['costs'][0]]
         penalties += [penalty if isinstance(penalty, int) else penalty.getValue() for penalty in info['penalties'][0]] if 'penalties' in info else []
         print("total cost:", sum(costs))
@@ -618,8 +618,8 @@ if __name__ == '__main__':
     #run_lower_bound_solver(**params, job_id=args.job_id)
     #run_penalized_lower_bound_solver(**params, job_id=args.job_id)
     #simulate_evaluation(**params, job_id=args.job_id)
-    evaluate_lower_bound(**params, job_id=args.job_id)
+    #evaluate_lower_bound(**params, job_id=args.job_id)
     #restore_costs(**params, job_id=args.job_id)
-    #calcualte_lowerbound_with_same_initial_state(**params, job_id=args.job_id)
+    calcualte_lowerbound_with_same_initial_state(**params, job_id=args.job_id)
     #calcualte_penalized_lowerbound_with_same_initial_state(**params, job_id=args.job_id)
     
