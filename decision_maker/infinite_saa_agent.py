@@ -277,6 +277,55 @@ class InfiniteSAAAgent(InfiniteRTAgent):
             with open('bender_error_info.json', 'w') as f:
                 f.write(json.dumps(debug_info))
         return action_t, upper_bound, info
+
+    def parallel_solve(self, state, action=None,
+                          tol=1e-6,
+                          max_iter=150,
+                          use_pareto_cuts=False,
+                          pareto_epsilon=1e-4,
+                          verbose=False):
+        if self.is_myopic or self.sample_path_number <= 1:
+            action, obj_value, info = self.direct_solve(state, action=action)
+            return action, obj_value, info
+        master_model, imm_cost, theta_vars, action_t_var, state_linking_constraints = self.master_builder_fn()
+        flatten_state = flatten(state)
+        set_link_rhs(state_linking_constraints, flatten_state)
+        action_vars = flatten(action_t_var)
+        if action is not None:
+            self.set_action(action_var=action_t_var, action=action)
+        if self.workers is None:
+            self.workers = []
+            for scenario_id in range(len(theta_vars)):
+                worker_model, link_rows, state_linking_constraints = self.subproblem_builder_fn(env=self.grb_env,
+                                                                                                scenario_id=scenario_id)
+                self.workers.append(SubproblemWorker(worker_model,
+                                                     link_rows,
+                                                     state_linking_constraints,
+                                                     scenario_id,
+                                                     verbose=verbose))
+        for worker in self.workers:
+            set_link_rhs(worker.state_linking_constraints, flatten_state)
+            worker.model.reset()
+        benders_solver = BendersDecompositionSolver(master_model=master_model,
+                                                    workers=self.workers,
+                                                    imm_cost=imm_cost,
+                                                    theta_vars=theta_vars,
+                                                    action_vars=action_vars)
+        upper_bound, info = benders_solver.solve_with_callback(tol=tol,
+                                                               max_iter=max_iter,
+                                                               use_pareto_cuts=use_pareto_cuts,
+                                                               pareto_epsilon=pareto_epsilon,
+                                                               max_workers=None,
+                                                               verbose=verbose)
+        action_t = self.get_solution(action_t_var, is_final=True)
+        if 'debug_info' in info:
+            debug_info = {
+                'state': encode(state),
+                'sample_paths': encode(self.delta)
+            }
+            with open('bender_error_info.json', 'w') as f:
+                f.write(json.dumps(debug_info))
+        return action_t, upper_bound, info
     
     def adaptive_solve(self, state, action=None,
                        batch_size=32,
@@ -330,56 +379,6 @@ class InfiniteSAAAgent(InfiniteRTAgent):
                 f.write(json.dumps(debug_info))
         return action_t, upper_bound, info
 
-    def warmup_solve(self, state, action=None,
-                       warmup_size=32,
-                       gap_tol=1e-6,
-                       max_iter=150,
-                       use_pareto_cuts=False,
-                       pareto_epsilon=1e-4,
-                       core_alpha=None,
-                       verbose=False):
-        # Create master and subproblem models
-        master_model, imm_cost, theta_vars, action_t_var, state_linking_constraints = self.adaptive_master_builder_fn()
-        flatten_state = flatten(state)
-        set_link_rhs(state_linking_constraints, flatten_state)
-        action_vars = flatten(action_t_var)
-        if action is not None:
-            self.set_action(action_var=action_t_var, action=action)
-        if self.workers is None:
-            self.workers = []
-            for scenario_id in range(self.sample_path_number):
-                worker_model, link_rows, state_linking_constraints = self.subproblem_builder_fn(env=self.grb_env,
-                                                                                                scenario_id=scenario_id)
-                self.workers.append(SubproblemWorker(model=worker_model,
-                                                     link_rows=link_rows,
-                                                     state_linking_constraints=state_linking_constraints,
-                                                     subproblem_id=scenario_id,
-                                                     verbose=verbose))
-        for worker in self.workers:
-            set_link_rhs(worker.state_linking_constraints, flatten_state)
-            worker.model.reset()
-        benders_solver = BendersDecompositionSolver(master_model=master_model,
-                                                    workers=self.workers,
-                                                    imm_cost=imm_cost,
-                                                    theta_vars=theta_vars,
-                                                    action_vars=action_vars)
-        upper_bound, info = benders_solver.warmup_solve(warmup_size=warmup_size,
-                                                        gap_tol=gap_tol,
-                                                        max_iter=max_iter,
-                                                        use_pareto_cuts=use_pareto_cuts,
-                                                        pareto_epsilon=pareto_epsilon,
-                                                        core_alpha=core_alpha,
-                                                        verbose=verbose)
-        action_t = self.get_solution(action_t_var, is_final=True)
-        if 'debug_info' in info:
-            debug_info = {
-                'state': encode(state),
-                'sample_paths': encode(self.delta)
-            }
-            with open('bender_error_info.json', 'w') as f:
-                f.write(json.dumps(debug_info))
-        return action_t, upper_bound, info
-
     def adaptive_master_builder_fn(self):
         master_model = gp.Model(f"SA_Advance_Adaptive_Master", env=self.grb_env)
         master_model.setParam("MultiObjPre", 0)
@@ -406,17 +405,24 @@ if __name__ == "__main__":
     import time
     config = get_config_by_type('toy')
     env = config.env
-    agent = InfiniteSAAAgent(env=env, discount_factor=0.9, sample_path_number=256, geom_p=0.1, is_myopic=False)
+    agent = InfiniteSAAAgent(env=env, discount_factor=0.9, sample_path_number=256, geom_p=0.05, is_myopic=False)
     state, info = env.reset()
+    print(state)
     done = False
     #action, obj, _ = agent.solve(state=state, verbose=False, use_pareto_cuts=True)
     #print("time:", 1, "bender obj:", obj, "action:", action)
     start = time.time()
-    action, obj, _ = agent.warmup_solve(state=state, verbose=False, use_pareto_cuts=True)
+    action, obj, _ = agent.parallel_solve(state=state, verbose=False, use_pareto_cuts=True)
     print("time:", 1, "bender obj:", obj, "action:", action) # 303045.6417575597
+    print(time.time() - start) # 159.18962907791138
+    start = time.time()
+    action, obj, _ = agent.solve(state=state, verbose=False, use_pareto_cuts=True)
+    print("time:", 1, "bender obj:", obj, "action:", action)  # 303045.6417575597
     print(time.time() - start)
-    #action, obj, _ = agent.direct_solve(state=state, verbose=False)
-    #print("time:", 1, "bender obj:", obj, "action:", action) # 476786.84728211665
+    start = time.time()
+    action, obj, _ = agent.direct_solve(state=state, verbose=False)
+    print("time:", 1, "bender obj:", obj, "action:", action) # Goal: 267616.65753353486
+    print(time.time() - start)
     # start = time.time()
     # action, obj, _ = agent.adaptive_solve(state=state, verbose=False)
     # print("time:", 1, "bender obj:", obj, "action:", action) # 303045.6417575597 195.55690169334412
