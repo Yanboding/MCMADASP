@@ -179,7 +179,7 @@ class ExperimentConfig:
             "overtime_capacity": 15,
             "discount_factor": 0.99,
             "reset_params": {
-                'percentage_occupied': 0,
+                'percentage_occupied': 0.99,
                 't': 1
             },
             "maximum_total_arrival": math.ceil(sum(arrival_rates) * 3),

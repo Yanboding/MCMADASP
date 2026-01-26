@@ -263,7 +263,7 @@ def generate_simulation_params(config_type, experiment_name, warm_up_periods, te
     agent_args = [
                 #{'agent_name': 'lowerbound', 'args': {'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False, 'is_include_discount_factor':False}},
                 #{'agent_name': 'myopic', 'args': {}},
-                row_alp_args,             
+                #row_alp_args,             
                 
                 # {'agent_name': 'hindsight_approx', 'args': {'sample_path_number': 128, 'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False, 'sample_path_length': None, 'is_include_discount_factor':False, 'is_quasi_MC':False, 'max_periods':int(geom.ppf(0.995, 0.05)), "geom_p":0.05}},
                 # {'agent_name': 'hindsight_approx', 'args': {'sample_path_number': 128, 'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False, 'sample_path_length': None, 'is_include_discount_factor':False, 'is_quasi_MC':True, 'max_periods':int(geom.ppf(0.995, 0.05)), "geom_p":0.05}},
@@ -274,7 +274,7 @@ def generate_simulation_params(config_type, experiment_name, warm_up_periods, te
 
                 # {'agent_name': 'hindsight_approx', 'args': {'sample_path_number': 256, 'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False, 'sample_path_length': None, 'is_include_discount_factor':False, 'is_quasi_MC':False, 'max_periods':int(geom.ppf(0.995, 0.1)), "geom_p":0.1}},
                 # {'agent_name': 'hindsight_approx', 'args': {'sample_path_number': 256, 'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False, 'sample_path_length': None, 'is_include_discount_factor':False, 'is_quasi_MC':True, 'max_periods':int(geom.ppf(0.995, 0.1)), "geom_p":0.1}},
-                # {'agent_name': 'hindsight_approx', 'args': {'sample_path_number': 256, 'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False, 'sample_path_length': None, 'is_include_discount_factor':False, 'is_quasi_MC':False, 'max_periods':int(geom.ppf(0.995, 0.02)), "geom_p":0.02}},
+                {'agent_name': 'hindsight_approx', 'args': {'sample_path_number': 256, 'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False, 'sample_path_length': None, 'is_include_discount_factor':False, 'is_quasi_MC':False, 'max_periods':int(geom.ppf(0.995, 0.02)), "geom_p":0.02}},
                 # {'agent_name': 'hindsight_approx', 'args': {'sample_path_number': 256, 'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False, 'sample_path_length': None, 'is_include_discount_factor':False, 'is_quasi_MC':True, 'max_periods':int(geom.ppf(0.995, 0.02)), "geom_p":0.02}},
                 
                 # {'agent_name': 'hindsight_approx', 'args': {'sample_path_number': 256, 'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False, 'sample_path_length': None, 'is_include_discount_factor':False, 'is_quasi_MC':False, 'max_periods':int(geom.ppf(0.5, 0.05)), "geom_p":0.05}},
@@ -288,14 +288,21 @@ def generate_simulation_params(config_type, experiment_name, warm_up_periods, te
                 #{'agent_name': 'penalized_lowerbound', 'args':{'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False, 'is_include_discount_factor':False}}
                 ]
     lines_to_write = []
+    max_length = 0
     for command_id in range(test_sample_path_num):
         sample_gen_args = copy.deepcopy(env_args)
         sample_gen_args['arrival_random_seed'] = command_id + 100 # Seed for sample path generation
         sample_gen_args['stop_time_random_seed'] = command_id + 400
         config_for_sample_path = get_config_by_type('infinite_custom', args=sample_gen_args)
         env_for_sample_path = config_for_sample_path.env
-        sample_path = env_for_sample_path.reset_arrivals(stop_time=num_periods) if env_for_sample_path else [[]]
+        if num_periods is None:
+            sample_path = env_for_sample_path.reset_arrivals(stop_time=warm_up_periods)
+            additional_sample_path = env_for_sample_path.reset_arrivals()
+            sample_path = np.append(sample_path, additional_sample_path, axis=0) if len(sample_path)>0 else additional_sample_path
+        else:
+            sample_path = env_for_sample_path.reset_arrivals(stop_time=num_periods)
         sample_path = sample_path.tolist() if hasattr(sample_path, 'tolist') else sample_path
+        max_length = max(max_length, len(sample_path))
         params = {
             'sample_path': sample_path,
             'warm_up_periods':warm_up_periods,
@@ -310,6 +317,7 @@ def generate_simulation_params(config_type, experiment_name, warm_up_periods, te
                 **params
             }
             lines_to_write.append("python run.py --params '" + json.dumps(save_params) + "'\n")
+    print("max sample path length:", max_length)
     with open(dat_file, 'w') as f:
         f.writelines(lines_to_write)
 
@@ -419,7 +427,7 @@ if __name__ == '__main__':
     generate_simulation_params(config_type='toy', 
                                experiment_name='toy_problem', 
                                warm_up_periods=250,
-                               test_sample_path_num=2000,
-                               num_periods=1000,
+                               test_sample_path_num=1000,
+                               num_periods=None,
                                dat_file='table.dat')
     

@@ -14,6 +14,7 @@ class MyopicAgent(InfiniteRTAgent):
         super().__init__(env, discount_factor, V, Q)
 
     def solve(self, state, t, action=None, verbose=False):
+        print(f"Computing myopic policy for state {state} at time {t}")
         # ---------- shortcuts ----------
         with (gp.Model("myopic_policy", env=self.grb_env) as policy_model):
             policy_model.setParam("MultiObjPre", 0)

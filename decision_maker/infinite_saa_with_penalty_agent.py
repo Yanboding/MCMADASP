@@ -68,6 +68,14 @@ class InfinitePenalizedSAAAgent(InfiniteRTAgent):
         W = np.array([float(next(it)) for _ in range(self.env.num_types)])
         return W_0, U, V, W
     
+    def penalty_function(self, state, action, new_arrival):
+        (regular_booking, overtime, waitlist) = state
+        (advance_scheduling_decision, overtime_decision) = action
+        arrival_difference = self.env.arrival_generator.mean_by_type - new_arrival
+        total_booked_slots = sum(regular_booking) + sum(overtime)
+        penalty = self.coefficients * 2 * (waitlist - sum(advance_scheduling_decision) + total_booked_slots) @ arrival_difference
+        return penalty
+    
     def direct_builder_fn(self):
         direct_model = gp.Model(f"SA_Advance_Direct_Model", env=self.grb_env)
         direct_model.setParam("MultiObjPre", 0)
@@ -86,12 +94,13 @@ class InfinitePenalizedSAAAgent(InfiniteRTAgent):
         fut_cost = 0
         costs = [[imm_cost] for _ in range(self.sample_path_number)]
         actions = [[action_t_var] for _ in range(self.sample_path_number)]
-        penalties = [[0] for _ in range(self.sample_path_number)]
+        penalties = [[] for _ in range(self.sample_path_number)]
         # for every sample path
         for omega in range(self.sample_path_number):
             prev_state_var = state_var
             prev_action_var = action_t_var
             for tau, new_arrival in enumerate(self.delta[omega], start=1):
+                print("tau", tau, "new_arrival:", new_arrival)
                 next_state_var = self.get_next_state(model=direct_model,
                                                     state=prev_state_var,
                                                     action=prev_action_var,
@@ -123,6 +132,7 @@ class InfinitePenalizedSAAAgent(InfiniteRTAgent):
             'actions': actions,
             'penalties': penalties
         }
+        print(self.delta)
         return direct_model, state_linking_constraints, action_t_var, info
 
     def direct_solve(self, state, t=1, action=None, verbose=False):

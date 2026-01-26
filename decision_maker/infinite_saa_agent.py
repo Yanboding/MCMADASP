@@ -2,12 +2,13 @@ import copy
 import numpy as np
 import gurobipy as gp
 import json
+import time
 from gurobipy import GRB
 
 from decision_maker import InfiniteRTAgent
 from metaheuristic_algorithm import BenderDecompositionSolver
 from metaheuristic_algorithm.benders_decomposition_solver import SubproblemWorker, BendersDecompositionSolver
-from utils import solve_and_handle_errors, encode, flatten, set_link_rhs
+from utils import solve_and_handle_errors, encode, flatten, set_link_rhs, acquire_grb_env
 
 class InfiniteSAAAgent(InfiniteRTAgent):
 
@@ -198,7 +199,7 @@ class InfiniteSAAAgent(InfiniteRTAgent):
         sub_model.setObjective(fut_cost, GRB.MINIMIZE)
         return sub_model, action_linking_constraints, state_linking_constraints
 
-    def solve(self, state, action=None, verbose=False, use_pareto_cuts=False):
+    def iterative_solve(self, state, action=None, verbose=False, use_pareto_cuts=False):
         
         if self.is_myopic or self.sample_path_number <= 1:
             action, obj_value, info = self.direct_solve(state, action=action)
@@ -327,15 +328,18 @@ class InfiniteSAAAgent(InfiniteRTAgent):
                 f.write(json.dumps(debug_info))
         return action_t, upper_bound, info
     
-    def adaptive_solve(self, state, action=None,
+    def solve(self, state, t=1, action=None,
                        batch_size=32,
-                       adaptive_tol=1e-5,
+                       adaptive_tol=0.05,
                        gap_tol=1e-6,
                        max_iter=150,
                        use_pareto_cuts=False,
                        pareto_epsilon=1e-4,
                        core_alpha=None,
                        verbose=False):
+        if self.is_myopic or self.sample_path_number <= 1:
+            action, obj_value, info = self.direct_solve(state, action=action)
+            return action, obj_value, info
         # Create master and subproblem models
         master_model, imm_cost, theta_vars, action_t_var, state_linking_constraints = self.adaptive_master_builder_fn()
         flatten_state = flatten(state)
@@ -346,13 +350,17 @@ class InfiniteSAAAgent(InfiniteRTAgent):
         if self.workers is None:
             self.workers = []
             for scenario_id in range(self.sample_path_number):
-                worker_model, link_rows, state_linking_constraints = self.subproblem_builder_fn(env=self.grb_env,
+                start = time.time()
+                print(f'Start build {scenario_id}')
+                grb_env = acquire_grb_env({"Threads": 0}, verbose=False, wait=InfiniteRTAgent.TOKEN_WAIT)
+                worker_model, link_rows, state_linking_constraints = self.subproblem_builder_fn(env=grb_env,
                                                                                                 scenario_id=scenario_id)
                 self.workers.append(SubproblemWorker(model=worker_model,
                                                      link_rows=link_rows,
                                                      state_linking_constraints=state_linking_constraints,
                                                      subproblem_id=scenario_id,
                                                      verbose=verbose))
+                print(f'Finished build {scenario_id} in {time.time()-start} seconds')
         for worker in self.workers:
             set_link_rhs(worker.state_linking_constraints, flatten_state)
             worker.model.reset()

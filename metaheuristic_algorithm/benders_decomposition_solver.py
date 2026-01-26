@@ -6,9 +6,8 @@ from gurobipy import GRB
 
 from utils import solve_and_handle_errors, get_solution_value, set_link_rhs
 from concurrent.futures import ThreadPoolExecutor
-number_of_subproblem_solves = 0
+
 def benders_callback(model, where):
-    global number_of_subproblem_solves
     if where == GRB.Callback.MIPSOL:
         x_vars = model._action_vars
         theta_vars = model._theta_vars
@@ -60,7 +59,6 @@ def benders_callback(model, where):
                 # IMPORTANT: Use exactly the same tolerance as iterative solve
                 if theta_vals[i] < (obj_val - tol):
                     model.cbLazy(theta_vars[i] >= expr)
-        number_of_subproblem_solves += 1
 
 def benders_callback_iter(model, where):
     global number_of_subproblem_solves
@@ -354,7 +352,6 @@ class BendersDecompositionSolver:
         # 4. Start the single optimization call
         print("Starting Benders with Lazy Constraint Callback...")
         self.master_model.optimize(benders_callback)
-        print('number_of_subproblem_solves:', number_of_subproblem_solves)
         # if not solve_and_handle_errors(self.master_model, verbose=verbose):
         #     raise RuntimeError("Master model optimal solution not found")
         # 5. Extract results
@@ -467,7 +464,7 @@ class BendersDecompositionSolver:
         self.master_model.update()
 
     def adaptive_solve(self, batch_size=64,
-                       adaptive_tol=1e-5,
+                       adaptive_tol=0.03,
                        gap_tol=1e-6,
                        max_iter=150,
                        use_pareto_cuts=True,
@@ -484,16 +481,17 @@ class BendersDecompositionSolver:
             number_of_workers += batch_size
             self.update_master_problem(new_scenario_number=batch_size)
             # add theta vars for new workers
-            obj_val, info = self.solve(tol=gap_tol,
+            obj_val, info = self.solve_with_callback(tol=gap_tol,
                                        max_iter=max_iter,
                                        use_pareto_cuts=use_pareto_cuts,
                                        pareto_epsilon=pareto_epsilon,
-                                       core_alpha=core_alpha,
                                        verbose=verbose)
             print(f"Adaptive solve: current objective value = {obj_val}, previous = {prev}", info, abs(obj_val - prev), number_of_workers, len(self.workers))
             if 'debug' in info:
                 break
-            if abs(obj_val - prev) < adaptive_tol or number_of_workers >= len(self.workers):
+            ptc_subgap = abs(obj_val - prev)/obj_val if obj_val > 0 else float('inf')
+            if ptc_subgap < adaptive_tol or number_of_workers >= len(self.workers):
+                info['number_of_workers'] = number_of_workers
                 converge = True
             prev = obj_val
         return prev, info

@@ -307,6 +307,19 @@ def get_solution(action_var, is_final=False):
             x = get_solution_value(x_var).astype(float)
             y = get_solution_value(y_var).astype(float)
         return (x, y)
+
+def get_penalty_value(env, state, action, new_arrivals):
+    # add next state total cost
+    next_state = env.get_next_state(state=state,
+                                    action=action,
+                                    new_arrival=new_arrivals, is_var=False)
+    (next_regular_booking, next_overtime, next_waitlist) = next_state
+    (regular_booking, overtime, waitlist) = state
+    (advance_scheduling_decision, overtime_decision) = action
+    arrival_difference = env.arrival_generator.mean_by_type - new_arrivals
+    total_booked_slots = (next_regular_booking + next_overtime).sum()
+    penalty = 2 * (waitlist - advance_scheduling_decision.sum(axis=0) + total_booked_slots) @ arrival_difference
+    return penalty
     
 def evaluate_lower_bound(env_args, experiment_name, agent_arg,  warm_up_periods, sample_path, uid, job_id):
     '''
@@ -375,23 +388,39 @@ def evaluate_lower_bound(env_args, experiment_name, agent_arg,  warm_up_periods,
             states = data['states']
             actions = data['actions']
             costs = data['costs']
-            penalties = []
+            penalties = data['penalties']
             t = data['t']
             s = data['s']
             s, info = env.reset(init_state=s, t=t, new_arrivals=sample_path)
         print("total cost:", sum(costs), "length of costs:", len(costs), 't:', t, 'remaining sample path length:', len(sample_path)-t+1)
         if len(costs) >= len(sample_path):
+            print(states[warm_up_periods:])
+            print(actions[warm_up_periods:])
+            print(costs[warm_up_periods:])
+            print(penalties[warm_up_periods:])
+            print('env.arrival_generator.mean_by_type', env.arrival_generator.mean_by_type)
             print('Evaluation already completed. Total cost:', sum(costs))
             return
+        average_run_time = 0
+        max_scenario = 0
         for tau in range(len(sample_path)-t+1):
             print("Current time step:", t + tau)
-            states.append(s)
             start = time.time()
-            a = agent_instance.policy(s, t + tau)
+            a, upper_bound, info = agent_instance.solve(s, t + tau)
             end = time.time()
-            print(f"Policy {t + tau} computation time: {end - start} seconds")
-            actions.append(a)
+            compute_time = end - start
+            average_run_time += (compute_time - average_run_time) / (tau+1)
+            if 'number_of_workers' in info:
+                max_scenario += (info['number_of_workers']-max_scenario) / (tau+1)
+            print(f"Policy {t + tau} computation time: {compute_time} seconds, average timr: {average_run_time} seconds")
             next_state, cost, done, info = env.step(a)
+            if t + tau < len(sample_path):
+                new_arrivals = sample_path[t + tau]
+                print('new_arrivals:', new_arrivals)
+                penalty = get_penalty_value(env, s, a, new_arrivals)
+                penalties.append(penalty)
+            states.append(s)
+            actions.append(a)
             costs.append(cost)
             s = next_state
             
@@ -403,10 +432,21 @@ def evaluate_lower_bound(env_args, experiment_name, agent_arg,  warm_up_periods,
                         "states": states,
                         "actions": actions,
                         "costs": costs,
+                        "penalties": penalties,
                     }
                     pickle.dump(res, f)
             
             if done:
+                with open(pickle_file, 'wb') as f:
+                    res = {
+                        's': s,
+                        "t": t + tau+1,
+                        "states": states,
+                        "actions": actions,
+                        "costs": costs,
+                        "penalties": penalties,
+                    }
+                    pickle.dump(res, f)
                 break
         print("number of states:", len(states), len(actions))
         scheduled_patients = []
@@ -420,7 +460,6 @@ def evaluate_lower_bound(env_args, experiment_name, agent_arg,  warm_up_periods,
             postponing_decisions.append(waitlist - advance_scheduling_decision.sum(axis=0))
         postponing_decisions = np.array(postponing_decisions).sum(axis=0)
         print("Total postponing decisions:", postponing_decisions)
-        
     res = {
         "uid": uid,
         "experiment_name": experiment_name,
@@ -432,47 +471,15 @@ def evaluate_lower_bound(env_args, experiment_name, agent_arg,  warm_up_periods,
         "scheduled_patients": scheduled_patients,
         "overtime": overtime.tolist(),
     }
+    print("total cost:", sum(costs))
+    print("total penalties:", sum(penalties))
+    print("total combined:", sum(costs) + sum(penalties))
     output_file = os.path.join('experiments', 'results', experiment_name, f'{job_id}.jsonl')
     # Make sure the parent directories exist
     os.makedirs(os.path.dirname(output_file), exist_ok=True)
     with open(output_file, 'a') as f:  # 'a' will create the file if not present
         f.write(json.dumps(res) + '\n')
         
-
-def restore_costs(env_args, experiment_name, agent_arg,  warm_up_periods, sample_path, uid, job_id):
-
-    aid = get_uid(agent_arg)
-    pickle_file = os.path.join('experiments', 'results', experiment_name,
-                            f'{uid}-{aid}.pickle')
-    # Make sure the parent directories exist
-    os.makedirs(os.path.dirname(pickle_file), exist_ok=True)
-    data = load_pickle_if_exists(pickle_file)
-    # 2) Decide env, state trajectory, etc.
-    if data != None:
-        config = get_config_by_type(case_type='infinite_custom', args=env_args)
-        config.reset_params['new_arrivals'] = sample_path
-        env = config.env
-        actions = data['actions']
-        costs = []
-        t = 1
-        s, info = env.reset(**config.reset_params)
-        
-        for tau in range(len(actions)):
-            print("Current time step:", t + tau)
-            start = time.time()
-            a = actions[tau]
-            end = time.time()
-            print(f"Policy {t + tau} computation time: {end - start} seconds")
-            next_state, cost, done, info = env.step(a)
-            costs.append(cost)
-        data['costs'] = costs
-        pickle_file = os.path.join('experiments', 'results', f'{experiment_name}_cost_restore',
-                                f'{uid}-{aid}.pickle')
-        os.makedirs(os.path.dirname(pickle_file), exist_ok=True)
-        with open(pickle_file, 'wb') as f:
-            pickle.dump(data, f)
-    else:
-        print(f'{uid}-{aid}.pickle not exists')
 
 def calcualte_lowerbound_with_same_initial_state(env_args, experiment_name, agent_arg,  warm_up_periods, sample_path, uid, job_id):
     '''
@@ -501,11 +508,11 @@ def calcualte_lowerbound_with_same_initial_state(env_args, experiment_name, agen
             a = actions[tau]
             warmup_state, cost, done, info = env.step(a)
             costs.append(cost)
-        args = {'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False, 'is_include_discount_factor':True}
+        args = {'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False, 'is_include_discount_factor':False}
         agent_instance = InfiniteSAAAgent(env, discount_factor=env.discount_factor, sample_path=sample_path[warm_up_periods:], **args)
         print('warmup_state:', warmup_state, sample_path[warm_up_periods])
         print()
-        _, benchmark_value, info = agent_instance.solve(warmup_state)
+        _, benchmark_value, info = agent_instance.solve(warmup_state, t=warm_up_periods)
         costs += [cost.getValue() for cost in info['costs'][0]]
         print(sum(costs))
         actions = info['actions'][0]
@@ -517,7 +524,6 @@ def calcualte_lowerbound_with_same_initial_state(env_args, experiment_name, agen
             start = t
             end = t + len(overtime_decision)
             overtime[start:end] += overtime_decision
-        print(len(costs))
         agent_name, args = agent_arg['agent_name'], agent_arg['args']
         res = {
         "uid": uid,
@@ -530,6 +536,7 @@ def calcualte_lowerbound_with_same_initial_state(env_args, experiment_name, agen
         "scheduled_patients": scheduled_patients,
         "overtime": overtime.tolist(),
         }
+        print("total cost:", sum(costs))
         output_file = os.path.join('experiments', 'results',  experiment_name, f'{job_id}.jsonl')
         # Make sure the parent directories exist
         os.makedirs(os.path.dirname(output_file), exist_ok=True)
@@ -557,19 +564,18 @@ def calcualte_penalized_lowerbound_with_same_initial_state(env_args, experiment_
         config.reset_params['new_arrivals'] = sample_path
         env = config.env
         actions = data['actions']
-        costs = []
-        penalties = []
+        costs = data['costs'][:warm_up_periods]
+        penalties = data['penalties'][:warm_up_periods]
         t = 1
         warmup_state, info = env.reset(**config.reset_params)
         
         for tau in range(warm_up_periods):
             a = actions[tau]
             warmup_state, cost, done, info = env.step(a)
-            costs.append(cost)
-        args = {'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False, 'is_include_discount_factor':True, 'coefficients': 0.1}
-        agent_instance = InfinitePenalizedSAAAgent(env, discount_factor=env.discount_factor, sample_path=sample_path[warm_up_periods:], **args)
+        lowerbound_args = {'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False, 'is_include_discount_factor':False, 'coefficients': 1}
+        agent_instance = InfinitePenalizedSAAAgent(env, discount_factor=env.discount_factor, sample_path=sample_path[warm_up_periods:], **lowerbound_args)
         print('warmup_state:', warmup_state, sample_path[warm_up_periods])
-        _, benchmark_value, info = agent_instance.solve(warmup_state)
+        my_action, benchmark_value, info = agent_instance.solve(warmup_state)
         costs += [cost.getValue() for cost in info['costs'][0]]
         penalties += [penalty if isinstance(penalty, int) else penalty.getValue() for penalty in info['penalties'][0]] if 'penalties' in info else []
         print("total cost:", sum(costs))
@@ -584,12 +590,11 @@ def calcualte_penalized_lowerbound_with_same_initial_state(env_args, experiment_
             start = t
             end = t + len(overtime_decision)
             overtime[start:end] += overtime_decision
-        print(len(costs))
         agent_name, args = agent_arg['agent_name'], agent_arg['args']
         res = {
         "uid": uid,
         "experiment_name": experiment_name,
-        "agent_name": {'agent_name': "penalized_lowerbound_" + agent_name, 'args': args},
+        "agent_name": {'agent_name': "penalized_lowerbound_" + agent_name, 'args': args, 'lowerbound_args': lowerbound_args},
         "warm_up_periods": warm_up_periods,
         "total_cost": sum(costs),
         "costs": costs,
@@ -618,8 +623,8 @@ if __name__ == '__main__':
     #run_lower_bound_solver(**params, job_id=args.job_id)
     #run_penalized_lower_bound_solver(**params, job_id=args.job_id)
     #simulate_evaluation(**params, job_id=args.job_id)
-    #evaluate_lower_bound(**params, job_id=args.job_id)
-    #restore_costs(**params, job_id=args.job_id)
+    # restore_costs(**params, job_id=args.job_id)
+    evaluate_lower_bound(**params, job_id=args.job_id)
     calcualte_lowerbound_with_same_initial_state(**params, job_id=args.job_id)
-    #calcualte_penalized_lowerbound_with_same_initial_state(**params, job_id=args.job_id)
+    calcualte_penalized_lowerbound_with_same_initial_state(**params, job_id=args.job_id)
     
