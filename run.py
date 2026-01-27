@@ -496,6 +496,10 @@ def calcualte_lowerbound_with_same_initial_state(env_args, experiment_name, agen
     # 2) Decide env, state trajectory, etc.
     warmup_state = None
     if data != None:
+        states = data['states']
+        actions = data['actions']
+        costs = data['costs']
+        penalties = data['penalties']
         config = get_config_by_type(case_type='infinite_custom', args=env_args)
         config.reset_params['new_arrivals'] = sample_path
         env = config.env
@@ -560,6 +564,10 @@ def calcualte_penalized_lowerbound_with_same_initial_state(env_args, experiment_
     # 2) Decide env, state trajectory, etc.
     warmup_state = None
     if data != None:
+        states = data['states']
+        actions = data['actions']
+        costs = data['costs']
+        penalties = data['penalties']
         config = get_config_by_type(case_type='infinite_custom', args=env_args)
         config.reset_params['new_arrivals'] = sample_path
         env = config.env
