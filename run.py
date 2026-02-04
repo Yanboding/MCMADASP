@@ -575,7 +575,9 @@ if __name__ == '__main__':
     #simulate_evaluation(**params, job_id=args.job_id)
     # restore_costs(**params, job_id=args.job_id)
     # calcualte_lowerbound_with_same_initial_state(**params, job_id=args.job_id)
-    penalty_coefficients = [round(i,1) for i in range(11)]
+    penalty_coefficients = [round(-i,1) for i in range(1, 11)]
+    print(penalty_coefficients)
+    
     for penalty_coefficient in penalty_coefficients:
         lowerbound_args = {'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False, 'is_include_discount_factor':False, 'coefficients': penalty_coefficient}
         evaluate_lower_bound(**params, lowerbound_args=lowerbound_args, job_id=args.job_id)
