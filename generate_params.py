@@ -385,13 +385,13 @@ if __name__ == '__main__':
         }
     }
     '''
-    # EXPERIMENT_CONFIGS = {
-    #     'small_scale_problem': {
-    #         'config_type': 'small',
-    #         'param_name': 'reset_params.percentage_occupied',
-    #         'param_values': [0],
-    #     }
-    # }
+    EXPERIMENT_CONFIGS = {
+        'small_scale_problem': {
+            'config_type': 'toy',
+            'param_name': 'reset_params.percentage_occupied',
+            'param_values': [0],
+        }
+    }
     '''
     booking window size
     '''
@@ -408,10 +408,10 @@ if __name__ == '__main__':
     }
     
     # --- Run All Experiments ---
-    # generate_alp_train_params(
-    #     experiment_configs=EXPERIMENT_CONFIGS,
-    #     dat_file = 'table_alp_small_train.dat',
-    # )
+    generate_alp_train_params(
+        experiment_configs=EXPERIMENT_CONFIGS,
+        dat_file = 'table_alp_toy_train.dat',
+    )
     
     
     '''

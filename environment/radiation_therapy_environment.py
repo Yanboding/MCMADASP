@@ -59,10 +59,12 @@ class RTEnv:
 
     def generate_states(self):
         maximum_number_of_waitlist = self.arrival_generator.maximum_arrival
-        for bookings_tuple in itertools.product(range(self.regular_capacity + 1), repeat=self.planning_horizon-1):
-            for overtimes_tuple in itertools.product(range(self.overtime_capacity + 1), repeat=self.planning_horizon-1):
-                for waitlist in bounded_compositions(maximum_number_of_waitlist, self.num_types):
-                    yield np.array(bookings_tuple+(0,)), np.array(overtimes_tuple+(0,)), waitlist
+        for total_bookings_tuples in itertools.product(range(self.regular_capacity + self.overtime_capacity + 1), repeat=self.planning_horizon-1):
+            total_bookings = np.array(total_bookings_tuples+(0,))
+            regular_bookings = np.minimum(total_bookings, self.regular_capacity)
+            overtime_bookings = total_bookings - regular_bookings
+            for waitlist in bounded_compositions(maximum_number_of_waitlist, self.num_types):
+                yield regular_bookings, overtime_bookings, waitlist
 
     def valid_actions(self, state):
         regular_bookings, overtimes, waitlist = state
@@ -71,7 +73,7 @@ class RTEnv:
             advance_scheduling_decision = np.array(advance_scheduling_decision).T
             new_booking_slots = self.convert_action_to_booking_slots(advance_scheduling_decision)
             overtime_decision = np.maximum(regular_bookings + new_booking_slots - self.regular_capacity, 0)
-            if any(overtime_decision > self.overtime_capacity):
+            if any(overtime_decision + overtimes > self.overtime_capacity):
                 continue
             yield (advance_scheduling_decision, overtime_decision)
 
@@ -233,7 +235,6 @@ class RTEnv:
 
 if __name__ == '__main__':
     from experiments import get_config_by_type
-    config = get_config_by_type('ejor_default')
+    config = get_config_by_type('toy')
     env = config.env
-    for i in range(1):
-        print(env.quasi_reset_arrivals())
+    print(len(list(env.generate_state_action_pairs())))

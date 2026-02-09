@@ -157,14 +157,16 @@ class ExperimentConfig:
     
     @classmethod
     def from_toy_case(cls):
-        treatment_patterns = ["1 * 2 + 4 * 1", 
-                              "1 * 3 + 7 * 2",
-                              "1 * 4 + 10 * 2"]
-        booking_window_size = 20
-        arrival_rates = [2.47, 4.09, 1.69]
+        treatment_patterns = ["1 * 2", 
+                              "1 * 2 + 1 * 1"]
+        booking_window_size = 3
+        arrival_rates = [2, 1]
         l = [[(0, 1, 0), (1, 5, 100), (5, 100, 150)],
-             [(0, 5, 0), (5, 10, 80), (10, 100, 150)],
-             [(0, 10, 0), (10, 20, 50), (20, 30, 90), (30, 40, 100), (40, 100, 150)]]
+             [(0, 1, 0), (1, 10, 80), (10, 100, 150)]]
+        # treatment_patterns = ["1 * 2"]
+        # booking_window_size = 3
+        # arrival_rates = [2]
+        # l = [[(0, 1, 0), (1, 5, 100), (5, 100, 150)]]
         holding_cost = [wait_time(l[i]) for i in range(len(treatment_patterns))]
         holding_cost = np.array(holding_cost).T
         env_args = {
@@ -175,8 +177,8 @@ class ExperimentConfig:
             "overtime_cost_by_day": 100,
             "postponing_cost": 2000,
             "duration": 1,
-            "regular_capacity": 120,
-            "overtime_capacity": 15,
+            "regular_capacity": 6,
+            "overtime_capacity": 2,
             "discount_factor": 0.99,
             "reset_params": {
                 'percentage_occupied': 0.99,

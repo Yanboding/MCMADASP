@@ -567,7 +567,7 @@ if __name__ == '__main__':
     parser.add_argument('--job_id', help='Input METAJOB_ID', type=str)
     args = parser.parse_args()
     params = json.loads(args.params)
-    #alp_train(**params, job_id=args.job_id)
+    alp_train(**params, job_id=args.job_id)
     #experiment(**params, job_id=args.job_id)
     #value_function_experiment(**params, job_id=args.job_id)
     #run_lower_bound_solver(**params, job_id=args.job_id)
@@ -575,11 +575,11 @@ if __name__ == '__main__':
     #simulate_evaluation(**params, job_id=args.job_id)
     # restore_costs(**params, job_id=args.job_id)
     # calcualte_lowerbound_with_same_initial_state(**params, job_id=args.job_id)
-    penalty_coefficients = [round(-i,1) for i in range(1, 11)]
-    print(penalty_coefficients)
+    # penalty_coefficients = [round(i,1) for i in range(2)]
+    # print(penalty_coefficients)
     
-    for penalty_coefficient in penalty_coefficients:
-        lowerbound_args = {'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False, 'is_include_discount_factor':False, 'coefficients': penalty_coefficient}
-        evaluate_lower_bound(**params, lowerbound_args=lowerbound_args, job_id=args.job_id)
-        calcualte_penalized_lowerbound_with_same_initial_state(**params, lowerbound_args=lowerbound_args, job_id=args.job_id)
+    # for penalty_coefficient in penalty_coefficients:
+    #     lowerbound_args = {'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False, 'is_include_discount_factor':False, 'coefficients': penalty_coefficient}
+    #     evaluate_lower_bound(**params, lowerbound_args=lowerbound_args, job_id=args.job_id)
+    #     calcualte_penalized_lowerbound_with_same_initial_state(**params, lowerbound_args=lowerbound_args, job_id=args.job_id)
     

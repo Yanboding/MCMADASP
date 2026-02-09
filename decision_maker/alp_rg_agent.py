@@ -16,7 +16,7 @@ class ALPRowGenerationAgent(InfiniteRTAgent):
         required_bookings[-1] = 0
         required_bookings = np.array(required_bookings)
         self.E_u_alpha = np.minimum(required_bookings, self.env.regular_capacity)
-        self.E_v_alpha = np.minimum(np.maximum(required_bookings - self.env.regular_capacity, 0), self.env.regular_capacity)
+        self.E_v_alpha = required_bookings - self.E_u_alpha
         self.E_w_alpha = self.env.arrival_generator.mean_by_type
         if coefficients is not None:
             self.is_trained = True
@@ -219,10 +219,12 @@ class ALPRowGenerationAgent(InfiniteRTAgent):
 
 if "__main__" == __name__:
     from experiments import get_config_by_type
-    config = get_config_by_type('ejor_default')
+    config = get_config_by_type('toy')
     env = config.env
     init_state = config.init_state
-    agent = ALPEJORRowGenerationAgent(env=env, discount_factor=env.discount_factor)
+    agent = ALPRowGenerationAgent(env=env, discount_factor=env.discount_factor)
     print(agent.train(debug=False))
     #duals = [84.0, 0.0, 0.0, 0.0, 0.0, 1.0]
+    # [10000.0, 5919.593918987857, 5860.397979797979, 5801.794, 0.0, 4951.015202530357, 4901.505050505051, 4852.490000000002, 0.0, 10000.0, 10000.0]
     #print(list(agent.separation_callback(duals)))
+    # (10874.249099999995, [7236.880199999996, 98.9999999999999, 99.0, 98.00999999999999, 0.0, 0.0, 0.0, 0.0, 0.0, 197.99999999999997, 293.0498999999999])
