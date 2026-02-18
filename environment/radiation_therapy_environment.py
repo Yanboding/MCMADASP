@@ -86,7 +86,7 @@ class RTEnv:
         regular_bookings, overtimes, waitlist = state
         advance_scheduling_decision, overtime_decision = action
         waiting_cost = gp.quicksum(
-            gp.quicksum(self.discount_factor ** k * self.holding_cost(k, i) for k in range(j)) * advance_scheduling_decision[j, i]
+            gp.quicksum(self.discount_factor ** k * self.holding_cost(k, i) for k in range(j+1)) * advance_scheduling_decision[j, i]
             for j in range(len(advance_scheduling_decision))
             for i in range(len(advance_scheduling_decision[0]))
         )
@@ -94,6 +94,10 @@ class RTEnv:
         remaining_treatments = waitlist - advance_scheduling_decision.sum(axis=0)
         postponing_cost = gp.quicksum(self.postponing_cost(i) * remaining_treatments[i] for i in range(self.num_types))
         cost = waiting_cost + overtime_cost + postponing_cost
+        # for i in range(len(advance_scheduling_decision[0])):
+        #     for j in range(len(advance_scheduling_decision)):
+        #         print("hold cost:", gp.quicksum(self.discount_factor ** k * self.holding_cost(k, i) for k in range(j+1)), advance_scheduling_decision[j, i])
+        #print(f"waiting_cost: {waiting_cost}, overtime_cost: {overtime_cost}, postponing_cost {postponing_cost}")
         if not is_var:
             cost = cost.getValue()
         return cost

@@ -21,6 +21,7 @@ class InfinitePenalizedSAAAgent(InfiniteRTAgent):
                  sample_path_length=None, 
                  is_quasi_MC=True,
                  coefficients=1,
+                 generating_function=None,
                  verbose=False):
         super().__init__(env, discount_factor, V=V, Q=Q)
         self.sample_path_number = sample_path_number
@@ -30,6 +31,7 @@ class InfinitePenalizedSAAAgent(InfiniteRTAgent):
         self.sample_path = sample_path
         self.sample_path_length = sample_path_length
         self.coefficients = coefficients
+        self.generating_function = generating_function
         # self.W_0, self.U, self.V, self.W = self.get_coefficients(coefficients)
         self.delta = []
         if self.sample_path is not  None:
@@ -68,12 +70,14 @@ class InfinitePenalizedSAAAgent(InfiniteRTAgent):
         W = np.array([float(next(it)) for _ in range(self.env.num_types)])
         return W_0, U, V, W
     
-    def penalty_function(self, state, action, new_arrival):
+    def penalty_function(self, state, action, new_arrival, next_state):
+        (next_regular_booking, next_overtime, next_waitlist) = next_state
         (regular_booking, overtime, waitlist) = state
         (advance_scheduling_decision, overtime_decision) = action
         arrival_difference = self.env.arrival_generator.mean_by_type - new_arrival
-        total_booked_slots = sum(regular_booking) + sum(overtime)
-        penalty = self.coefficients * 2 * (waitlist - sum(advance_scheduling_decision) + total_booked_slots) @ arrival_difference
+        total_booked_slots = (next_regular_booking + next_overtime).sum()
+        beta = np.array([1.60642570e+02,  1.38600139e+02])
+        penalty = self.coefficients * 2 * sum(beta * (waitlist - sum(advance_scheduling_decision) + total_booked_slots) * arrival_difference)
         return penalty
     
     def direct_builder_fn(self):
@@ -100,20 +104,14 @@ class InfinitePenalizedSAAAgent(InfiniteRTAgent):
             prev_state_var = state_var
             prev_action_var = action_t_var
             for tau, new_arrival in enumerate(self.delta[omega], start=1):
-                print("tau", tau, "new_arrival:", new_arrival)
                 next_state_var = self.get_next_state(model=direct_model,
                                                     state=prev_state_var,
                                                     action=prev_action_var,
                                                     new_arrival=new_arrival)
                 next_action_var = self.get_action_var(model=direct_model, advance_scheduling_type=self.future_decision_var_type)
                 self.add_action_space_constraints(model=direct_model, state_var=next_state_var, action_var=next_action_var)
-
-                (next_regular_booking_vars, next_overtime_vars, next_waitlist_vars) = next_state_var
-                (regular_booking_vars, overtime_vars, waitlist_vars) = prev_state_var
-                (advance_scheduling_decision_vars, overtime_decision_vars) = actions[omega][-1]
-                arrival_difference = self.env.arrival_generator.mean_by_type - new_arrival
-                total_booked_slots = (next_regular_booking_vars + next_overtime_vars).sum()
-                penalty = self.coefficients * 2 * (waitlist_vars - advance_scheduling_decision_vars.sum(axis=0) + total_booked_slots) @ arrival_difference
+                
+                penalty = self.coefficients * self.generating_function.penalty_function(prev_state_var, actions[omega][-1], new_arrival, next_state_var)
                 one_time_cost = self.env.cost_fn(next_state_var, next_action_var, is_var=True)
                 if self.is_include_discount_factor:
                     cost = (self.discount_factor ** tau) * (one_time_cost + penalty)

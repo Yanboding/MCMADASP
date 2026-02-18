@@ -386,7 +386,7 @@ if __name__ == '__main__':
     }
     '''
     EXPERIMENT_CONFIGS = {
-        'small_scale_problem': {
+        'toy_problem': {
             'config_type': 'toy',
             'param_name': 'reset_params.percentage_occupied',
             'param_values': [0],
@@ -408,10 +408,10 @@ if __name__ == '__main__':
     }
     
     # --- Run All Experiments ---
-    generate_alp_train_params(
-        experiment_configs=EXPERIMENT_CONFIGS,
-        dat_file = 'table_alp_toy_train.dat',
-    )
+    # generate_alp_train_params(
+    #     experiment_configs=EXPERIMENT_CONFIGS,
+    #     dat_file = 'table_alp_toy_train.dat',
+    # )
     
     
     '''
@@ -427,7 +427,7 @@ if __name__ == '__main__':
     generate_simulation_params(config_type='toy', 
                                experiment_name='toy_problem', 
                                warm_up_periods=250,
-                               test_sample_path_num=1000,
+                               test_sample_path_num=5000,
                                num_periods=None,
                                dat_file='table.dat')
     

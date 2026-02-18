@@ -194,7 +194,6 @@ def solve_and_handle_errors(model: gp.Model, verbose=True):
             return True
 
         else:
-            print('Failed fucked')
             if verbose:
                 # --- Handle non-optimal cases ---
                 status_string = get_status_string(model.Status)

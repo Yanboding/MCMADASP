@@ -157,16 +157,15 @@ class ExperimentConfig:
     
     @classmethod
     def from_toy_case(cls):
+        booking_window_size = 3
         treatment_patterns = ["1 * 2", 
                               "1 * 2 + 1 * 1"]
-        booking_window_size = 3
         arrival_rates = [2, 1]
         l = [[(0, 1, 0), (1, 5, 100), (5, 100, 150)],
              [(0, 1, 0), (1, 10, 80), (10, 100, 150)]]
         # treatment_patterns = ["1 * 2"]
-        # booking_window_size = 3
-        # arrival_rates = [2]
-        # l = [[(0, 1, 0), (1, 5, 100), (5, 100, 150)]]
+        # arrival_rates = [3]
+        # l = [[(0, 1, 10), (1, 5, 100), (5, 100, 150)]]
         holding_cost = [wait_time(l[i]) for i in range(len(treatment_patterns))]
         holding_cost = np.array(holding_cost).T
         env_args = {

@@ -5,3 +5,4 @@ from .infinite_saa_with_penalty_agent import InfinitePenalizedSAAAgent
 from .alp_cg_ejor_agent import ALPEJORColumnGenerationAgent
 from .alp_rg_agent import ALPRowGenerationAgent
 from .myopic_agent import MyopicAgent
+from .adp_quaratic_agent import ALPQuadraticAgent

@@ -11,7 +11,7 @@ from gurobipy import GRB
 
 from experiments.experiment_config import get_config_by_type
 from utils import iter_to_tuple, get_uid, safe_open, RunningStats, encode, decode, get_solution_value
-from decision_maker import ALPEJORColumnGenerationAgent, InfiniteSAAAgent, InfinitePenalizedSAAAgent, MyopicAgent, ALPRowGenerationAgent
+from decision_maker import ALPEJORColumnGenerationAgent, InfiniteSAAAgent, InfinitePenalizedSAAAgent, MyopicAgent, ALPRowGenerationAgent, ALPQuadraticAgent
 from policy_evaluator import PolicyEvaluator
 
 def run_lower_bound_solver(experiment_name, param_value, env_args, agent_args, sample_path, uid, job_id):
@@ -308,20 +308,7 @@ def get_solution(action_var, is_final=False):
             y = get_solution_value(y_var).astype(float)
         return (x, y)
 
-def get_penalty_value(env, state, action, new_arrivals):
-    # add next state total cost
-    next_state = env.get_next_state(state=state,
-                                    action=action,
-                                    new_arrival=new_arrivals, is_var=False)
-    (next_regular_booking, next_overtime, next_waitlist) = next_state
-    (regular_booking, overtime, waitlist) = state
-    (advance_scheduling_decision, overtime_decision) = action
-    arrival_difference = env.arrival_generator.mean_by_type - new_arrivals
-    total_booked_slots = (next_regular_booking + next_overtime).sum()
-    penalty = 2 * (waitlist - advance_scheduling_decision.sum(axis=0) + total_booked_slots) @ arrival_difference
-    return penalty
-    
-def evaluate_lower_bound(env_args, experiment_name, agent_arg,  warm_up_periods, sample_path, uid, lowerbound_args, job_id):
+def evaluate_lower_bound(env_args, experiment_name, agent_arg,  warm_up_periods, sample_path, uid, lowerbound_args, generating_function, job_id):
     '''
     I need to get the state on the warm_up_periods
     and then evaluate the lower bound solvers from there
@@ -406,6 +393,7 @@ def evaluate_lower_bound(env_args, experiment_name, agent_arg,  warm_up_periods,
             return
         average_run_time = 0
         max_scenario = 0
+        print(agent_instance)
         for tau in range(len(sample_path)-t+1):
             print("Current time step:", t + tau)
             start = time.time()
@@ -420,7 +408,7 @@ def evaluate_lower_bound(env_args, experiment_name, agent_arg,  warm_up_periods,
             if t + tau < len(sample_path):
                 new_arrivals = sample_path[t + tau]
                 print('new_arrivals:', new_arrivals)
-                penalty = get_penalty_value(env, s, a, new_arrivals) * lowerbound_args['coefficients']
+                penalty = generating_function.penalty_function(s, a, new_arrivals, next_state) * lowerbound_args['coefficients']
                 penalties.append(penalty)
             states.append(s)
             actions.append(a)
@@ -485,7 +473,7 @@ def evaluate_lower_bound(env_args, experiment_name, agent_arg,  warm_up_periods,
     with open(output_file, 'a') as f:  # 'a' will create the file if not present
         f.write(json.dumps(res) + '\n')
 
-def calcualte_penalized_lowerbound_with_same_initial_state(env_args, experiment_name, agent_arg,  lowerbound_args, warm_up_periods, sample_path, uid, job_id):
+def calcualte_penalized_lowerbound_with_same_initial_state(env_args, experiment_name, agent_arg,  lowerbound_args, generating_function, warm_up_periods, sample_path, uid, job_id):
     '''
         1. read hindsight_approx data
         2. use actions to determine states in each period
@@ -516,13 +504,12 @@ def calcualte_penalized_lowerbound_with_same_initial_state(env_args, experiment_
         penalties = data['penalties'][:warm_up_periods]
         t = 1
         warmup_state, info = env.reset(**config.reset_params)
-        
         for tau in range(warm_up_periods):
             a = actions[tau]
             warmup_state, cost, done, info = env.step(a)
         #lowerbound_args = {'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False, 'is_include_discount_factor':False, 'coefficients': 1}
-        agent_instance = InfinitePenalizedSAAAgent(env, discount_factor=env.discount_factor, sample_path=sample_path[warm_up_periods:], **lowerbound_args)
-        print('warmup_state:', warmup_state, sample_path[warm_up_periods])
+        agent_instance = InfinitePenalizedSAAAgent(env, discount_factor=env.discount_factor, sample_path=sample_path[warm_up_periods:], generating_function=generating_function, **lowerbound_args)
+        #print('warmup_state:', warmup_state, sample_path[warm_up_periods])
         my_action, benchmark_value, info = agent_instance.solve(warmup_state)
         costs += [cost.getValue() for cost in info['costs'][0]]
         penalties += [penalty if isinstance(penalty, int) else penalty.getValue() for penalty in info['penalties'][0]] if 'penalties' in info else []
@@ -539,7 +526,6 @@ def calcualte_penalized_lowerbound_with_same_initial_state(env_args, experiment_
             end = t + len(overtime_decision)
             overtime[start:end] += overtime_decision
         agent_name, args = agent_arg['agent_name'], agent_arg['args']
-        penalty_coefficient = lowerbound_args['coefficients']
         res = {
         "uid": uid,
         "total_cost": sum(costs),
@@ -567,7 +553,7 @@ if __name__ == '__main__':
     parser.add_argument('--job_id', help='Input METAJOB_ID', type=str)
     args = parser.parse_args()
     params = json.loads(args.params)
-    alp_train(**params, job_id=args.job_id)
+    # alp_train(**params, job_id=args.job_id)
     #experiment(**params, job_id=args.job_id)
     #value_function_experiment(**params, job_id=args.job_id)
     #run_lower_bound_solver(**params, job_id=args.job_id)
@@ -575,11 +561,16 @@ if __name__ == '__main__':
     #simulate_evaluation(**params, job_id=args.job_id)
     # restore_costs(**params, job_id=args.job_id)
     # calcualte_lowerbound_with_same_initial_state(**params, job_id=args.job_id)
-    # penalty_coefficients = [round(i,1) for i in range(2)]
-    # print(penalty_coefficients)
-    
-    # for penalty_coefficient in penalty_coefficients:
-    #     lowerbound_args = {'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False, 'is_include_discount_factor':False, 'coefficients': penalty_coefficient}
-    #     evaluate_lower_bound(**params, lowerbound_args=lowerbound_args, job_id=args.job_id)
-    #     calcualte_penalized_lowerbound_with_same_initial_state(**params, lowerbound_args=lowerbound_args, job_id=args.job_id)
+
+    penalty_coefficients = [round(i,1) for i in range(1, 2)]
+    env_args = params['env_args']
+    config = get_config_by_type(case_type='infinite_custom', args=env_args)
+    env = config.env
+    coefficients = [-8.07497208e+03,  7.47388008e+00,  7.85133539e+00,  5.80946039e+00, 0.00000000e+00,  0.00000000e+00,  0.00000000e+00,  0.00000000e+00, 0.00000000e+00,  0.00000000e+00,  0.00000000e+00]
+    generating_function = ALPQuadraticAgent(env, env.discount_factor, coefficients=coefficients)
+    print(generating_function.get_coefficients(coefficients))
+    for penalty_coefficient in penalty_coefficients:
+        lowerbound_args = {'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False, 'is_include_discount_factor':False, 'coefficients': penalty_coefficient}
+        evaluate_lower_bound(**params, lowerbound_args=lowerbound_args, generating_function=generating_function, job_id=args.job_id)
+        calcualte_penalized_lowerbound_with_same_initial_state(**params, lowerbound_args=lowerbound_args, generating_function=generating_function, job_id=args.job_id)
     
