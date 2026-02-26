@@ -427,7 +427,7 @@ if __name__ == '__main__':
     generate_simulation_params(config_type='toy', 
                                experiment_name='toy_problem', 
                                warm_up_periods=250,
-                               test_sample_path_num=5000,
+                               test_sample_path_num=1500,
                                num_periods=None,
                                dat_file='table.dat')
     

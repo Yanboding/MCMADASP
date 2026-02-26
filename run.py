@@ -11,7 +11,7 @@ from gurobipy import GRB
 
 from experiments.experiment_config import get_config_by_type
 from utils import iter_to_tuple, get_uid, safe_open, RunningStats, encode, decode, get_solution_value
-from decision_maker import ALPEJORColumnGenerationAgent, InfiniteSAAAgent, InfinitePenalizedSAAAgent, MyopicAgent, ALPRowGenerationAgent, ALPQuadraticAgent
+from decision_maker import ALPEJORColumnGenerationAgent, InfiniteSAAAgent, InfinitePenalizedSAAAgent, MyopicAgent, ALPRowGenerationAgent, LinearPenaltyFunction
 from policy_evaluator import PolicyEvaluator
 
 def run_lower_bound_solver(experiment_name, param_value, env_args, agent_args, sample_path, uid, job_id):
@@ -408,7 +408,7 @@ def evaluate_lower_bound(env_args, experiment_name, agent_arg,  warm_up_periods,
             if t + tau < len(sample_path):
                 new_arrivals = sample_path[t + tau]
                 print('new_arrivals:', new_arrivals)
-                penalty = generating_function.penalty_function(s, a, new_arrivals, next_state) * lowerbound_args['coefficients']
+                penalty = generating_function.calculate_penalty(s, a, new_arrivals) * lowerbound_args['coefficients']
                 penalties.append(penalty)
             states.append(s)
             actions.append(a)
@@ -562,12 +562,12 @@ if __name__ == '__main__':
     # restore_costs(**params, job_id=args.job_id)
     # calcualte_lowerbound_with_same_initial_state(**params, job_id=args.job_id)
 
-    penalty_coefficients = [round(i,1) for i in range(1, 2)]
+    penalty_coefficients = [round(i,1) for i in range(0, 2)]
     env_args = params['env_args']
     config = get_config_by_type(case_type='infinite_custom', args=env_args)
     env = config.env
-    coefficients = [-8.07497208e+03,  7.47388008e+00,  7.85133539e+00,  5.80946039e+00, 0.00000000e+00,  0.00000000e+00,  0.00000000e+00,  0.00000000e+00, 0.00000000e+00,  0.00000000e+00,  0.00000000e+00]
-    generating_function = ALPQuadraticAgent(env, env.discount_factor, coefficients=coefficients)
+    coefficients = [-100.0, -100.0, -100.0, 100.0, -100.0, -100.0, -100.0, -100.0, -100.0, -100.0, 100.0, 100.0, 100.0, -100.0, -100.0, 100.0, -100.0, 100.0, -100.0, -100.0]
+    generating_function = LinearPenaltyFunction(env, coefficients=coefficients)
     print(generating_function.get_coefficients(coefficients))
     for penalty_coefficient in penalty_coefficients:
         lowerbound_args = {'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False, 'is_include_discount_factor':False, 'coefficients': penalty_coefficient}

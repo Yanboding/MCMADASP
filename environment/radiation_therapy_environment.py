@@ -1,8 +1,9 @@
 import copy
 import itertools
+import random
 
 import numpy as np
-from scipy.stats import truncnorm, geom, qmc
+from scipy.stats import truncnorm, geom, qmc, randint
 
 from utils import numpy_shift, RunningStats, bounded_compositions
 import gurobipy as gp
@@ -40,15 +41,53 @@ class RTEnv:
         self.num_sessions, self.num_types = self.treatment_pattern.shape
         self.planning_horizon = self.booking_window_size + self.num_sessions - 1
 
+        # Create the mapping matrix C of shape (H, N * K)
+        self.booking_mapping_matrix = np.zeros((self.planning_horizon, self.booking_window_size * self.num_types))
+        
+        for m in range(self.planning_horizon):
+            for i in range(self.booking_window_size):
+                j = m - i
+                # If the diagonal falls within the valid treatment pattern window
+                if 0 <= j < self.num_sessions:
+                    for k in range(self.num_types):
+                        # Flattened index: i * K + k
+                        self.booking_mapping_matrix[m, i * self.num_types + k] = self.treatment_pattern[j, k]
+        
+        # 1. Precompute Waiting Cost Coefficients
+        self.waiting_cost_coeffs = np.zeros((self.booking_window_size, self.num_types))
+        for j in range(self.booking_window_size):
+            for i in range(self.num_types):
+                # Calculate the cumulative holding cost for this slot and type
+                self.waiting_cost_coeffs[j, i] = sum(
+                    self.discount_factor ** k * self.holding_cost(k, i) 
+                    for k in range(j + 1)
+                )
+                
+        # 2. Precompute Overtime Cost Coefficients
+        self.overtime_cost_coeffs = np.array([
+            self.discount_factor ** j * self.overtime_cost(j) 
+            for j in range(self.planning_horizon)
+        ])
+        
+        # 3. Precompute Postponing Cost Coefficients
+        self.postponing_cost_coeffs = np.array([
+            self.postponing_cost(i) 
+            for i in range(self.num_types)
+        ])
+
+        # Creates an H x H matrix that shifts everything left by 1 and adds a 0 at the end
+        self.shift_matrix = np.eye(self.planning_horizon, k=1)
+
     def get_state(self, state, is_var=False):
         if not is_var:
             return copy.deepcopy(state)
         return state
-
+    
+    '''
     def convert_action_to_booking_slots(self, advance_scheduling_decision):
         appointment_slots = advance_scheduling_decision @ self.treatment_pattern.T
         N, P = appointment_slots.shape
-        total_len = len(advance_scheduling_decision) + self.num_sessions - 1
+        total_len = advance_scheduling_decision.shape[0] + self.num_sessions - 1
         booked_slots = np.zeros(total_len, dtype=appointment_slots.dtype)
 
         # 2.  Vectorised diagonal add:
@@ -56,6 +95,12 @@ class RTEnv:
         idx = np.arange(P) + np.arange(N)[:, None]  # shape (N,P)
         np.add.at(booked_slots, idx.ravel(), appointment_slots.ravel())
         return booked_slots
+    '''
+    
+    def convert_action_to_booking_slots(self, advance_scheduling_decision):
+        new_booking_slots = self.booking_mapping_matrix @ advance_scheduling_decision.reshape(-1)
+        return new_booking_slots
+    
 
     def generate_states(self):
         maximum_number_of_waitlist = self.arrival_generator.maximum_arrival
@@ -81,7 +126,8 @@ class RTEnv:
         for state in self.generate_states():
             for action in self.valid_actions(state):
                 yield (state, action)
-
+    
+    '''
     def cost_fn(self, state, action, is_var=False):
         regular_bookings, overtimes, waitlist = state
         advance_scheduling_decision, overtime_decision = action
@@ -94,12 +140,29 @@ class RTEnv:
         remaining_treatments = waitlist - advance_scheduling_decision.sum(axis=0)
         postponing_cost = gp.quicksum(self.postponing_cost(i) * remaining_treatments[i] for i in range(self.num_types))
         cost = waiting_cost + overtime_cost + postponing_cost
-        # for i in range(len(advance_scheduling_decision[0])):
-        #     for j in range(len(advance_scheduling_decision)):
-        #         print("hold cost:", gp.quicksum(self.discount_factor ** k * self.holding_cost(k, i) for k in range(j+1)), advance_scheduling_decision[j, i])
-        #print(f"waiting_cost: {waiting_cost}, overtime_cost: {overtime_cost}, postponing_cost {postponing_cost}")
         if not is_var:
             cost = cost.getValue()
+        return cost
+    '''
+    
+    def cost_fn(self, state, action, is_var=False):
+        regular_bookings, overtimes, waitlist = state
+        advance_scheduling_decision, overtime_decision = action
+        
+        # 1. Waiting Cost
+        # Flatten both the 2D coefficient matrix and 2D MVar into 1D vectors, 
+        # then use @ for a blazing fast dot product.
+        waiting_cost = self.waiting_cost_coeffs.flatten() @ advance_scheduling_decision.reshape(-1)
+        
+        # 2. Overtime Cost (1D array @ 1D array)
+        overtime_cost = self.overtime_cost_coeffs @ overtime_decision
+        
+        # 3. Postponing Cost
+        remaining_treatments = waitlist - advance_scheduling_decision.sum(axis=0)
+        postponing_cost = self.postponing_cost_coeffs @ remaining_treatments
+        
+        # Gurobi natively adds MLinExpr objects together
+        cost = waiting_cost + overtime_cost + postponing_cost
         return cost
 
     def post_action_state(self, state, action, is_var=False):
@@ -110,12 +173,27 @@ class RTEnv:
         post_action_overtimes = overtimes + overtime_decision
         post_action_waitlist = waitlist - advance_scheduling_decision.sum(axis=0)
         return (post_action_regular_bookings, post_action_overtimes, post_action_waitlist)
-
+    
+    '''
     def post_action_state_to_new_state(self, post_action_state, new_arrival, is_var=True):
         post_action_regular_bookings, post_action_overtimes, post_action_waitlist = self.get_state(post_action_state, is_var)
         new_regular_bookings = numpy_shift(post_action_regular_bookings, num_places=-1)
         new_overtimes = numpy_shift(post_action_overtimes, num_places=-1)
         new_waitlist  = post_action_waitlist + new_arrival
+        return (new_regular_bookings, new_overtimes, new_waitlist)
+    '''
+    
+    def post_action_state_to_new_state(self, post_action_state, new_arrival, is_var=True):
+        post_action_regular_bookings, post_action_overtimes, post_action_waitlist = self.get_state(post_action_state, is_var)
+        
+        # Matrix multiplication handles the shift and zero-padding flawlessly 
+        # for both standard arrays and Gurobi MVars/MLinExprs.
+        new_regular_bookings = self.shift_matrix @ post_action_regular_bookings
+        new_overtimes = self.shift_matrix @ post_action_overtimes
+        
+        # Element-wise addition is natively supported by both types
+        new_waitlist = post_action_waitlist + new_arrival
+        
         return (new_regular_bookings, new_overtimes, new_waitlist)
 
     def get_next_state(self, state, action, new_arrival, is_var=False):
@@ -203,6 +281,18 @@ class RTEnv:
         regular_bookings = np.minimum(required_bookings, self.regular_capacity)
         overtimes = np.minimum(np.maximum(required_bookings - self.regular_capacity, 0), self.overtime_capacity)
         return (regular_bookings, overtimes, new_arrivals)
+    
+    def generate_initial_state(self):
+        total_bookings = randint.rvs(0, self.regular_capacity + self.overtime_capacity + 1, size=self.planning_horizon-1, random_state=self.init_state_rng)
+        total_bookings = np.append(total_bookings, 0)
+        regular_bookings = np.minimum(total_bookings, self.regular_capacity)
+        overtime_bookings = total_bookings - regular_bookings
+        waitlist = randint.rvs(0, self.arrival_generator.maximum_arrival + 1, size=self.num_types, random_state=self.init_state_rng)
+        return (regular_bookings, overtime_bookings, waitlist)
+    
+    def generate_valid_action(self, state):
+        action = random.choice(list(self.valid_actions(state)))
+        return action
 
     def step(self, action):
         regular_bookings, overtimes, waitlist = self.state
@@ -241,4 +331,14 @@ if __name__ == '__main__':
     from experiments import get_config_by_type
     config = get_config_by_type('toy')
     env = config.env
-    print(len(list(env.generate_state_action_pairs())))
+    for i in range(10):
+        state = env.generate_initial_state()
+        print("initial state:", state)
+        action = env.generate_valid_action(state)
+        post_action_state = env.post_action_state(state, action)
+        print("post action state:", post_action_state)
+        next_state = env.post_action_state_to_new_state(post_action_state, new_arrival=np.array([1, 0]))
+        next_state2 = env.post_action_state_to_new_state_2(post_action_state, new_arrival=np.array([1, 0]))
+        
+        print("next state:", next_state)
+        print("next state 2:", next_state2)

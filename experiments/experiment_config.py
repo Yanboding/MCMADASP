@@ -160,9 +160,9 @@ class ExperimentConfig:
         booking_window_size = 3
         treatment_patterns = ["1 * 2", 
                               "1 * 2 + 1 * 1"]
-        arrival_rates = [2, 1]
+        arrival_rates = [1.5, 1.5]
         l = [[(0, 1, 0), (1, 5, 100), (5, 100, 150)],
-             [(0, 1, 0), (1, 10, 80), (10, 100, 150)]]
+             [(0, 1, 0), (1, 10, 10), (10, 100, 150)]]
         # treatment_patterns = ["1 * 2"]
         # arrival_rates = [3]
         # l = [[(0, 1, 10), (1, 5, 100), (5, 100, 150)]]
@@ -180,7 +180,7 @@ class ExperimentConfig:
             "overtime_capacity": 2,
             "discount_factor": 0.99,
             "reset_params": {
-                'percentage_occupied': 0.99,
+                'percentage_occupied': 0,
                 't': 1
             },
             "maximum_total_arrival": math.ceil(sum(arrival_rates) * 3),
