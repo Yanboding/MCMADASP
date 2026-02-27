@@ -12,6 +12,7 @@ import hashlib
 import json
 import os
 import glob
+import pickle
 
 
 def numpy_shift(arr, num_places, fill_na=0):
@@ -358,6 +359,13 @@ def decode(obj):
     if isinstance(obj, list):
         return [decode(x) for x in obj]
     return obj
+
+def load_pickle_if_exists(path):
+    """Return file contents if the file exists, otherwise return None."""
+    if os.path.isfile(path):
+        with open(path, 'rb') as f:
+            return pickle.load(f)
+    return None
 
 if __name__ == '__main__':
     data = [

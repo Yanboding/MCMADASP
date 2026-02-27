@@ -1,1 +1,2 @@
 from .experiment_config import get_config_by_type
+from .result_aggregration import SimulateEvaluationResult

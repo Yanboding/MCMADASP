@@ -77,7 +77,7 @@ def approximate_value_plot_from_running_stats_dict(running_stats_dict, x_vals, x
         if is_show_text:
             for x, y, hw in zip(x_vals, means, half_window):
                 # offset = max(hw * 1.1, 0.02)  # Ensure a minimum offset
-                ax.text(x, y, f"{y:.2f}", ha='center', va='bottom', fontsize=20)
+                ax.text(x, y, f"{y:.0f}", ha='center', va='bottom', fontsize=20)
     set_fontsize(ax, 30)
     # To handle multiple lines with the same label, we need to manually create a custom legend
     handles, labels = ax.get_legend_handles_labels()
@@ -116,7 +116,7 @@ def approximate_value_plot_from_running_stats_dict(running_stats_dict, x_vals, x
     ax.yaxis.get_offset_text().set_fontsize(20)
     fig.tight_layout()
     plt.savefig(save_file, bbox_inches='tight', format='svg')
-    #plt.show()
+    # plt.show()
 
 
 def approximate_value_plot_from_multid_running_stats(running_stats_dict, x_vals, xlabel, ylabel, plot_labels, title, save_file):

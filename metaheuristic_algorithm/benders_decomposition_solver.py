@@ -464,7 +464,7 @@ class BendersDecompositionSolver:
         self.master_model.update()
 
     def adaptive_solve(self, batch_size=64,
-                       adaptive_tol=0.03,
+                       adaptive_tol=0.05,
                        gap_tol=1e-6,
                        max_iter=150,
                        use_pareto_cuts=True,
