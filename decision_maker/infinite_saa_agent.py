@@ -297,13 +297,17 @@ class InfiniteSAAAgent(InfiniteRTAgent):
         if self.workers is None:
             self.workers = []
             for scenario_id in range(len(theta_vars)):
-                worker_model, link_rows, state_linking_constraints = self.subproblem_builder_fn(env=self.grb_env,
+                start = time.time()
+                print(f'Start build {scenario_id}')
+                grb_env = acquire_grb_env({"Threads": 0}, verbose=False, wait=InfiniteRTAgent.TOKEN_WAIT)
+                worker_model, link_rows, state_linking_constraints = self.subproblem_builder_fn(env=grb_env,
                                                                                                 scenario_id=scenario_id)
                 self.workers.append(SubproblemWorker(worker_model,
                                                      link_rows,
                                                      state_linking_constraints,
                                                      scenario_id,
                                                      verbose=verbose))
+                print(f'Finished build {scenario_id} in {time.time()-start} seconds')
         for worker in self.workers:
             set_link_rhs(worker.state_linking_constraints, flatten_state)
             worker.model.reset()
@@ -413,28 +417,28 @@ if __name__ == "__main__":
     import time
     config = get_config_by_type('toy')
     env = config.env
-    agent = InfiniteSAAAgent(env=env, discount_factor=0.9, sample_path_number=256, geom_p=0.05, is_myopic=False)
+    agent = InfiniteSAAAgent(env=env, discount_factor=0.99, sample_path_number=256, geom_p=0.02, is_myopic=False)
     state, info = env.reset()
     print(state)
     done = False
     #action, obj, _ = agent.solve(state=state, verbose=False, use_pareto_cuts=True)
     #print("time:", 1, "bender obj:", obj, "action:", action)
     start = time.time()
-    action, obj, _ = agent.parallel_solve(state=state, verbose=False, use_pareto_cuts=True)
+    action, obj, _ = agent.parallel_solve(state=state, verbose=False, use_pareto_cuts=False)
     print("time:", 1, "bender obj:", obj, "action:", action) # 303045.6417575597
     print(time.time() - start) # 159.18962907791138
-    start = time.time()
-    action, obj, _ = agent.solve(state=state, verbose=False, use_pareto_cuts=True)
-    print("time:", 1, "bender obj:", obj, "action:", action)  # 303045.6417575597
-    print(time.time() - start)
-    start = time.time()
-    action, obj, _ = agent.direct_solve(state=state, verbose=False)
-    print("time:", 1, "bender obj:", obj, "action:", action) # Goal: 267616.65753353486
-    print(time.time() - start)
     # start = time.time()
-    # action, obj, _ = agent.adaptive_solve(state=state, verbose=False)
-    # print("time:", 1, "bender obj:", obj, "action:", action) # 303045.6417575597 195.55690169334412
+    # action, obj, _ = agent.solve(state=state, verbose=False, use_pareto_cuts=True)
+    # print("time:", 1, "bender obj:", obj, "action:", action)  # 303045.6417575597
     # print(time.time() - start)
+    # start = time.time()
+    # action, obj, _ = agent.direct_solve(state=state, verbose=False)
+    # print("time:", 1, "bender obj:", obj, "action:", action) # Goal: 267616.65753353486
+    # print(time.time() - start)
+    start = time.time()
+    action, obj, _ = agent.solve(state=state, verbose=False)
+    print("time:", 1, "bender obj:", obj, "action:", action) # 303045.6417575597 195.55690169334412
+    print(time.time() - start)
     #print(obj) # 11451.191239064321, 11476.191239064323
     #print(action)
 
