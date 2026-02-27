@@ -158,9 +158,9 @@ class ExperimentConfig:
     @classmethod
     def from_toy_case(cls):
         booking_window_size = 3
-        treatment_patterns = ["1 * 2", 
-                              "1 * 2 + 1 * 1"]
-        arrival_rates = [1.5, 1.5]
+        treatment_patterns = ["1 * 3", 
+                              "1 * 2"]
+        arrival_rates = [1, 2]
         l = [[(0, 1, 0), (1, 5, 100), (5, 100, 150)],
              [(0, 1, 0), (1, 10, 10), (10, 100, 150)]]
         # treatment_patterns = ["1 * 2"]
@@ -176,7 +176,7 @@ class ExperimentConfig:
             "overtime_cost_by_day": 100,
             "postponing_cost": 2000,
             "duration": 1,
-            "regular_capacity": 6,
+            "regular_capacity": 7,
             "overtime_capacity": 2,
             "discount_factor": 0.99,
             "reset_params": {

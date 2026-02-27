@@ -233,8 +233,8 @@ def generate_alp_train_params(experiment_configs, dat_file):
                                        base_env_args_overrides=config.get('base_env_args_overrides'),
                                        param_modifier_fn=config.get('param_modifier_fn')):
                 print(get_uid(env_arg))
-                for train_type in ["row_gen"]:
-                    line = "python run.py --params '" + json.dumps({'env_args':env_arg, 'experiment_name': name, "param_value": param_value, 'train_type': train_type}) + "'\n"
+                for i, train_type in enumerate(["row_gen"], start=1):
+                    line = f"{i} python run.py --params '" + json.dumps({'env_args':env_arg, 'experiment_name': name, "param_value": param_value, 'train_type': train_type}) + "'\n"
                     f.write(line)
 
 def generate_simulation_params(config_type, experiment_name, warm_up_periods, test_sample_path_num, num_periods, dat_file):
@@ -309,14 +309,14 @@ def generate_simulation_params(config_type, experiment_name, warm_up_periods, te
             'env_args':env_args,
         }
         uid = get_uid(params)
-        for agent_arg in agent_args:
+        for i, agent_arg in enumerate(agent_args, start=1):
             save_params = {
                 'uid': uid,
                 'experiment_name': experiment_name,
                 'agent_arg': agent_arg,
                 **params
             }
-            lines_to_write.append("python run.py --params '" + json.dumps(save_params) + "'\n")
+            lines_to_write.append(f"{command_id+1} python run.py --params '" + json.dumps(save_params) + "'\n")
     print("max sample path length:", max_length)
     with open(dat_file, 'w') as f:
         f.writelines(lines_to_write)
@@ -392,37 +392,12 @@ if __name__ == '__main__':
             'param_values': [0],
         }
     }
-    '''
-    booking window size
-    '''
-    # --- Specify the number of trials for each experiment ---
-    # You can customize the number of samples for each experiment here.
-    TEST_SAMPLE_NUM_MAP = {
-        'demand_rate': 2000,
-        'decision_epoch': 2000,
-        'overtime_cost_by_day': 2000,
-        'occupancy_level': 2000,
-        'discount_factor':2000,
-        'percentage_occupied':2000,
-        'postponing_cost': 2000
-    }
     
     # --- Run All Experiments ---
     # generate_alp_train_params(
     #     experiment_configs=EXPERIMENT_CONFIGS,
     #     dat_file = 'table_alp_toy_train.dat',
     # )
-    
-    
-    '''
-    generate_all_experiments(
-        config_type='ejor_default',
-        experiment_configs=EXPERIMENT_CONFIGS,
-        test_sample_path_num_map=TEST_SAMPLE_NUM_MAP,
-        dat_file='table.dat',
-        is_reuse=False # Set to True to avoid regenerating files and only create the .dat
-    )
-    '''
     
     generate_simulation_params(config_type='toy', 
                                experiment_name='toy_problem', 
