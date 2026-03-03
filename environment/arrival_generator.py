@@ -46,7 +46,7 @@ class MultiClassPoissonArrivalGenerator:
         self.qmc_seed = qmc_seed
         if use_qmc:
             self.qmc_dim = 1 + (self.max_periods * self.num_types)
-            
+            print(self.qmc_dim, self.qmc_seed)
             # Note: Optimization=True is slower to init but better quality
             self.qmc_sampler = qmc.Sobol(d=self.qmc_dim, scramble=True, seed=self.qmc_seed)
     

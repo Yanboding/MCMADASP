@@ -18,11 +18,15 @@ class LinearPenaltyFunction:
         theta_y = np.array([float(next(it)) for _ in range(self.env.planning_horizon)])
         return theta_u, theta_v, theta_w, theta_x, theta_y
 
-    def calculate_penalty(self, state, action, new_arrival, is_var=False):
+    def calculate_penalty(self, state, action, new_arrival, is_var=False, coefficients=None):
         (post_action_regular_bookings, post_action_overtimes, post_action_waitlist) = self.env.post_action_state(state, action, is_var)
         (advance_scheduling_decision, overtime_decision) = action
         total_arrival_difference = np.sum(self.env.arrival_generator.mean_by_type - new_arrival)
-        linear_approx = np.sum(self.theta_u * post_action_regular_bookings) + np.sum(self.theta_v * post_action_overtimes) + np.sum(self.theta_w * post_action_waitlist) + np.sum(self.theta_x * advance_scheduling_decision) + np.sum(self.theta_y * overtime_decision)
+        if coefficients is not None:
+            theta_u, theta_v, theta_w, theta_x, theta_y = coefficients
+        else:
+            theta_u, theta_v, theta_w, theta_x, theta_y = self.theta_u, self.theta_v, self.theta_w, self.theta_x, self.theta_y
+        linear_approx = np.sum(theta_u * post_action_regular_bookings) + np.sum(theta_v * post_action_overtimes) + np.sum(theta_w * post_action_waitlist) + np.sum(theta_x * advance_scheduling_decision) + np.sum(theta_y * overtime_decision)
         penalty_value = total_arrival_difference * linear_approx
         return penalty_value
 

@@ -3,7 +3,7 @@ import os
 from scipy.stats import geom
 from pprint import pprint
 import json
-ALP_coefficients = [9200.999999999989, 100.0, 99.00000000000003, 98.01000000000005, 0.0, 0.0, 0.0, 0.0, 0.0, 200.0, 299.0]
+ALP_coefficients = [-699.9999999999966, 100.0, 99.0, 0.0, 0.0, 0.0, 0.0, 300.0, 199.99999999999997]
 directory_path = os.path.join('.', 'experiments', 'results', "toy_problem")
 # 5: 33.1989634321917 0.13896181129865617
 # 10: 36.687370600414376 0.1486390341192171

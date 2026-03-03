@@ -182,7 +182,6 @@ class SimulateEvaluationResult:
         self.calculate_gaps()
         #print(self.scenario_results[uid][('penalized_lowerbound_', '{"coefficients": 1, "current_decision_var_type": "integer", "future_decision_var_type": "continuous", "is_include_discount_factor": false, "is_myopic": false}')])
         print(self.gap_after_warmup)
-        print(self.ptc_gap_after_warmup)
 
     def load(self, data):
         agent_name = json.dumps(data['agent_name'])
@@ -258,6 +257,15 @@ class SimulateEvaluationResult:
                             print("uid", uid, gap, bound_type)
                         self.gap_after_warmup[(bound_type, name, args, bound_args)] += gap
                         self.ptc_gap_after_warmup[(bound_type, name, args, bound_args)] += gap / policy_cost * 100 if policy_cost > 0 else 0
+                # calculate the gap between penalized_lowerbound and zero penalized lowerbound
+                bound_args_dict = json.loads(bound_args)
+                if bound_type == "penalized_lowerbound_" and bound_args_dict['coefficients'] == 1:
+                    bound_args_dict['coefficients'] = 0
+                    zero_penalized_lowerbound_args = json.dumps(bound_args_dict, sort_keys=True)
+                    penalized_lowerbound_args = bound_args
+                    for key, cost in scenario_result[("penalized_lowerbound_", penalized_lowerbound_args)].items():
+                        gap = cost - scenario_result[("penalized_lowerbound_", zero_penalized_lowerbound_args)][key]
+                        self.gap_after_warmup[(bound_type, bound_type, penalized_lowerbound_args, zero_penalized_lowerbound_args)] += gap
     
     def get_experiment_labels(self, stats):
         experiment_labels = {}

@@ -5,6 +5,7 @@ import numbers
 
 from environment import MultiClassPoissonArrivalGenerator, RTEnv
 from utils import str2treatment_patterns, wait_time
+from scipy.stats import geom
 
 class HoldingCostCalculator:
     """
@@ -178,7 +179,7 @@ class ExperimentConfig:
             "duration": 1,
             "regular_capacity": 7,
             "overtime_capacity": 2,
-            "discount_factor": 0.99,
+            "discount_factor": 0.9,
             "reset_params": {
                 'percentage_occupied': 0,
                 't': 1
@@ -310,7 +311,7 @@ class ExperimentConfig:
                                                               type_probs,
                                                               random_seed=arrival_random_seed,
                                                               use_qmc=True, 
-                                                              max_periods=50,
+                                                              max_periods=int(geom.ppf(0.999, p=1-discount_factor)), # to ensure that the probability of generating more than max_periods arrivals is very small
                                                               geom_p=(1-discount_factor),
                                                               is_precompute_state=False)
         holding_cost_by_day_by_type = np.array(holding_cost_by_day_by_type)

@@ -77,6 +77,10 @@ class RTEnv:
 
         # Creates an H x H matrix that shifts everything left by 1 and adds a 0 at the end
         self.shift_matrix = np.eye(self.planning_horizon, k=1)
+    
+    def reset_random_seeds(self):
+        self.init_state_rng = np.random.default_rng(self.init_state_random_seed)
+        self.stop_time_rng = np.random.default_rng(self.stop_time_random_seed)
 
     def get_state(self, state, is_var=False):
         if not is_var:

@@ -17,23 +17,17 @@ def benders_callback(model, where):
         pareto_epsilon = model._pareto_epsilon
         max_workers = model._max_workers
 
-        # Access/Initialize core point and iteration counter
-        core_point = model._core_point
-        # We need an iteration counter to calculate the diminishing step (alpha)
-        model._cb_iter += 1
-        k = model._cb_iter
-
-        # 2. Get current solution (xk)
+        # 1. Get current solution (xk)
         x_vals = np.array(model.cbGetSolution(x_vars))
         theta_vals = np.array(model.cbGetSolution(theta_vars))
 
-        # 3. Update the core point (Internal logic)
-        if core_point is None:
+        # 2. Update the core point (Internal logic)
+        if model._core_point is None:
             model._core_point = np.copy(x_vals)
         else:
             # Using your diminishing step formula: alpha = 1 / (k + 1)
-            alpha = 1.0 / (k + 1.0)
-            model._core_point = (1.0 - alpha) * core_point + alpha * x_vals
+            alpha = 0.5
+            model._core_point = (1.0 - alpha) * model._core_point + alpha * x_vals
 
         # Use the UPDATED core point for solving the Pareto subproblems
         current_core = model._core_point
@@ -56,60 +50,15 @@ def benders_callback(model, where):
             if not is_feasible:
                 model.cbLazy(expr >= 0)
             else:
-                # IMPORTANT: Use exactly the same tolerance as iterative solve
-                if theta_vals[i] < (obj_val - tol):
-                    model.cbLazy(theta_vars[i] >= expr)
-
-def benders_callback_iter(model, where):
-    global number_of_subproblem_solves
-    if where == GRB.Callback.MIPSOL:
-        x_vars = model._action_vars
-        theta_vars = model._theta_vars
-        workers = model._workers
-        tol = model._tol
-        use_pareto_cuts = model._use_pareto
-        pareto_epsilon = model._pareto_epsilon
-
-        # 1. Update the core point for Magnanti-Wong cuts
-        model._cb_iter += 1
-        k = model._cb_iter
-
-        x_vals = np.array(model.cbGetSolution(x_vars))
-        theta_vals = np.array(model.cbGetSolution(theta_vars))
-
-        if model._core_point is None:
-            model._core_point = np.copy(x_vals)
-        else:
-            alpha = 1.0 / (k + 1.0)
-            model._core_point = (1.0 - alpha) * model._core_point + alpha * x_vals
-
-        current_core = model._core_point
-
-        # 2. Solve subproblems using a for loop
-        # We iterate over the number of subproblems (matching theta_vars)
-        for i in range(len(theta_vars)):
-            worker = workers[i]
-
-            # Solve either the Pareto subproblem or the standard subproblem
-            if use_pareto_cuts:
-                is_feasible, obj_val, duals = worker.solve_pareto(x_vals, current_core, pareto_epsilon)
-            else:
-                is_feasible, obj_val, duals = worker.solve(x_vals)
-
-            # 3. Generate the Optimality or Feasibility Cut
-            # Cut expression: theta[i] >= obj_val + duals^T * (x - x_vals)
-            expr = obj_val + sum(duals[j] * (x_vars[j] - x_vals[j]) for j in range(len(x_vals)))
-
-            if not is_feasible:
-                # If subproblem is infeasible, add a feasibility cut
-                model.cbLazy(expr >= 0)
-            else:
-                # If subproblem is feasible but theta is too small, add optimality cut
-                if theta_vals[i] < (obj_val - tol):
-                    model.cbLazy(theta_vars[i] >= expr)
-
-        number_of_subproblem_solves += 1
-
+                # Optimality cut depends strictly on the Master objective sense
+                if model.ModelSense == GRB.MINIMIZE:
+                    # Master is minimizing: theta must be greater than the subproblem lower bound
+                    if theta_vals[i] < (obj_val - tol):
+                        model.cbLazy(theta_vars[i] >= expr)
+                else:
+                    # Master is maximizing: theta must be less than the subproblem upper bound
+                    if theta_vals[i] > (obj_val + tol):
+                        model.cbLazy(theta_vars[i] <= expr)
 class SubproblemWorker:
     """
     One worker per scenario. Owns its own gp.Env and gp.Model.
@@ -237,86 +186,110 @@ class BendersDecompositionSolver:
 
     def solve(self, tol=1e-6,
               max_iter=150,
-              use_pareto_cuts=True,
+              use_pareto_cuts=False,
               pareto_epsilon=1e-4,
               core_alpha=None,
-              verbose=False):
+              verbose=False,
+              parallel=True,
+              max_workers=-1):
         info = {}
         lower_bound = -GRB.INFINITY
         upper_bound = GRB.INFINITY
         core_point = None  # For Pareto cuts; could be average of previous actions, will initialize after first master solve
-        for iteration in range(1, max_iter + 1):
-            start = time.time()
-            if not solve_and_handle_errors(self.master_model, verbose=verbose):
-                raise RuntimeError("Master model optimal solution not found")
-            end = time.time()
-            print(f"Iteration {iteration}, master solved in {end - start} seconds")
-            action = get_solution_value(self.action_vars).astype(float)
-            if core_point is None:
-                core_point = copy.deepcopy(action)
-
-            lower_bound = self.master_model.ObjVal
-
-            # Ask all workers to solve for this action
-            # futures = [ex.submit(w.solve, action_t, verbose) for w in workers]
-            feasibility_cuts = []
-            optimality_cuts = []
-            cost_to_go_estimation = 0.0
-            all_feasible = True
-            start = time.time()
-            for w in self.workers[:len(self.theta_vars)]:
-                scenario_id = w.subproblem_id
-                if use_pareto_cuts:
-                    is_feasible, v, duals = w.solve_pareto(
-                        action, core_point, epsilon=pareto_epsilon, verbose=verbose
-                    )
+        executor = ThreadPoolExecutor(max_workers=max_workers) if parallel else None
+        try:
+            for iteration in range(1, max_iter + 1):
+                start = time.time()
+                if not solve_and_handle_errors(self.master_model, verbose=verbose):
+                    raise RuntimeError("Master model optimal solution not found")
+                print(f"Iteration {iteration}, master solved in {time.time() - start} seconds")
+                action = get_solution_value(self.action_vars).astype(float)
+                if core_point is None:
+                    core_point = copy.deepcopy(action)
+                
+                if self.master_model.ModelSense == GRB.MINIMIZE:
+                    lower_bound = self.master_model.ObjVal
                 else:
-                    is_feasible, v, duals = w.solve(action, verbose=verbose)
-                if not is_feasible:
-                    print(f"Iteration {iteration}, scenario {scenario_id} infeasible; adding feasibility cut")
-                    all_feasible = False
-                    # Add feasibility cut to master
-                    cut_expr = v + np.dot(duals, self.action_vars - action)
-                    feasibility_cuts.append(cut_expr >= 0)
-                    break
+                    upper_bound = self.master_model.ObjVal
+
+                # Ask all workers to solve for this action
+                # futures = [ex.submit(w.solve, action_t, verbose) for w in workers]
+                start_sub = time.time()
+                active_workers = self.workers[:len(self.theta_vars)]
+                # Execute subproblems
+                if parallel:
+                    if use_pareto_cuts:
+                        futures = [executor.submit(w.solve_pareto, action, core_point, pareto_epsilon, verbose)
+                                   for w in active_workers]
+                    else:
+                        futures = [executor.submit(w.solve, action, verbose) for w in active_workers]
+                    results = [f.result() for f in futures]
                 else:
-                    # If feasible, generate the strengthened cut using the dynamic method
-                    cost_to_go_estimation += v
-                    # cut = @constraint(model, θ >= ret.obj + sum(ret.π .* (x .- x_k)))
-                    cut_rhs = v + np.dot(duals, self.action_vars - action)
-                    optimality_cuts.append(self.theta_vars[scenario_id] >= cut_rhs)
-            end = time.time()
-            print(f"Iteration {iteration}, subproblems solved in {end - start} seconds")
-            if not all_feasible:
-                print(f"Iteration {iteration}, adding {len(feasibility_cuts)} feasibility cuts")
-                # Some scenario infeasible: add feasibility cuts and repeat
-                self.master_model.addConstrs((feasibility_cuts[i] for i in range(len(feasibility_cuts))),
-                                             name="feas_cut_")
+                    results = []
+                    for w in active_workers:
+                        if use_pareto_cuts:
+                            results.append(w.solve_pareto(action, core_point, pareto_epsilon, verbose))
+                        else:
+                            results.append(w.solve(action, verbose))
+                print(f"Iteration {iteration}, subproblems solved in {time.time() - start_sub:.2f}s")
+                
+                feasibility_cuts = []
+                optimality_cuts = []
+                cost_to_go_estimation = 0.0
+                all_feasible = True
+
+                for idx, (is_feasible, v, duals) in enumerate(results):
+                    scenario_id = active_workers[idx].subproblem_id
+
+                    if not is_feasible:
+                        all_feasible = False
+                        cut_expr = v + np.dot(duals, self.action_vars - action)
+                        feasibility_cuts.append(cut_expr >= 0)
+                        # Note: We continue the loop to collect all possible feasibility cuts
+                        # rather than breaking, which helps the Master converge faster.
+                    else:
+                        cost_to_go_estimation += v
+                        cut_rhs = v + np.dot(duals, self.action_vars - action)
+                        if self.master_model.ModelSense == GRB.MINIMIZE:
+                            optimality_cuts.append(self.theta_vars[scenario_id] >= cut_rhs)
+                        else:
+                            optimality_cuts.append(self.theta_vars[scenario_id] <= cut_rhs)
+                
+                if not all_feasible:
+                    print(f"Iteration {iteration}, adding {len(feasibility_cuts)} feasibility cuts")
+                    # Some scenario infeasible: add feasibility cuts and repeat
+                    self.master_model.addConstrs((feasibility_cuts[i] for i in range(len(feasibility_cuts))),
+                                                name=f"feas_cut_{iteration}_")
+                else:
+                    print(f"Iteration {iteration}, adding {len(optimality_cuts)} optimality cuts")
+                    # All scenarios feasible: add optimality cuts and continue
+                    self.master_model.addConstrs((optimality_cuts[i] for i in range(len(optimality_cuts))), name=f"opt_cut_{iteration}_")
+                    cost_to_go_estimation = cost_to_go_estimation / len(self.theta_vars)
+                    first_stage_cost = self.imm_cost.getValue() if hasattr(self.imm_cost, 'getValue') else float(self.imm_cost or 0.0)
+                    if self.master_model.ModelSense == GRB.MINIMIZE:
+                        upper_bound = first_stage_cost + cost_to_go_estimation
+                    else:
+                        lower_bound = first_stage_cost + cost_to_go_estimation
+
+                    # update core point AFTER you have a valid x_k from the master
+                    core_point = self.update_core_point(core_point, action, iteration, alpha=core_alpha)
+
+                    print(f"UB: {upper_bound}, LB: {lower_bound}, Gap: {abs(upper_bound - lower_bound)}")
+                    # Average the future cost across scenarios like in direct solution
+                    if abs(upper_bound - lower_bound) < tol:
+                        info = {}
+                        break
+                    if lower_bound > upper_bound:
+                        print("Error: Lower bound exceeded upper bound (check dual rays/bounds).")
+                        # save more state here for debugging
+                        info = {'debug': 'lower_bound_exceeded_upper_bound'}
+                        break
+                print('-' * 20)
             else:
-                print(f"Iteration {iteration}, adding {len(optimality_cuts)} optimality cuts")
-                # All scenarios feasible: add optimality cuts and continue
-                self.master_model.addConstrs((optimality_cuts[i] for i in range(len(optimality_cuts))), name="opt_cut_")
-                cost_to_go_estimation = cost_to_go_estimation / len(self.theta_vars)
-                upper_bound = self.imm_cost.getValue() + cost_to_go_estimation
-
-                # update core point AFTER you have a valid x_k from the master
-                core_point = self.update_core_point(core_point, action, iteration, alpha=core_alpha)
-                # Average the future cost across scenarios like in direct solution
-                if abs(upper_bound - lower_bound) < tol:
-                    info = {}
-                    break
-                if lower_bound > upper_bound:
-                    print('Wrong upper_bound:', upper_bound)
-                    print('Wrong lower_bound:', lower_bound)
-                    print("Lower bound exceeded upper bound")
-                    # save more state here for debugging
-                    info = {'debug': 'lower_bound_exceeded_upper_bound'}
-                    break
-            print('upper_bound:', upper_bound)
-            print('lower_bound:', lower_bound)
-            print('-' * 20)
-        else:
-            print('Max iterations reached')
+                print('Max iterations reached')
+        finally:
+            if executor is not None:
+                executor.shutdown(wait=False)
         return upper_bound, info
 
     def solve_with_callback(self, tol=1e-6,
@@ -360,99 +333,6 @@ class BendersDecompositionSolver:
             return self.master_model.ObjVal, info
         return None, info
 
-    def parallel_solve(self, tol=1e-6,
-                      max_iter=150,
-                      use_pareto_cuts=True,
-                      pareto_epsilon=1e-4,
-                      core_alpha=None,
-                      verbose=False,
-                      max_workers=None):  # Added max_workers to control parallelism
-
-        info = {}
-        lower_bound = -GRB.INFINITY
-        upper_bound = GRB.INFINITY
-        core_point = None
-
-        # Use a ThreadPoolExecutor to solve subproblems in parallel
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            for iteration in range(1, max_iter + 1):
-                # 1. Solve Master Problem
-                start_master = time.time()
-                if not solve_and_handle_errors(self.master_model, verbose=verbose):
-                    raise RuntimeError("Master model optimal solution not found")
-
-                action = get_solution_value(self.action_vars).astype(float)
-                lower_bound = self.master_model.ObjVal
-
-                if core_point is None:
-                    core_point = copy.deepcopy(action)
-
-                print(f"Iteration {iteration}, master solved in {time.time() - start_master:.2f}s")
-
-                # 2. Solve Subproblems in Parallel
-                start_sub = time.time()
-
-                # Select relevant workers for current batch
-                active_workers = self.workers[:len(self.theta_vars)]
-
-                if use_pareto_cuts:
-                    futures = [executor.submit(w.solve_pareto, action, core_point, pareto_epsilon, verbose)
-                               for w in active_workers]
-                else:
-                    futures = [executor.submit(w.solve, action, verbose)
-                               for w in active_workers]
-
-                # Collect results
-                results = [f.result() for f in futures]
-                print(f"Iteration {iteration}, subproblems solved in {time.time() - start_sub:.2f}s")
-
-                # 3. Process Results and Add Cuts
-                feasibility_cuts = []
-                optimality_cuts = []
-                cost_to_go_estimation = 0.0
-                all_feasible = True
-
-                for idx, (is_feasible, v, duals) in enumerate(results):
-                    scenario_id = active_workers[idx].subproblem_id
-
-                    if not is_feasible:
-                        all_feasible = False
-                        cut_expr = v + np.dot(duals, self.action_vars - action)
-                        feasibility_cuts.append(cut_expr >= 0)
-                        # Note: We continue the loop to collect all possible feasibility cuts
-                        # rather than breaking, which helps the Master converge faster.
-                    else:
-                        cost_to_go_estimation += v
-                        cut_rhs = v + np.dot(duals, self.action_vars - action)
-                        optimality_cuts.append(self.theta_vars[scenario_id] >= cut_rhs)
-
-                # 4. Update Master Model
-                if not all_feasible:
-                    print(f"Iteration {iteration}, adding {len(feasibility_cuts)} feasibility cuts")
-                    # Some scenario infeasible: add feasibility cuts and repeat
-                    self.master_model.addConstrs((feasibility_cuts[i] for i in range(len(feasibility_cuts))),
-                                                 name="feas_cut_")
-                else:
-                    print(f"Iteration {iteration}, adding {len(optimality_cuts)} optimality cuts")
-                    # All scenarios feasible: add optimality cuts and continue
-                    self.master_model.addConstrs((optimality_cuts[i] for i in range(len(optimality_cuts))),
-                                                 name="opt_cut_")
-
-                    # Update Bounds and Convergence
-                    cost_to_go_avg = cost_to_go_estimation / len(active_workers)
-                    upper_bound = self.imm_cost.getValue() + cost_to_go_avg
-
-                    core_point = self.update_core_point(core_point, action, iteration, alpha=core_alpha)
-
-                    print(f"UB: {upper_bound}, LB: {lower_bound}, Gap: {abs(upper_bound - lower_bound)}")
-
-                    if abs(upper_bound - lower_bound) < tol:
-                        break
-
-                self.master_model.update()
-
-        return upper_bound, info
-
     def update_master_problem(self, new_scenario_number):
         # No need to update anything in the master problem
         # Add the new variable to the model and the dictionary
@@ -460,7 +340,8 @@ class BendersDecompositionSolver:
         start_index = len(self.theta_vars)
         self.theta_vars += [self.master_model.addVar(vtype=GRB.CONTINUOUS, name=f"theta_{omega}") for omega in range(start_index, start_index + new_scenario_number)]
         z = self.imm_cost + sum(self.theta_vars) / len(self.theta_vars)
-        self.master_model.setObjective(z, GRB.MINIMIZE)
+        current_sense = self.master_model.ModelSense
+        self.master_model.setObjective(z, current_sense)
         self.master_model.update()
 
     def adaptive_solve(self, batch_size=64,
