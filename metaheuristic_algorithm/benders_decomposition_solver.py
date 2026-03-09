@@ -191,7 +191,7 @@ class BendersDecompositionSolver:
               core_alpha=None,
               verbose=False,
               parallel=True,
-              max_workers=-1):
+              max_workers=None):
         info = {}
         lower_bound = -GRB.INFINITY
         upper_bound = GRB.INFINITY

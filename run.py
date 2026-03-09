@@ -545,6 +545,84 @@ def calcualte_penalized_lowerbound_with_same_initial_state(env_args, experiment_
             f.write(json.dumps(res) + '\n')
     else:
         print(f'{uid}-{aid}.pickle not exists')
+
+
+def caclaulte_information_relexation_cost(env, env_args, experiment_name, lowerbound_args, generating_function, init_state, sample_path, job_id):
+    '''
+        1. read hindsight_approx data
+        2. use actions to determine states in each period
+        3. starting at warmup_period + 1, solve lowerbound without penalty
+    '''
+    agent_instance = InfinitePenalizedSAAAgent(env, discount_factor=env.discount_factor, sample_path=sample_path, generating_function=generating_function, **lowerbound_args)
+    #print('warmup_state:', warmup_state, sample_path[warm_up_periods])
+    my_action, benchmark_value, info = agent_instance.solve(init_state)
+    costs = [cost.getValue() for cost in info['costs'][0]]
+    penalties = [penalty if isinstance(penalty, int) else penalty.getValue() for penalty in info['penalties'][0]] if 'penalties' in info else []
+    actions = info['actions'][0]
+    scheduled_patients = []
+    overtime = np.zeros(len(sample_path)+env.planning_horizon)
+    for t, action_var in enumerate(actions):
+        advance_scheduling_decision, overtime_decision = get_solution(action_var, is_final=False)
+        scheduled_patients.append(advance_scheduling_decision.tolist())
+        start = t
+        end = t + len(overtime_decision)
+        overtime[start:end] += overtime_decision
+    params = {
+        'init_state': list(item.tolist() for item in init_state),
+        'sample_path': sample_path.tolist(),
+        'env_args':env_args,
+    }
+    uid = get_uid(params)
+    res = {
+        "uid": uid,
+        "penalized_cost": benchmark_value,
+        "total_cost": sum(costs),
+        "total_penalty": sum(penalties),
+        "experiment_name": experiment_name,
+        "agent_name": {'agent_name': "penalized_lowerbound", 'lowerbound_args': lowerbound_args},
+        "costs": costs,
+        "penalties": penalties,
+        "scheduled_patients": scheduled_patients,
+        "overtime": overtime.tolist(),
+    }
+    output_file = os.path.join('experiments', 'results',  experiment_name, f'{job_id}.jsonl')
+    # Make sure the parent directories exist
+    os.makedirs(os.path.dirname(output_file), exist_ok=True)
+    with open(output_file, 'a') as f:  # 'a' will create the file if not present
+        f.write(json.dumps(res) + '\n')
+    return res
+    
+
+def calculate_information_relexation_costs(env_args, experiment_name, train_sample_path_num, test_sample_path_num, job_id):
+    # train penalty coefficients
+    config = get_config_by_type(case_type='infinite_custom', args=env_args)
+    env = config.env
+    generating_function = LinearPenaltyFunction(env=env)
+    start = time.time()
+    agent = InfinitePenalizedSAAAgent(env=env, discount_factor=0.99, sample_path_number=train_sample_path_num, generating_function=generating_function, is_myopic=False)
+    obj, coefficients, info = agent.benders_decomposition_train()
+    end = time.time()
+    print(f"Training time: {end - start} seconds")
+    # evaluate lower bound on different sample paths
+    zero_penalized_lowerbound_stats = RunningStats()
+    gap_stats = RunningStats()
+    relative_improvement_stats = RunningStats()
+    for i in range(test_sample_path_num):
+        init_state = env.generate_initial_state()
+        sample_path = env.reset_arrivals()
+        generating_function = LinearPenaltyFunction(env, coefficients=coefficients)
+        zero_penalized_args = {'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False, 'is_include_discount_factor':False, 'coefficients': 0}
+        penalized_args = {'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False, 'is_include_discount_factor':False, 'coefficients': 1}
+        zero_penalized_res = caclaulte_information_relexation_cost(env, env_args, experiment_name, zero_penalized_args, generating_function, init_state, sample_path, job_id=job_id)
+        penalized_res = caclaulte_information_relexation_cost(env, env_args, experiment_name, penalized_args, generating_function, init_state, sample_path, job_id=job_id)
+        gap = penalized_res['penalized_cost'] - zero_penalized_res['penalized_cost']
+        gap_stats += gap
+        zero_penalized_lowerbound_stats += zero_penalized_res['penalized_cost']
+    relative_improvement_stats = (gap_stats / zero_penalized_lowerbound_stats.mean) / 0.01
+    print(gap_stats)
+    print(relative_improvement_stats)
+        
+    
     
 
 if __name__ == '__main__':
@@ -561,16 +639,18 @@ if __name__ == '__main__':
     #simulate_evaluation(**params, job_id=args.job_id)
     # restore_costs(**params, job_id=args.job_id)
     # calcualte_lowerbound_with_same_initial_state(**params, job_id=args.job_id)
-
-    penalty_coefficients = [round(i,1) for i in range(0, 2)]
-    env_args = params['env_args']
-    config = get_config_by_type(case_type='infinite_custom', args=env_args)
-    env = config.env
-    coefficients = [-100.0, -100.0, -100.0, 100.0, -100.0, -100.0, -100.0, -100.0, -100.0, -100.0, 100.0, 100.0, 100.0, -100.0, -100.0, 100.0, -100.0, 100.0, -100.0, -100.0]
-    generating_function = LinearPenaltyFunction(env, coefficients=coefficients)
-    print(generating_function.get_coefficients(coefficients))
-    for penalty_coefficient in penalty_coefficients:
-        lowerbound_args = {'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False, 'is_include_discount_factor':False, 'coefficients': penalty_coefficient}
-        evaluate_lower_bound(**params, lowerbound_args=lowerbound_args, generating_function=generating_function, job_id=args.job_id)
-        calcualte_penalized_lowerbound_with_same_initial_state(**params, lowerbound_args=lowerbound_args, generating_function=generating_function, job_id=args.job_id)
     
+    # penalty_coefficients = [round(i,1) for i in range(0, 2)]
+    # env_args = params['env_args']
+    # config = get_config_by_type(case_type='infinite_custom', args=env_args)
+    # env = config.env
+    # coefficients = [7.5014254032033, 30.591338709685797, 97.09300537634867, 2.5151471773961083, 29.26133870970855, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, -100.0, -47.053083333327514, 1.6391031893291558e-11, 0.32999999997006774, -3.56699462365624]
+    # # coefficients = [100.0, 100.0, -100.0, 100.0, -100.0, -100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, -100.0, -100.0, -100.0, -100.0, -100.0]
+    
+    # generating_function = LinearPenaltyFunction(env, coefficients=coefficients)
+    # print(generating_function.get_coefficients(coefficients))
+    # for penalty_coefficient in penalty_coefficients:
+    #     lowerbound_args = {'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False, 'is_include_discount_factor':False, 'coefficients': penalty_coefficient}
+    #     evaluate_lower_bound(**params, lowerbound_args=lowerbound_args, generating_function=generating_function, job_id=args.job_id)
+    #     calcualte_penalized_lowerbound_with_same_initial_state(**params, lowerbound_args=lowerbound_args, generating_function=generating_function, job_id=args.job_id)
+    calculate_information_relexation_costs(**params, train_sample_path_num=350,test_sample_path_num=3000, job_id=args.job_id)

@@ -6,7 +6,7 @@ import time
 from gurobipy import GRB
 
 from decision_maker import InfiniteRTAgent
-from metaheuristic_algorithm import BenderDecompositionSolver
+from metaheuristic_algorithm import BendersDecompositionSolver
 from metaheuristic_algorithm.benders_decomposition_solver import SubproblemWorker, BendersDecompositionSolver
 from utils import solve_and_handle_errors, encode, flatten, set_link_rhs, acquire_grb_env
 

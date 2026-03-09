@@ -127,7 +127,7 @@ class RunningStats:
     def __str__(self) -> str:
         if self.n == 0: return "RunningStats(empty)"
         lower, upper = self.confidence_interval()
-        return f"μ = {self.mean:.4f}, 95% CI = ({lower:.4f}, {upper:.4f}), n = {self.n}"
+        return f"RunningStats(n={self.n}, mean={self.mean:.4f}, std={self.std:.4f}, 95% CI={self.mean:.4f} \pm {self.half_window(0.95):.4f})"
 
     def mean_difference(self, other, confidence):
         meanDiff = self.mean - other.mean
@@ -181,7 +181,8 @@ class RunningStats:
 if __name__ == "__main__":
     print("--- Example 1: Basic Usage ---")
     x_1 = RunningStats(n=10, mean=10, m2=300)
-    x_2 = RunningStats(n=10, mean=14, m2=300)
+    print(x_1)
+    x_2 = 2
     #x_2 = RunningStats(n=10, mean=20, m2=200)
     x_1 = x_1/x_2
     print(x_1)

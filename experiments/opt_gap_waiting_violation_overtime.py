@@ -9,7 +9,7 @@ directory_path = os.path.join('.', 'experiments', 'results', "toy_problem")
 # 10: 36.687370600414376 0.1486390341192171
 # 20: 39.3842249382221 0.5255526412672854
 file_pattern = '[0-9]*.jsonl'
-is_reuse = False
+is_reuse = True
 ser = SimulateEvaluationResult(directory_path, file_pattern, is_reuse)
 penalty_coefficients = [round(i,1) for i in range(2)]
 print(penalty_coefficients)
