@@ -161,7 +161,7 @@ class ExperimentConfig:
         booking_window_size = 3
         treatment_patterns = ["1 * 3", 
                               "1 * 2"]
-        arrival_rates = [1, 2]
+        arrival_rates = [2.4, 0.6]
         l = [[(0, 1, 0), (1, 5, 100), (5, 100, 150)],
              [(0, 1, 0), (1, 10, 10), (10, 100, 150)]]
         # treatment_patterns = ["1 * 2"]

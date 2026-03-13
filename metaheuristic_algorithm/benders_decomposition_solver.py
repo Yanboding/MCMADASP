@@ -184,7 +184,9 @@ class BendersDecompositionSolver:
             alpha = 1.0 / (k + 1.0)  # diminishing step
         return (1.0 - alpha) * core + alpha * xk
 
-    def solve(self, tol=1e-6,
+    def solve(self, 
+              init_solution=None,
+              tol=1e-6,
               max_iter=150,
               use_pareto_cuts=False,
               pareto_epsilon=1e-4,
@@ -200,17 +202,23 @@ class BendersDecompositionSolver:
         try:
             for iteration in range(1, max_iter + 1):
                 start = time.time()
-                if not solve_and_handle_errors(self.master_model, verbose=verbose):
-                    raise RuntimeError("Master model optimal solution not found")
-                print(f"Iteration {iteration}, master solved in {time.time() - start} seconds")
-                action = get_solution_value(self.action_vars).astype(float)
-                if core_point is None:
+                if init_solution is not None and iteration == 1:
+                    # Use the provided initial solution instead of solving the master
+                    action = np.asarray(init_solution, dtype=float)
                     core_point = copy.deepcopy(action)
-                
-                if self.master_model.ModelSense == GRB.MINIMIZE:
-                    lower_bound = self.master_model.ObjVal
+                    print(f"Iteration {iteration}, using init_solution (skipping master solve)")
                 else:
-                    upper_bound = self.master_model.ObjVal
+                    if not solve_and_handle_errors(self.master_model, verbose=verbose):
+                        raise RuntimeError("Master model optimal solution not found")
+                    print(f"Iteration {iteration}, master solved in {time.time() - start} seconds")
+                    action = get_solution_value(self.action_vars).astype(float)
+                    if core_point is None:
+                        core_point = copy.deepcopy(action)
+                
+                    if self.master_model.ModelSense == GRB.MINIMIZE:
+                        lower_bound = self.master_model.ObjVal
+                    else:
+                        upper_bound = self.master_model.ObjVal
 
                 # Ask all workers to solve for this action
                 # futures = [ex.submit(w.solve, action_t, verbose) for w in workers]

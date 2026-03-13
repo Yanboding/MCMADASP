@@ -202,6 +202,25 @@ def generate_waiting_penalty_params(dat_file):
     with open(dat_file, 'w') as f:
         f.writelines(lines_to_write)
 
+def generate_high_priority_arrival_rate(dat_file):
+    # This function can be implemented to generate parameters for testing the impact of different high priority arrival rates on the performance of the agents.
+    experiment_name = 'high_priority_arrival_rate_impact'
+    config_type = 'toy'
+    env_args = get_config_by_type(config_type).args
+    arrival_rates = [[0.6, 2.4],
+                     [1.5, 1.5],
+                     [2.4, 0.6]]
+    lines_to_write = []
+    for i, arrival_rate in enumerate(arrival_rates, start=1):
+        env_args['arrival_rates'] = arrival_rate
+        save_params = {
+                        'experiment_name': experiment_name,
+                        'env_args': env_args,
+                      }
+        lines_to_write.append(f"{i} python run.py --params '" + json.dumps(save_params) + "'\n")
+    with open(dat_file, 'w') as f:
+        f.writelines(lines_to_write)
+
 if __name__ == '__main__':
     # EXPERIMENT_CONFIGS = {
     #     'toy_problem': {
@@ -224,5 +243,6 @@ if __name__ == '__main__':
     #                            num_periods=None,
     #                            dat_file='table.dat')
     
-    generate_waiting_penalty_params(dat_file='table_waiting_penalty.dat')
+    #generate_waiting_penalty_params(dat_file='table_waiting_penalty.dat')
+    generate_high_priority_arrival_rate(dat_file='table_high_priority_arrival_rate.dat')
     

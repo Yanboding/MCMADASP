@@ -3,6 +3,7 @@ import json
 import pickle
 import os
 import time
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from pprint import pprint
 
 import numpy as np
@@ -593,34 +594,70 @@ def caclaulte_information_relexation_cost(env, env_args, experiment_name, lowerb
     return res
     
 
-def calculate_information_relexation_costs(env_args, experiment_name, train_sample_path_num, test_sample_path_num, job_id):
-    # train penalty coefficients
+def _evaluate_one_scenario(task):
+    """Top-level worker for ProcessPoolExecutor — must be module-level for pickling.
+    Each process builds its own env/Gurobi env so nothing is shared across workers.
+    """
+    env_args, experiment_name, coefficients, init_state, sample_path, job_id = task
+    config = get_config_by_type(case_type='infinite_custom', args=env_args)
+    env = config.env
+    generating_function = LinearPenaltyFunction(env, coefficients=coefficients)
+    zero_args     = {'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous',
+                     'is_myopic': False, 'is_include_discount_factor': False, 'coefficients': 0}
+    penalized_args = {'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous',
+                      'is_myopic': False, 'is_include_discount_factor': False, 'coefficients': 1}
+    zero_res     = caclaulte_information_relexation_cost(env, env_args, experiment_name, zero_args,     generating_function, init_state, sample_path, job_id)
+    penalized_res = caclaulte_information_relexation_cost(env, env_args, experiment_name, penalized_args, generating_function, init_state, sample_path, job_id)
+    gap = penalized_res['penalized_cost'] - zero_res['penalized_cost']
+    return gap, penalized_res['penalized_cost'], zero_res['penalized_cost']
+
+
+def calculate_information_relexation_costs(env_args, experiment_name, train_sample_path_num, test_sample_path_num, job_id, num_workers=None):
+    # ---------- Train penalty coefficients (sequential) ----------
     config = get_config_by_type(case_type='infinite_custom', args=env_args)
     env = config.env
     generating_function = LinearPenaltyFunction(env=env)
-    start = time.time()
-    agent = InfinitePenalizedSAAAgent(env=env, discount_factor=0.99, sample_path_number=train_sample_path_num, generating_function=generating_function, is_myopic=False)
-    obj, coefficients, info = agent.benders_decomposition_train()
-    end = time.time()
-    print(f"Training time: {end - start} seconds")
-    # evaluate lower bound on different sample paths
+    t0 = time.time()
+    agent = InfinitePenalizedSAAAgent(env=env, discount_factor=0.99, sample_path_number=train_sample_path_num,
+                                      generating_function=generating_function, is_myopic=False)
+    obj, coefficients, info = agent.reformulate_train(coefficient_bound=GRB.INFINITY)
+    print(f"Training time: {time.time() - t0:.1f}s")
+
+    # ---------- Pre-generate all test scenarios in the main process ----------
+    # (preserves reproducibility / deterministic RNG order)
+    scenarios = []
+    for _ in range(test_sample_path_num):
+        init_state  = env.generate_initial_state()
+        sample_path = env.reset_arrivals()
+        scenarios.append((env_args, experiment_name, coefficients,
+                          init_state, sample_path, job_id))
+
+    # ---------- Parallel evaluation ----------
+    penalized_lowerbound_stats = RunningStats()
     zero_penalized_lowerbound_stats = RunningStats()
     gap_stats = RunningStats()
-    relative_improvement_stats = RunningStats()
-    for i in range(test_sample_path_num):
-        init_state = env.generate_initial_state()
-        sample_path = env.reset_arrivals()
-        generating_function = LinearPenaltyFunction(env, coefficients=coefficients)
-        zero_penalized_args = {'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False, 'is_include_discount_factor':False, 'coefficients': 0}
-        penalized_args = {'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False, 'is_include_discount_factor':False, 'coefficients': 1}
-        zero_penalized_res = caclaulte_information_relexation_cost(env, env_args, experiment_name, zero_penalized_args, generating_function, init_state, sample_path, job_id=job_id)
-        penalized_res = caclaulte_information_relexation_cost(env, env_args, experiment_name, penalized_args, generating_function, init_state, sample_path, job_id=job_id)
-        gap = penalized_res['penalized_cost'] - zero_penalized_res['penalized_cost']
-        gap_stats += gap
-        zero_penalized_lowerbound_stats += zero_penalized_res['penalized_cost']
+    n_workers = num_workers or min(test_sample_path_num, (os.cpu_count() or 1))
+    with ProcessPoolExecutor(max_workers=n_workers) as executor:
+        futures = {executor.submit(_evaluate_one_scenario, task): i
+                   for i, task in enumerate(scenarios)}
+        for future in as_completed(futures):
+            i = futures[future]
+            try:
+                gap, penalized_cost, zero_cost = future.result()
+                gap_stats += gap
+                penalized_lowerbound_stats += penalized_cost
+                zero_penalized_lowerbound_stats += zero_cost
+                print(f"Scenario {i} done | gap={gap:.2f} | penalized_cost={penalized_cost:.2f} | zero_cost={zero_cost:.2f}")
+            except Exception as exc:
+                print(f"Scenario {i} raised: {exc}")
+
+    # ---------- Aggregate ----------
     relative_improvement_stats = (gap_stats / zero_penalized_lowerbound_stats.mean) / 0.01
-    print(gap_stats)
-    print(relative_improvement_stats)
+    print('Train objective:', obj)
+    print("Test penalized cost:", penalized_lowerbound_stats)
+    print("Test zero penalized cost:", zero_penalized_lowerbound_stats)
+    print("Gap:", gap_stats)
+    print("Relative improvement stats:", relative_improvement_stats)
         
     
     
@@ -653,4 +690,4 @@ if __name__ == '__main__':
     #     lowerbound_args = {'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False, 'is_include_discount_factor':False, 'coefficients': penalty_coefficient}
     #     evaluate_lower_bound(**params, lowerbound_args=lowerbound_args, generating_function=generating_function, job_id=args.job_id)
     #     calcualte_penalized_lowerbound_with_same_initial_state(**params, lowerbound_args=lowerbound_args, generating_function=generating_function, job_id=args.job_id)
-    calculate_information_relexation_costs(**params, train_sample_path_num=350,test_sample_path_num=3000, job_id=args.job_id)
+    calculate_information_relexation_costs(**params, train_sample_path_num=350,test_sample_path_num=8000, job_id=args.job_id)
