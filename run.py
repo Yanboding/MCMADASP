@@ -182,7 +182,7 @@ def value_function_experiment(experiment_name, param_value, env_args, agent_args
     with open(output_file, 'a') as f:  # 'a' will create the file if not present
         f.write(json.dumps(res) + '\n')
 
-def alp_train(env_args, experiment_name, param_value, train_type="col_gen", job_id=None):
+def alp_train(env_args, experiment_name, train_type="row_gen", job_id=None):
     print('Training ALP agent with args:', env_args)
     config_for_train = get_config_by_type(case_type='infinite_custom',args=env_args)
     env_for_train = config_for_train.env
@@ -193,7 +193,7 @@ def alp_train(env_args, experiment_name, param_value, train_type="col_gen", job_
     obj_val, coefficients = agent.train(debug=False, verbose=True)
     output_file = os.path.join('experiments','results',experiment_name, f'alp_train_{train_type}_{job_id}.jsonl' if job_id else f'alp_train_{train_type}.jsonl')
     with safe_open(output_file, 'a') as f:  # 'a' will create the file if not present
-        f.write(json.dumps({'uid':get_uid(env_args), 'result': {'agent_name': f'{train_type}_alp', 'obj_val': obj_val, 'param_value':param_value, 'args': {'coefficients':coefficients}}}) + '\n')
+        f.write(json.dumps({'uid':get_uid(env_args), 'result': {'agent_name': f'{train_type}_alp', 'obj_val': obj_val, 'args': {'coefficients':coefficients}}}) + '\n')
 
 def load_pickle_if_exists(path):
     """Return file contents if the file exists, otherwise return None."""
@@ -309,172 +309,140 @@ def get_solution(action_var, is_final=False):
             y = get_solution_value(y_var).astype(float)
         return (x, y)
 
-def evaluate_lower_bound(env_args, experiment_name, agent_arg,  warm_up_periods, sample_path, uid, lowerbound_args, generating_function, job_id):
-    '''
-    I need to get the state on the warm_up_periods
-    and then evaluate the lower bound solvers from there
-    1) Build config and base env
-    2) For each agent, run evaluation from the given state and sample_path
-    3) Collect stats and save to output file
-    4) Output file name: experiments/results/{experiment_name}/{job_id}.jsonl
-    5) Each line in the output file is a json object with keys:
-    '''
+def evaluate_information_relaxation_cost(env_args, experiment_name, agent_arg,  warm_up_periods, init_state, sample_path, uid, generating_function, job_id):
     print('Evaluate lower bound on uid:', uid, agent_arg['agent_name'])
+    init_state = tuple(np.array(item) for item in init_state)
     config = get_config_by_type(case_type='infinite_custom', args=env_args)
     config.reset_params['new_arrivals'] = sample_path
+    config.reset_params['init_state'] = init_state
     env = config.env
     agent_name, args = agent_arg['agent_name'], agent_arg['args']
-    if "lowerbound" in agent_name:
-        if agent_name == "lowerbound":
-            agent_instance = InfiniteSAAAgent(env, discount_factor=env.discount_factor, sample_path=sample_path, **args)
-        elif agent_name == "penalized_lowerbound":
-            agent_instance = InfinitePenalizedSAAAgent(env, discount_factor=env.discount_factor, sample_path=sample_path, **args)
-        state, info = env.reset(**config.reset_params)
-        _, benchmark_value, info = agent_instance.solve(state, 1)
-        costs = [cost.getValue() for cost in info['costs'][0]]
-        penalties = [penalty if isinstance(penalty, int) else penalty.getValue() for penalty in info['penalties'][0]] if 'penalties' in info else []
-        print(sum(costs))
-        actions = info['actions'][0]
-        scheduled_patients = []
-        overtime = np.zeros(len(sample_path)+env.planning_horizon)
-        for t, action_var in enumerate(actions):
-            advance_scheduling_decision, overtime_decision = get_solution(action_var, is_final=False)
-            scheduled_patients.append(advance_scheduling_decision.tolist())
-            start = t
-            end = t + len(overtime_decision)
-            overtime[start:end] += overtime_decision
+    if agent_name == "hindsight_approx_with_penalty":
+        agent_instance = InfinitePenalizedSAAAgent(env, discount_factor=env.discount_factor, **args)
+    elif agent_name == "myopic":
+        agent_instance = MyopicAgent(env, discount_factor=env.discount_factor, **args)
+    elif agent_name == 'row_gen_alp':
+        agent_instance = ALPRowGenerationAgent(env, discount_factor=env.discount_factor, **args)
+    states = []
+    actions = []
+    costs = []
+    penalties = []
+    t = config.reset_params.get('t', 1)
+    aid_arg = {
+        'agent_arg': agent_arg,
+    }
+    aid = get_uid(aid_arg)
+    pickle_file = os.path.join('experiments', 'results', experiment_name,
+                            'pickles', f'{uid}-{aid}.pickle')
+    # Make sure the parent directories exist
+    os.makedirs(os.path.dirname(pickle_file), exist_ok=True)
+    data = load_pickle_if_exists(pickle_file)
+    # 2) Decide env, state trajectory, etc.
+    if data is None:
+        s, info = env.reset(**config.reset_params)
     else:
-        if agent_name in {"hindsight_approx"}:
-            agent_instance = InfiniteSAAAgent(env, discount_factor=env.discount_factor, **args)
-        elif agent_name == "hindsight_approx_with_penalty":
-            agent_instance = InfinitePenalizedSAAAgent(env, discount_factor=env.discount_factor, **args)
-        elif agent_name == "myopic":
-            agent_instance = MyopicAgent(env, discount_factor=env.discount_factor, **args)
-        elif agent_name == 'col_gen_alp':
-            agent_instance = ALPEJORColumnGenerationAgent(env, discount_factor=env.discount_factor, **args)
-        elif agent_name == 'row_gen_alp':
-            agent_instance = ALPRowGenerationAgent(env, discount_factor=env.discount_factor, **args)
-        config.reset_params['new_arrivals'] = sample_path
-        env = config.env
-        t0 = config.reset_params.get('t', 1)
-        aid_arg = {
-            'agent_arg': agent_arg,
-            'lowerbound_args':lowerbound_args
-        }
-        aid = get_uid(aid_arg)
-        pickle_file = os.path.join('experiments', 'results', experiment_name,
-                                'pickles', f'{uid}-{aid}.pickle')
-        # Make sure the parent directories exist
-        os.makedirs(os.path.dirname(pickle_file), exist_ok=True)
-        data = load_pickle_if_exists(pickle_file)
-        # 2) Decide env, state trajectory, etc.
-        if data is None:
-            s, info = env.reset(**config.reset_params)
-            states = []
-            actions = []
-            costs = []
-            penalties = []
-            t = t0
-        else:
-            states = data['states']
-            actions = data['actions']
-            costs = data['costs']
-            penalties = data['penalties']
-            t = data['t']
-            s = data['s']
-            s, info = env.reset(init_state=s, t=t, new_arrivals=sample_path)
-        print("total cost:", sum(costs), "length of costs:", len(costs), 't:', t, 'remaining sample path length:', len(sample_path)-t+1)
-        if len(costs) >= len(sample_path):
-            print(states[warm_up_periods:])
-            print(actions[warm_up_periods:])
-            print(costs[warm_up_periods:])
-            print(penalties[warm_up_periods:])
-            print('env.arrival_generator.mean_by_type', env.arrival_generator.mean_by_type)
-            print('Evaluation already completed. Total cost:', sum(costs))
-            return
-        average_run_time = 0
-        max_scenario = 0
-        print(agent_instance)
-        for tau in range(len(sample_path)-t+1):
-            print("Current time step:", t + tau)
-            start = time.time()
-            a, upper_bound, info = agent_instance.solve(s, t + tau)
-            end = time.time()
-            compute_time = end - start
-            average_run_time += (compute_time - average_run_time) / (tau+1)
-            if 'number_of_workers' in info:
-                max_scenario += (info['number_of_workers']-max_scenario) / (tau+1)
-            print(f"Policy {t + tau} computation time: {compute_time} seconds, average timr: {average_run_time} seconds")
-            next_state, cost, done, info = env.step(a)
-            if t + tau < len(sample_path):
-                new_arrivals = sample_path[t + tau]
-                print('new_arrivals:', new_arrivals)
-                penalty = generating_function.calculate_penalty(s, a, new_arrivals) * lowerbound_args['coefficients']
-                penalties.append(penalty)
-            states.append(s)
-            actions.append(a)
-            costs.append(cost)
-            s = next_state
-            
-            if (t+tau) % 10 == 0:
-                with open(pickle_file, 'wb') as f:
-                    res = {
-                        's': s,
-                        "t": t + tau+1,
-                        "states": states,
-                        "actions": actions,
-                        "costs": costs,
-                        "penalties": penalties,
-                    }
-                    pickle.dump(res, f)
-            
-            if done:
-                with open(pickle_file, 'wb') as f:
-                    res = {
-                        's': s,
-                        "t": t + tau+1,
-                        "states": states,
-                        "actions": actions,
-                        "costs": costs,
-                        "penalties": penalties,
-                    }
-                    pickle.dump(res, f)
-                break
-        print("number of states:", len(states), len(actions))
-        scheduled_patients = []
-        overtime = np.zeros(len(sample_path)+env.planning_horizon)
-        postponing_decisions = []
-        for t, ((regular_bookings, overtimes, waitlist), (advance_scheduling_decision, overtime_decision)) in enumerate(zip(states, actions)):
-            scheduled_patients.append(advance_scheduling_decision.tolist())
-            start = t
-            end = t + len(overtime_decision)
-            overtime[start:end] += overtime_decision
-            postponing_decisions.append(waitlist - advance_scheduling_decision.sum(axis=0))
-        postponing_decisions = np.array(postponing_decisions).sum(axis=0)
-        print("Total postponing decisions:", postponing_decisions)
-    #agent_arg['penalty_coefficient'] = penalty_coefficient
+        states = data['states']
+        actions = data['actions']
+        costs = data['costs']
+        penalties = data['penalties']
+        t = data['t']
+        s = data['s']
+        s, info = env.reset(init_state=s, t=t, new_arrivals=sample_path)
+    print('State after reset:', s)
+    average_run_time = 0
+    for tau in range(len(sample_path)-t+1):
+        print("Current time step:", t + tau)
+        start = time.time()
+        obj, a, info = agent_instance.solve(s, t + tau)
+        end = time.time()
+        compute_time = end - start
+        average_run_time += (compute_time - average_run_time) / (tau+1)
+        if 'number_of_workers' in info:
+            max_scenario += (info['number_of_workers']-max_scenario) / (tau+1)
+        print(f"Policy {t + tau} computation time: {compute_time} seconds, average timr: {average_run_time} seconds")
+        next_state, cost, done, info = env.step(a)
+        if t + tau < len(sample_path):
+            new_arrivals = sample_path[t + tau]
+            print('new_arrivals:', new_arrivals)
+            penalty = generating_function.calculate_penalty(s, a, new_arrivals)
+            penalties.append(penalty)
+        states.append(s)
+        actions.append(a)
+        costs.append(cost)
+        s = next_state
+        
+        if (t+tau) % 10 == 0:
+            with open(pickle_file, 'wb') as f:
+                res = {
+                    's': s,
+                    "t": t + tau+1,
+                    "states": states,
+                    "actions": actions,
+                    "costs": costs,
+                    "penalties": penalties,
+                }
+                pickle.dump(res, f)
+        
+        if done:
+            with open(pickle_file, 'wb') as f:
+                res = {
+                    's': s,
+                    "t": t + tau+1,
+                    "states": states,
+                    "actions": actions,
+                    "costs": costs,
+                    "penalties": penalties,
+                }
+                pickle.dump(res, f)
+            break
+    print("number of states:", len(states), len(actions))
+    scheduled_patients = []
+    overtime = np.zeros(len(sample_path)+env.planning_horizon)
+    postponing_decisions = []
+    for t, ((regular_bookings, overtimes, waitlist), (advance_scheduling_decision, overtime_decision)) in enumerate(zip(states, actions)):
+        scheduled_patients.append(advance_scheduling_decision.tolist())
+        start = t
+        end = t + len(overtime_decision)
+        overtime[start:end] += overtime_decision
+        postponing_decisions.append(waitlist - advance_scheduling_decision.sum(axis=0))
+    postponing_decisions = np.array(postponing_decisions).sum(axis=0)
+    print("Total postponing decisions:", postponing_decisions)
+    total_cost = sum(costs)
+    total_penalty = sum(penalties)
+    penalized_cost = total_cost + total_penalty
     res = {
         "uid": uid,
-        "total_cost": sum(costs),
-        "total_penalty": sum(penalties),
+        "penalized_cost": penalized_cost,
+        "total_cost": total_cost,
+        "total_penalty": total_penalty,
         "experiment_name": experiment_name,
-        "agent_name": {'agent_name': agent_name, 'args': args, 'lowerbound_args': lowerbound_args},
+        "agent_name": {'agent_name': agent_name, 'args': args},
         "warm_up_periods": warm_up_periods,
         "costs": costs,
         "penalties": penalties,
         "scheduled_patients": scheduled_patients,
         "overtime": overtime.tolist(),
+        "postponing_decisions": postponing_decisions.tolist(),
     }
-    print("total cost:", sum(costs))
-    print("total penalties:", sum(penalties))
-    print("total combined:", sum(costs) + sum(penalties))
+    print("total cost:", total_cost)
+    print("total penalties:", total_penalty)
+    print("penalized_cost:", penalized_cost) 
+    # calculate zero penalized cost and penalized cost use the same agent instance.
+    print('Initial state for information relaxation evaluation:', init_state)
+    for penalty_ratio in [0, 1]:
+        lowerbound_args = {'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous',
+                         'is_myopic': False, 'is_include_discount_factor': False, 'penalty_ratio': penalty_ratio}
+        information_relaxation_agent = InfinitePenalizedSAAAgent(env, discount_factor=env.discount_factor, sample_path=sample_path, generating_function=generating_function, **lowerbound_args)
+        information_relaxation_cost, _, _ = information_relaxation_agent.evaluate(init_state)
+        res[f'information_relaxation_cost_penalty_ratio_{penalty_ratio}'] = information_relaxation_cost
+        print(f'information_relaxation_cost with penalty ratio {penalty_ratio}:', information_relaxation_cost) # information_relaxation_cost with penalty ratio 1: 51117.31017303884
     output_file = os.path.join('experiments', 'results', experiment_name, f'{job_id}.jsonl')
     # Make sure the parent directories exist
     os.makedirs(os.path.dirname(output_file), exist_ok=True)
     with open(output_file, 'a') as f:  # 'a' will create the file if not present
         f.write(json.dumps(res) + '\n')
 
-def calcualte_penalized_lowerbound_with_same_initial_state(env_args, experiment_name, agent_arg,  lowerbound_args, generating_function, warm_up_periods, sample_path, uid, job_id):
+def calculate_penalized_lowerbound_with_same_initial_state(env_args, experiment_name, agent_arg,  lowerbound_args, generating_function, warm_up_periods, sample_path, uid, job_id):
     '''
         1. read hindsight_approx data
         2. use actions to determine states in each period
@@ -677,17 +645,12 @@ if __name__ == '__main__':
     # restore_costs(**params, job_id=args.job_id)
     # calcualte_lowerbound_with_same_initial_state(**params, job_id=args.job_id)
     
-    # penalty_coefficients = [round(i,1) for i in range(0, 2)]
-    # env_args = params['env_args']
-    # config = get_config_by_type(case_type='infinite_custom', args=env_args)
-    # env = config.env
-    # coefficients = [7.5014254032033, 30.591338709685797, 97.09300537634867, 2.5151471773961083, 29.26133870970855, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, -100.0, -47.053083333327514, 1.6391031893291558e-11, 0.32999999997006774, -3.56699462365624]
-    # # coefficients = [100.0, 100.0, -100.0, 100.0, -100.0, -100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, -100.0, -100.0, -100.0, -100.0, -100.0]
-    
-    # generating_function = LinearPenaltyFunction(env, coefficients=coefficients)
-    # print(generating_function.get_coefficients(coefficients))
-    # for penalty_coefficient in penalty_coefficients:
-    #     lowerbound_args = {'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False, 'is_include_discount_factor':False, 'coefficients': penalty_coefficient}
-    #     evaluate_lower_bound(**params, lowerbound_args=lowerbound_args, generating_function=generating_function, job_id=args.job_id)
-    #     calcualte_penalized_lowerbound_with_same_initial_state(**params, lowerbound_args=lowerbound_args, generating_function=generating_function, job_id=args.job_id)
-    calculate_information_relexation_costs(**params, train_sample_path_num=350,test_sample_path_num=8000, job_id=args.job_id)
+    penalty_coefficients = [round(i,1) for i in range(0, 2)]
+    env_args = params['env_args']
+    config = get_config_by_type(case_type='infinite_custom', args=env_args)
+    env = config.env
+    coefficients = [7.809424999970164, 32.65186666667192, 212.28625957332855, 3.3676666667015707, 31.40936666664972, 211.79125957331752, 616.8236413336515, 498.0418546134021, 380.5704760000294, 371.5085858132872, 381.0654760000488, 371.4095858132877, -158.7927427199353, 0.0, -8.059542776751327e-12, 0.24250000001306, 0.0]    
+    generating_function = LinearPenaltyFunction(env, coefficients=coefficients)
+    evaluate_information_relaxation_cost(**params, generating_function=generating_function, job_id=args.job_id)
+    #calculate_penalized_lowerbound_with_same_initial_state(**params, lowerbound_args=lowerbound_args, generating_function=generating_function, job_id=args.job_id)
+    # calculate_information_relexation_costs(**params, train_sample_path_num=350,test_sample_path_num=8000, job_id=args.job_id)

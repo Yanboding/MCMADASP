@@ -17,8 +17,10 @@ class InfinitePenalizedSAAAgent(InfiniteRTAgent):
                  is_myopic=False, sample_path=None, 
                  is_include_discount_factor=False,
                  sample_path_length=None, 
+                 max_periods=None,
+                 geom_p=None,
                  is_quasi_MC=True,
-                 coefficients=1,
+                 penalty_ratio=1,
                  generating_function=None,
                  verbose=False):
         super().__init__(env, discount_factor, V=V, Q=Q)
@@ -27,9 +29,13 @@ class InfinitePenalizedSAAAgent(InfiniteRTAgent):
         self.future_decision_var_type = GRB.INTEGER if future_decision_var_type is None or future_decision_var_type == 'integer' else GRB.CONTINUOUS
         self.is_myopic = is_myopic
         self.arrival_generator = copy.deepcopy(self.env.arrival_generator)
+        if max_periods is not None:
+            self.arrival_generator.set_max_periods(max_periods)
+        if geom_p is not None:
+            self.arrival_generator.set_geom_p(geom_p)
         self.sample_path = sample_path
         self.sample_path_length = sample_path_length
-        self.coefficients = coefficients
+        self.penalty_ratio = penalty_ratio
         self.generating_function = generating_function
         # self.W_0, self.U, self.V, self.W = self.get_coefficients(coefficients)
         self.delta = []
@@ -54,58 +60,190 @@ class InfinitePenalizedSAAAgent(InfiniteRTAgent):
         self.delta = np.array([sample_path])
     
     def direct_builder_fn(self):
-        direct_model = gp.Model(f"SA_Advance_Direct_Model", env=self.grb_env)
-        direct_model.setParam("MultiObjPre", 0)
-        direct_model.setParam("MIPGapAbs", 1e-9)         # Enforce extremely tight absolute gap
-        direct_model.setParam("MIPGap", 1e-9)
-        direct_model.setParam("FeasibilityTol", 1e-9)
-        direct_model.setParam("OptimalityTol", 1e-9)
-        # ---------- 1. today’s increments ----------
-        state_var = self.get_state_var(direct_model)
-        state_linking_constraints = self.build_state_linking_constraints(direct_model, state_var)
-        action_t_var = self.get_action_var(model=direct_model, advance_scheduling_type=GRB.INTEGER)
+        model = gp.Model(f"SA_Advance_Reformulated_Model", env=self.grb_env)
+        model.setParam("MultiObjPre", 0)
+        model.setParam("MIPGapAbs", 1e-9)         # Enforce extremely tight absolute gap
+        model.setParam("MIPGap", 1e-9)
+        model.setParam("FeasibilityTol", 1e-9)
+        model.setParam("OptimalityTol", 1e-9)
+        state_var = self.get_state_var(model)
+        state_linking_constraints = self.build_state_linking_constraints(model, state_var)
+        action_var = self.get_action_var(model=model, advance_scheduling_type=self.current_decision_var_type)
+        action_t_var = action_var
         # add action constraint
-        self.add_action_space_constraints(model=direct_model, state_var=state_var, action_var=action_t_var)
+        self.add_action_space_constraints(model=model, state_var=state_var, action_var=action_t_var)
         # ---------- 1. objective ----------
         imm_cost = self.env.cost_fn(state_var, action_t_var, is_var=True)
-        fut_cost = 0
+        total_cost = imm_cost * self.sample_path_number
         costs = [[imm_cost] for _ in range(self.sample_path_number)]
-        actions = [[action_t_var] for _ in range(self.sample_path_number)]
+        actions = [[action_var] for _ in range(self.sample_path_number)]
         penalties = [[] for _ in range(self.sample_path_number)]
         # for every sample path
         for omega in range(self.sample_path_number):
-            prev_state_var = state_var
-            prev_action_var = action_t_var
             for tau, new_arrival in enumerate(self.delta[omega], start=1):
-                next_state_var = self.get_next_state(model=direct_model,
-                                                    state=prev_state_var,
-                                                    action=prev_action_var,
-                                                    new_arrival=new_arrival)
-                next_action_var = self.get_action_var(model=direct_model, advance_scheduling_type=self.future_decision_var_type)
-                self.add_action_space_constraints(model=direct_model, state_var=next_state_var, action_var=next_action_var)
-                
-                penalty = self.coefficients * self.generating_function.calculate_penalty(prev_state_var, actions[omega][-1], new_arrival, is_var=True)
-                one_time_cost = self.env.cost_fn(next_state_var, next_action_var, is_var=True)
+                penalty = self.penalty_ratio * self.generating_function.calculate_penalty(state_var, action_var, new_arrival, is_var=True)
+                state_var = self.get_next_state(model=model,
+                                                state=state_var,
+                                                action=action_var,
+                                                new_arrival=new_arrival)
+                action_var = self.get_action_var(model=model, advance_scheduling_type=self.future_decision_var_type)
+                self.add_action_space_constraints(model=model, state_var=state_var, action_var=action_var)
+                one_time_cost = self.env.cost_fn(state_var, action_var, is_var=True)
                 if self.is_include_discount_factor:
                     cost = (self.discount_factor ** tau) * (one_time_cost + penalty)
                 else:
                     cost = one_time_cost + penalty
+                total_cost += cost
                 costs[omega].append(one_time_cost)
-                actions[omega].append(next_action_var)
+                actions[omega].append(action_var)
                 penalties[omega].append(penalty)
-                fut_cost += cost
-                prev_state_var = next_state_var
-                prev_action_var = next_action_var
-        fut_cost = fut_cost / self.sample_path_number
-        direct_model.setObjective(imm_cost + fut_cost, GRB.MINIMIZE)
+        average_cost = total_cost / self.sample_path_number
+        model.setObjective(average_cost, GRB.MINIMIZE)
         info = {
             'costs': costs,
             'actions': actions,
             'penalties': penalties
         }
-        return direct_model, state_linking_constraints, action_t_var, info
+        return model, state_linking_constraints, action_t_var, info
+    
+    def reformulated_builder_fn(self, coefficient_bound=1000):
+        # This function can be implemented to build a reformulated model that directly optimizes the coefficients without using Benders decomposition.
+        model = gp.Model(f"SA_Advance_Reformulated_Model", env=self.grb_env)
+        model.setParam("MultiObjPre", 0)
+        model.setParam("MIPGapAbs", 1e-9)         # Enforce extremely tight absolute gap
+        model.setParam("MIPGap", 1e-9)
+        model.setParam("FeasibilityTol", 1e-9)
+        model.setParam("OptimalityTol", 1e-9)
+        state_var = self.get_state_var(model)
+        state_linking_constraints = self.build_state_linking_constraints(model, state_var)
+        action_var = self.get_action_var(model=model, advance_scheduling_type=GRB.INTEGER)
+        action_t_var = action_var
+        # add action constraint
+        self.add_action_space_constraints(model=model, state_var=state_var, action_var=action_var)
+        post_action_state_var = self.env.post_action_state(state_var, action_var, is_var=True)
+        # ---------- 1. objective ----------
+        imm_cost = self.env.cost_fn(state_var, action_var, is_var=True)
+        total_cost = imm_cost * self.sample_path_number
+        costs = [[imm_cost] for _ in range(self.sample_path_number)]
+        actions = [[action_var] for _ in range(self.sample_path_number)]
+        penalties = [[] for _ in range(self.sample_path_number)]
+        accumulated_exprs = {
+            'u': 0, 'v': 0, 'w': 0, 'x': 0, 'y': 0
+        }
+        # for every sample path
+        for omega in range(self.sample_path_number):
+            for tau, new_arrival in enumerate(self.delta[omega], start=1):
+                total_arrival_difference = np.sum(self.env.arrival_generator.mean_by_type - new_arrival)
+                post_action_regular_bookings_vars, post_action_overtimes_vars, post_action_waitlist_vars = post_action_state_var
+                advance_scheduling_decision, overtime_decision = action_var
+                accumulated_exprs['u'] += total_arrival_difference * post_action_regular_bookings_vars
+                accumulated_exprs['v'] += total_arrival_difference * post_action_overtimes_vars
+                accumulated_exprs['w'] += total_arrival_difference * post_action_waitlist_vars
+                accumulated_exprs['x'] += total_arrival_difference * advance_scheduling_decision
+                accumulated_exprs['y'] += total_arrival_difference * overtime_decision
+                state_var = self.get_next_state(model=model,
+                                                state=state_var,
+                                                action=action_var,
+                                                new_arrival=new_arrival)
+                action_var = self.get_action_var(model=model, advance_scheduling_type=self.future_decision_var_type)
+                self.add_action_space_constraints(model=model, state_var=state_var, action_var=action_var)
+                post_action_state_var = self.env.post_action_state(state=state_var, action=action_var, is_var=True)
+                
+                
+                total_cost += self.env.cost_fn(state_var, action_var, is_var=True)
+        # 2. Add Absolute Value Reformulation
+        # We store constraints in a dict of lists or arrays for easy Pi access
+        
+        average_post_action_regular_bookings_vars = accumulated_exprs['u'] / self.sample_path_number
+        average_post_action_overtimes_vars = accumulated_exprs['v'] / self.sample_path_number
+        average_post_action_waitlist_vars = accumulated_exprs['w'] / self.sample_path_number
+        average_advance_scheduling_decision_vars = accumulated_exprs['x'] / self.sample_path_number
+        average_overtime_decision_vars = accumulated_exprs['y'] / self.sample_path_number
+        
+        # Create absolute variables directly utilizing the helper function
+        theta_u_vars = []
+        theta_u_pos_constrs = []        
+        theta_u_neg_constrs = []
+        theta_v_vars = []
+        theta_v_pos_constrs = []
+        theta_v_neg_constrs = []
+        theta_w_vars = []
+        theta_w_pos_constrs = []
+        theta_w_neg_constrs = []
+        theta_x_vars = []
+        theta_x_pos_constrs = []
+        theta_x_neg_constrs = []
+        theta_y_vars = []
+        theta_y_pos_constrs = []
+        theta_y_neg_constrs = []
+        for j in range(self.env.planning_horizon):
+            theta_u_var, theta_u_pos_constr, theta_u_neg_constr = self.add_absolute_var(model, average_post_action_regular_bookings_vars[j], f"theta_u_{j}")
+            theta_u_vars.append(theta_u_var)
+            theta_u_pos_constrs.append(theta_u_pos_constr)
+            theta_u_neg_constrs.append(theta_u_neg_constr)
+            theta_v_var, theta_v_pos_constr, theta_v_neg_constr = self.add_absolute_var(model, average_post_action_overtimes_vars[j], f"theta_v_{j}")
+            theta_v_vars.append(theta_v_var)
+            theta_v_pos_constrs.append(theta_v_pos_constr)
+            theta_v_neg_constrs.append(theta_v_neg_constr)
+            theta_y_var, theta_y_pos_constr, theta_y_neg_constr = self.add_absolute_var(model, average_overtime_decision_vars[j], f"theta_y_{j}")
+            theta_y_vars.append(theta_y_var)
+            theta_y_pos_constrs.append(theta_y_pos_constr)
+            theta_y_neg_constrs.append(theta_y_neg_constr)
+        
+        for i in range(self.env.num_types):
+            theta_w_var, theta_w_pos_constr, theta_w_neg_constr = self.add_absolute_var(model, average_post_action_waitlist_vars[i], f"theta_w_{i}")
+            theta_w_vars.append(theta_w_var)
+            theta_w_pos_constrs.append(theta_w_pos_constr)
+            theta_w_neg_constrs.append(theta_w_neg_constr)
+        for n in range(self.env.booking_window_size):
+            theta_x_row = []
+            theta_x_pos_constr_row = []
+            theta_x_neg_constr_row = []
+            for i in range(self.env.num_types):
+                theta_x_var, theta_x_pos_constr, theta_x_neg_constr = self.add_absolute_var(model, average_advance_scheduling_decision_vars[n][i], f"theta_x_{n}_{i}")
+                theta_x_row.append(theta_x_var)
+                theta_x_pos_constr_row.append(theta_x_pos_constr)
+                theta_x_neg_constr_row.append(theta_x_neg_constr)
+            theta_x_vars.append(theta_x_row)
+            theta_x_pos_constrs.append(theta_x_pos_constr_row)
+            theta_x_neg_constrs.append(theta_x_neg_constr_row)
+        theta_u_vars = np.array(theta_u_vars)
+        theta_v_vars = np.array(theta_v_vars)
+        theta_y_vars = np.array(theta_y_vars)
+        theta_w_vars = np.array(theta_w_vars)
+        theta_x_vars = np.array(theta_x_vars)
 
-    def direct_solve(self, state, t=1, action=None, verbose=False):
+        penalty = coefficient_bound*(theta_u_vars.sum() + theta_v_vars.sum() + theta_w_vars.sum() + theta_x_vars.sum() + theta_y_vars.sum())
+        average_cost = total_cost / self.sample_path_number
+        model.setObjective(average_cost + penalty * self.penalty_ratio, GRB.MINIMIZE)
+        info = {
+            'costs': costs,
+            'actions': actions,
+            'penalties': penalties
+        }
+        return model, state_linking_constraints, action_t_var, info
+    
+    def solve(self, state, t=1, action=None, verbose=False):
+        if self.direct_model is None:
+            self.direct_model, self.state_linking_constraints, self.action_t_var, self.info = self.reformulated_builder_fn()
+        flatten_state = flatten(state)
+        set_link_rhs(self.state_linking_constraints, flatten_state)
+        if action is not None:
+            self.set_action(action_var=self.action_t_var, action=action)
+        # Clean solution before resolving
+        self.direct_model.reset()
+        start = time.time()
+        if not solve_and_handle_errors(self.direct_model, verbose=verbose):
+            raise RuntimeError("Master model optimal solution not found")
+        print(f"Direct model solve time: {time.time() - start} seconds")
+        # ---------- 8. return ----------
+        action = self.get_solution(self.action_t_var, is_final=True)
+        return self.direct_model.ObjVal, action, self.info
+
+    def benders_decomposition_solve(self, state, t=1, action=None, parallel=False, verbose=False):
+        pass
+
+    def evaluate(self, state, t=1, action=None, verbose=False):
         if self.direct_model is None:
             self.direct_model, self.state_linking_constraints, self.action_t_var, info = self.direct_builder_fn()
         flatten_state = flatten(state)
@@ -120,7 +258,7 @@ class InfinitePenalizedSAAAgent(InfiniteRTAgent):
         print(f"Direct model solve time: {time.time() - start} seconds")
         # ---------- 8. return ----------
         action = self.get_solution(self.action_t_var, is_final=True)
-        return action, self.direct_model.ObjVal, info
+        return self.direct_model.ObjVal, action, info
 
     
     def master_builder_fn(self):
@@ -204,7 +342,7 @@ class InfinitePenalizedSAAAgent(InfiniteRTAgent):
             linking_constraints.append(constraint)
         return linking_constraints
 
-    def solve(self, state, t=1, action=None, verbose=False):
+    def solve_old(self, state, t=1, action=None, verbose=False):
         if self.is_myopic or self.sample_path_number <= 1:
             action, obj_value, info = self.direct_solve(state, t=t, action=action)
             return action, obj_value, info
@@ -559,6 +697,7 @@ if __name__ == "__main__":
     import matplotlib.pyplot as plt
     config = get_config_by_type('toy')
     env = config.env
+    init_state = env.generate_initial_state()
     generating_function = LinearPenaltyFunction(env=env)
     agent = InfinitePenalizedSAAAgent(env=env, discount_factor=0.99, sample_path_number=350, generating_function=generating_function, is_myopic=False)
     #coefficients, obj, info = agent.train(verbose=True)
@@ -566,16 +705,17 @@ if __name__ == "__main__":
     # 46799.670307168795
     # [7.501425403225804, 30.591338709677363, 30.426338709677378, 2.515147177419309, 29.261338709677364, 29.766338709677367, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 86.28025, -6.792641717918127e-16, 0.33000000000000895, 0.0]
     env.reset_random_seeds()  # Reset random seeds before training again to ensure the same sample paths
-    obj, direct_coefficients, info = agent.benders_decomposition_train(parallel=True, verbose=False)
+    obj, direct_coefficients, info = agent.benders_decomposition_train(coefficient_bound=GRB.INFINITY, parallel=True, verbose=False)
+    print("Initial state:", init_state)
     print('Obejctive from Benders decomposition training:', obj) # 46799.67030716401
     print('Coefficients from Benders decomposition training:', direct_coefficients) 
     # env.reset_random_seeds()  # Reset random seeds before training again to ensure the same sample paths
     # obj, reformulate_coefficients, info = agent.reformulate_train(coefficient_bound=GRB.INFINITY, verbose=False)
     # print('Obejctive from reformulate training:', obj)
     # print('Coefficients from reformulate training:', reformulate_coefficients)
-    env.reset_random_seeds()
-    obj, coefficients, info = agent.sample_mean_penalized_lowerbound(coefficients=direct_coefficients, verbose=False)
-    print('Objective from sample mean penalized lower bound evaluation using original problem coefficients:', obj)
-    env.reset_random_seeds()
-    obj, coefficients, info = agent.sample_mean_penalized_lowerbound(coefficients=[0]*len(direct_coefficients), verbose=False)
-    print('Objective from sample mean zero penalized lower bound evaluation:', obj)
+    # # env.reset_random_seeds()
+    # obj, coefficients, info = agent.sample_mean_penalized_lowerbound(coefficients=direct_coefficients, verbose=False)
+    # print('Objective from sample mean penalized lower bound evaluation using original problem coefficients:', obj)
+    # env.reset_random_seeds()
+    # obj, coefficients, info = agent.sample_mean_penalized_lowerbound(coefficients=[0]*len(direct_coefficients), verbose=False)
+    # print('Objective from sample mean zero penalized lower bound evaluation:', obj)

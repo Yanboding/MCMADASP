@@ -215,7 +215,7 @@ class ALPRowGenerationAgent(InfiniteRTAgent):
                 raise RuntimeError("Master model optimal solution not found")
             # ---------- 8. return ----------
             action = self.get_solution(action_var, is_final=True)
-            return action, policy_model.ObjVal, {}
+            return policy_model.ObjVal, action, {}
 
 if "__main__" == __name__:
     from experiments import get_config_by_type
