@@ -359,7 +359,7 @@ def evaluate_information_relaxation_cost(env_args, experiment_name, agent_arg,  
         average_run_time += (compute_time - average_run_time) / (tau+1)
         if 'number_of_workers' in info:
             max_scenario += (info['number_of_workers']-max_scenario) / (tau+1)
-        print(f"Policy {t + tau} computation time: {compute_time} seconds, average timr: {average_run_time} seconds")
+        print(f"Policy {t + tau} model cost {obj}, action: {a}, computation time: {compute_time} seconds, average time: {average_run_time} seconds")
         next_state, cost, done, info = env.step(a)
         if t + tau < len(sample_path):
             new_arrivals = sample_path[t + tau]
@@ -644,12 +644,10 @@ if __name__ == '__main__':
     #simulate_evaluation(**params, job_id=args.job_id)
     # restore_costs(**params, job_id=args.job_id)
     # calcualte_lowerbound_with_same_initial_state(**params, job_id=args.job_id)
-    
-    penalty_coefficients = [round(i,1) for i in range(0, 2)]
     env_args = params['env_args']
     config = get_config_by_type(case_type='infinite_custom', args=env_args)
     env = config.env
-    coefficients = [7.809424999970164, 32.65186666667192, 212.28625957332855, 3.3676666667015707, 31.40936666664972, 211.79125957331752, 616.8236413336515, 498.0418546134021, 380.5704760000294, 371.5085858132872, 381.0654760000488, 371.4095858132877, -158.7927427199353, 0.0, -8.059542776751327e-12, 0.24250000001306, 0.0]    
+    coefficients = [14.30738636363273, 38.49280303029202, 231.5023863636273, 10.05284090909538, 33.61780303028979, 229.83988636362687, 723.9102095170437, 615.8835546874996, 381.4280007102528, 397.3400000000039, 381.42800071024215, 396.39000000000027, -199.97574928975777, 0.0, 1.5046787345508003e-12, -0.12499999999766413, 0.0]
     generating_function = LinearPenaltyFunction(env, coefficients=coefficients)
     evaluate_information_relaxation_cost(**params, generating_function=generating_function, job_id=args.job_id)
     #calculate_penalized_lowerbound_with_same_initial_state(**params, lowerbound_args=lowerbound_args, generating_function=generating_function, job_id=args.job_id)

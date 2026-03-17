@@ -153,69 +153,70 @@ class InfinitePenalizedSAAAgent(InfiniteRTAgent):
                 total_cost += self.env.cost_fn(state_var, action_var, is_var=True)
         # 2. Add Absolute Value Reformulation
         # We store constraints in a dict of lists or arrays for easy Pi access
-        
-        average_post_action_regular_bookings_vars = accumulated_exprs['u'] / self.sample_path_number
-        average_post_action_overtimes_vars = accumulated_exprs['v'] / self.sample_path_number
-        average_post_action_waitlist_vars = accumulated_exprs['w'] / self.sample_path_number
-        average_advance_scheduling_decision_vars = accumulated_exprs['x'] / self.sample_path_number
-        average_overtime_decision_vars = accumulated_exprs['y'] / self.sample_path_number
-        
-        # Create absolute variables directly utilizing the helper function
-        theta_u_vars = []
-        theta_u_pos_constrs = []        
-        theta_u_neg_constrs = []
-        theta_v_vars = []
-        theta_v_pos_constrs = []
-        theta_v_neg_constrs = []
-        theta_w_vars = []
-        theta_w_pos_constrs = []
-        theta_w_neg_constrs = []
-        theta_x_vars = []
-        theta_x_pos_constrs = []
-        theta_x_neg_constrs = []
-        theta_y_vars = []
-        theta_y_pos_constrs = []
-        theta_y_neg_constrs = []
-        for j in range(self.env.planning_horizon):
-            theta_u_var, theta_u_pos_constr, theta_u_neg_constr = self.add_absolute_var(model, average_post_action_regular_bookings_vars[j], f"theta_u_{j}")
-            theta_u_vars.append(theta_u_var)
-            theta_u_pos_constrs.append(theta_u_pos_constr)
-            theta_u_neg_constrs.append(theta_u_neg_constr)
-            theta_v_var, theta_v_pos_constr, theta_v_neg_constr = self.add_absolute_var(model, average_post_action_overtimes_vars[j], f"theta_v_{j}")
-            theta_v_vars.append(theta_v_var)
-            theta_v_pos_constrs.append(theta_v_pos_constr)
-            theta_v_neg_constrs.append(theta_v_neg_constr)
-            theta_y_var, theta_y_pos_constr, theta_y_neg_constr = self.add_absolute_var(model, average_overtime_decision_vars[j], f"theta_y_{j}")
-            theta_y_vars.append(theta_y_var)
-            theta_y_pos_constrs.append(theta_y_pos_constr)
-            theta_y_neg_constrs.append(theta_y_neg_constr)
-        
-        for i in range(self.env.num_types):
-            theta_w_var, theta_w_pos_constr, theta_w_neg_constr = self.add_absolute_var(model, average_post_action_waitlist_vars[i], f"theta_w_{i}")
-            theta_w_vars.append(theta_w_var)
-            theta_w_pos_constrs.append(theta_w_pos_constr)
-            theta_w_neg_constrs.append(theta_w_neg_constr)
-        for n in range(self.env.booking_window_size):
-            theta_x_row = []
-            theta_x_pos_constr_row = []
-            theta_x_neg_constr_row = []
+        penalty = 0
+        if self.penalty_ratio > 0:
+            average_post_action_regular_bookings_vars = accumulated_exprs['u'] / self.sample_path_number
+            average_post_action_overtimes_vars = accumulated_exprs['v'] / self.sample_path_number
+            average_post_action_waitlist_vars = accumulated_exprs['w'] / self.sample_path_number
+            average_advance_scheduling_decision_vars = accumulated_exprs['x'] / self.sample_path_number
+            average_overtime_decision_vars = accumulated_exprs['y'] / self.sample_path_number
+            
+            # Create absolute variables directly utilizing the helper function
+            theta_u_vars = []
+            theta_u_pos_constrs = []        
+            theta_u_neg_constrs = []
+            theta_v_vars = []
+            theta_v_pos_constrs = []
+            theta_v_neg_constrs = []
+            theta_w_vars = []
+            theta_w_pos_constrs = []
+            theta_w_neg_constrs = []
+            theta_x_vars = []
+            theta_x_pos_constrs = []
+            theta_x_neg_constrs = []
+            theta_y_vars = []
+            theta_y_pos_constrs = []
+            theta_y_neg_constrs = []
+            for j in range(self.env.planning_horizon):
+                theta_u_var, theta_u_pos_constr, theta_u_neg_constr = self.add_absolute_var(model, average_post_action_regular_bookings_vars[j], f"theta_u_{j}")
+                theta_u_vars.append(theta_u_var)
+                theta_u_pos_constrs.append(theta_u_pos_constr)
+                theta_u_neg_constrs.append(theta_u_neg_constr)
+                theta_v_var, theta_v_pos_constr, theta_v_neg_constr = self.add_absolute_var(model, average_post_action_overtimes_vars[j], f"theta_v_{j}")
+                theta_v_vars.append(theta_v_var)
+                theta_v_pos_constrs.append(theta_v_pos_constr)
+                theta_v_neg_constrs.append(theta_v_neg_constr)
+                theta_y_var, theta_y_pos_constr, theta_y_neg_constr = self.add_absolute_var(model, average_overtime_decision_vars[j], f"theta_y_{j}")
+                theta_y_vars.append(theta_y_var)
+                theta_y_pos_constrs.append(theta_y_pos_constr)
+                theta_y_neg_constrs.append(theta_y_neg_constr)
+            
             for i in range(self.env.num_types):
-                theta_x_var, theta_x_pos_constr, theta_x_neg_constr = self.add_absolute_var(model, average_advance_scheduling_decision_vars[n][i], f"theta_x_{n}_{i}")
-                theta_x_row.append(theta_x_var)
-                theta_x_pos_constr_row.append(theta_x_pos_constr)
-                theta_x_neg_constr_row.append(theta_x_neg_constr)
-            theta_x_vars.append(theta_x_row)
-            theta_x_pos_constrs.append(theta_x_pos_constr_row)
-            theta_x_neg_constrs.append(theta_x_neg_constr_row)
-        theta_u_vars = np.array(theta_u_vars)
-        theta_v_vars = np.array(theta_v_vars)
-        theta_y_vars = np.array(theta_y_vars)
-        theta_w_vars = np.array(theta_w_vars)
-        theta_x_vars = np.array(theta_x_vars)
+                theta_w_var, theta_w_pos_constr, theta_w_neg_constr = self.add_absolute_var(model, average_post_action_waitlist_vars[i], f"theta_w_{i}")
+                theta_w_vars.append(theta_w_var)
+                theta_w_pos_constrs.append(theta_w_pos_constr)
+                theta_w_neg_constrs.append(theta_w_neg_constr)
+            for n in range(self.env.booking_window_size):
+                theta_x_row = []
+                theta_x_pos_constr_row = []
+                theta_x_neg_constr_row = []
+                for i in range(self.env.num_types):
+                    theta_x_var, theta_x_pos_constr, theta_x_neg_constr = self.add_absolute_var(model, average_advance_scheduling_decision_vars[n][i], f"theta_x_{n}_{i}")
+                    theta_x_row.append(theta_x_var)
+                    theta_x_pos_constr_row.append(theta_x_pos_constr)
+                    theta_x_neg_constr_row.append(theta_x_neg_constr)
+                theta_x_vars.append(theta_x_row)
+                theta_x_pos_constrs.append(theta_x_pos_constr_row)
+                theta_x_neg_constrs.append(theta_x_neg_constr_row)
+            theta_u_vars = np.array(theta_u_vars)
+            theta_v_vars = np.array(theta_v_vars)
+            theta_y_vars = np.array(theta_y_vars)
+            theta_w_vars = np.array(theta_w_vars)
+            theta_x_vars = np.array(theta_x_vars)
 
-        penalty = coefficient_bound*(theta_u_vars.sum() + theta_v_vars.sum() + theta_w_vars.sum() + theta_x_vars.sum() + theta_y_vars.sum())
+            penalty = coefficient_bound*(theta_u_vars.sum() + theta_v_vars.sum() + theta_w_vars.sum() + theta_x_vars.sum() + theta_y_vars.sum())
         average_cost = total_cost / self.sample_path_number
-        model.setObjective(average_cost + penalty * self.penalty_ratio, GRB.MINIMIZE)
+        model.setObjective(average_cost + penalty, GRB.MINIMIZE)
         info = {
             'costs': costs,
             'actions': actions,
@@ -704,11 +705,11 @@ if __name__ == "__main__":
     #print("Trained coefficients:", coefficients)
     # 46799.670307168795
     # [7.501425403225804, 30.591338709677363, 30.426338709677378, 2.515147177419309, 29.261338709677364, 29.766338709677367, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 86.28025, -6.792641717918127e-16, 0.33000000000000895, 0.0]
-    env.reset_random_seeds()  # Reset random seeds before training again to ensure the same sample paths
-    obj, direct_coefficients, info = agent.benders_decomposition_train(coefficient_bound=GRB.INFINITY, parallel=True, verbose=False)
-    print("Initial state:", init_state)
-    print('Obejctive from Benders decomposition training:', obj) # 46799.67030716401
-    print('Coefficients from Benders decomposition training:', direct_coefficients) 
+    # env.reset_random_seeds()  # Reset random seeds before training again to ensure the same sample paths
+    # obj, direct_coefficients, info = agent.benders_decomposition_train(coefficient_bound=GRB.INFINITY, parallel=True, verbose=False)
+    # print("Initial state:", init_state)
+    # print('Obejctive from Benders decomposition training:', obj) # 46799.67030716401
+    # print('Coefficients from Benders decomposition training:', direct_coefficients) 
     # env.reset_random_seeds()  # Reset random seeds before training again to ensure the same sample paths
     # obj, reformulate_coefficients, info = agent.reformulate_train(coefficient_bound=GRB.INFINITY, verbose=False)
     # print('Obejctive from reformulate training:', obj)

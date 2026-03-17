@@ -179,7 +179,7 @@ class ExperimentConfig:
             "duration": 1,
             "regular_capacity": 7,
             "overtime_capacity": 2,
-            "discount_factor": 0.99,
+            "discount_factor": 0.95,
             "reset_params": {
                 'percentage_occupied': 0,
                 't': 1

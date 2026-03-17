@@ -28,7 +28,7 @@ def generate_waiting_penalty_params(dat_file):
         [[(0, 1, 0), (1, 3, 100)],
          [(0, 1, 0), (1, 3, 50)]],
         [[(0, 1, 0), (1, 3, 100)],
-         [(0, 1, 0), (1, 3, 80)]]]
+         [(0, 1, 0), (1, 3, 80)]]][:1]
     lines_to_write = []
     test_params = {}
     for i, waiting_penalty in enumerate(l, start=1):
@@ -70,7 +70,7 @@ def generate_high_priority_arrival_rate(dat_file):
     return test_params, experiment_name
 
 
-def generate_simulation_params(test_envs, experiment_name, warm_up_periods, test_sample_path_num, num_periods, dat_file, init_state=None):
+def generate_simulation_params(test_envs, experiment_name, warm_up_periods, test_sample_path_num, num_periods, dat_file):
     '''
     1. start from config_type, get environment arguments
     2. create a copy of arguments for sample path simulation
@@ -99,8 +99,8 @@ def generate_simulation_params(test_envs, experiment_name, warm_up_periods, test
         print(f"true_geom_p: {true_geom_p}, discount_factor: {discount_factor}")
         agent_args = [
                     #{'agent_name': 'lowerbound', 'args': {'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False, 'is_include_discount_factor':False}},
-                    #{'agent_name': 'myopic', 'args': {}},
-                    #row_alp_args,             
+                    {'agent_name': 'myopic', 'args': {}},
+                    row_alp_args,             
                     
                     # {'agent_name': 'hindsight_approx', 'args': {'sample_path_number': 128, 'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False, 'sample_path_length': None, 'is_include_discount_factor':False, 'is_quasi_MC':False, 'max_periods':int(geom.ppf(0.995, 0.05)), "geom_p":0.05}},
                     # {'agent_name': 'hindsight_approx', 'args': {'sample_path_number': 128, 'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False, 'sample_path_length': None, 'is_include_discount_factor':False, 'is_quasi_MC':True, 'max_periods':int(geom.ppf(0.995, 0.05)), "geom_p":0.05}},
@@ -118,8 +118,8 @@ def generate_simulation_params(test_envs, experiment_name, warm_up_periods, test
                     # {'agent_name': 'hindsight_approx', 'args': {'sample_path_number': 256, 'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False, 'sample_path_length': None, 'is_include_discount_factor':False, 'is_quasi_MC':True, 'max_periods':int(geom.ppf(0.5, 0.05)), "geom_p":0.05}},
                     # {'agent_name': 'hindsight_approx', 'args': {'sample_path_number': 256, 'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False, 'sample_path_length': None, 'is_include_discount_factor':False, 'is_quasi_MC':False, 'max_periods':int(geom.ppf(0.8, 0.05)), "geom_p":0.05}},
                     # {'agent_name': 'hindsight_approx', 'args': {'sample_path_number': 256, 'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False, 'sample_path_length': None, 'is_include_discount_factor':False, 'is_quasi_MC':True, 'max_periods':int(geom.ppf(0.8, 0.05)), "geom_p":0.05}},
-                    {'agent_name': 'hindsight_approx_with_penalty', 'args': {'sample_path_number': 256, 'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False, 'penalty_ratio':0, 'is_quasi_MC':True, 'max_periods':int(geom.ppf(0.999, true_geom_p)), "geom_p":true_geom_p}},
-                    {'agent_name': 'hindsight_approx_with_penalty', 'args': {'sample_path_number': 256, 'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False, 'penalty_ratio':1, 'is_quasi_MC':True, 'max_periods':int(geom.ppf(0.999, true_geom_p)), "geom_p":true_geom_p}},
+                    {'agent_name': 'hindsight_approx_with_penalty', 'args': {'sample_path_number': 256, 'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False, 'penalty_ratio':0, 'is_quasi_MC':True, 'max_periods':int(geom.ppf(0.9999, true_geom_p)), "geom_p":true_geom_p}},
+                    {'agent_name': 'hindsight_approx_with_penalty', 'args': {'sample_path_number': 256, 'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False, 'penalty_ratio':1, 'is_quasi_MC':True, 'max_periods':int(geom.ppf(0.9999, true_geom_p)), "geom_p":true_geom_p}},
                     #{'agent_name': 'penalized_lowerbound', 'args':{'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False, 'is_include_discount_factor':False, 'coefficients':coeffecients}}
                     #{'agent_name': 'penalized_lowerbound', 'args':{'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False, 'is_include_discount_factor':False, 'coefficients':[1]}},
                     #{'agent_name': 'penalized_lowerbound', 'args':{'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False, 'is_include_discount_factor':False}}
@@ -132,9 +132,8 @@ def generate_simulation_params(test_envs, experiment_name, warm_up_periods, test
         config_for_sample_path = get_config_by_type('infinite_custom', args=sample_gen_args)
         env_for_sample_path = config_for_sample_path.env
         for _ in range(test_sample_path_num):
-            if init_state is None:
-                init_state = env_for_sample_path.generate_initial_state()
-                init_state = list(item.tolist() for item in init_state)
+            init_state = env_for_sample_path.generate_initial_state()
+            init_state = list(item.tolist() for item in init_state)
             if num_periods is None:
                 sample_path = env_for_sample_path.reset_arrivals(stop_time=warm_up_periods)
                 additional_sample_path = env_for_sample_path.reset_arrivals()
