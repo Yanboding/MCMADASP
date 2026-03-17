@@ -571,9 +571,9 @@ def _evaluate_one_scenario(task):
     env = config.env
     generating_function = LinearPenaltyFunction(env, coefficients=coefficients)
     zero_args     = {'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous',
-                     'is_myopic': False, 'is_include_discount_factor': False, 'coefficients': 0}
+                     'is_myopic': False, 'is_include_discount_factor': False, 'penalty_ratio': 0}
     penalized_args = {'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous',
-                      'is_myopic': False, 'is_include_discount_factor': False, 'coefficients': 1}
+                      'is_myopic': False, 'is_include_discount_factor': False, 'penalty_ratio': 1}
     zero_res     = caclaulte_information_relexation_cost(env, env_args, experiment_name, zero_args,     generating_function, init_state, sample_path, job_id)
     penalized_res = caclaulte_information_relexation_cost(env, env_args, experiment_name, penalized_args, generating_function, init_state, sample_path, job_id)
     gap = penalized_res['penalized_cost'] - zero_res['penalized_cost']
@@ -586,7 +586,7 @@ def calculate_information_relexation_costs(env_args, experiment_name, train_samp
     env = config.env
     generating_function = LinearPenaltyFunction(env=env)
     t0 = time.time()
-    agent = InfinitePenalizedSAAAgent(env=env, discount_factor=0.99, sample_path_number=train_sample_path_num,
+    agent = InfinitePenalizedSAAAgent(env=env, discount_factor=env.discount_factor, sample_path_number=train_sample_path_num,
                                       generating_function=generating_function, is_myopic=False)
     obj, coefficients, info = agent.reformulate_train(coefficient_bound=GRB.INFINITY)
     print(f"Training time: {time.time() - t0:.1f}s")
@@ -644,11 +644,11 @@ if __name__ == '__main__':
     #simulate_evaluation(**params, job_id=args.job_id)
     # restore_costs(**params, job_id=args.job_id)
     # calcualte_lowerbound_with_same_initial_state(**params, job_id=args.job_id)
-    env_args = params['env_args']
-    config = get_config_by_type(case_type='infinite_custom', args=env_args)
-    env = config.env
-    coefficients = [14.30738636363273, 38.49280303029202, 231.5023863636273, 10.05284090909538, 33.61780303028979, 229.83988636362687, 723.9102095170437, 615.8835546874996, 381.4280007102528, 397.3400000000039, 381.42800071024215, 396.39000000000027, -199.97574928975777, 0.0, 1.5046787345508003e-12, -0.12499999999766413, 0.0]
-    generating_function = LinearPenaltyFunction(env, coefficients=coefficients)
-    evaluate_information_relaxation_cost(**params, generating_function=generating_function, job_id=args.job_id)
+    # env_args = params['env_args']
+    # config = get_config_by_type(case_type='infinite_custom', args=env_args)
+    # env = config.env
+    # coefficients = [14.30738636363273, 38.49280303029202, 231.5023863636273, 10.05284090909538, 33.61780303028979, 229.83988636362687, 723.9102095170437, 615.8835546874996, 381.4280007102528, 397.3400000000039, 381.42800071024215, 396.39000000000027, -199.97574928975777, 0.0, 1.5046787345508003e-12, -0.12499999999766413, 0.0]
+    # generating_function = LinearPenaltyFunction(env, coefficients=coefficients)
+    # evaluate_information_relaxation_cost(**params, generating_function=generating_function, job_id=args.job_id)
     #calculate_penalized_lowerbound_with_same_initial_state(**params, lowerbound_args=lowerbound_args, generating_function=generating_function, job_id=args.job_id)
-    # calculate_information_relexation_costs(**params, train_sample_path_num=350,test_sample_path_num=8000, job_id=args.job_id)
+    calculate_information_relexation_costs(**params, train_sample_path_num=350,test_sample_path_num=8000, job_id=args.job_id)
