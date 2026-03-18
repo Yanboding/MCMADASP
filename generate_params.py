@@ -10,7 +10,7 @@ from scipy.stats import geom
 
 from decision_maker import ALPEJORColumnGenerationAgent
 from experiments import get_config_by_type
-from utils import iter_to_tuple, iter_to_list, get_uid, read_lines_with_pattern, RunningStats, encode, decode, wait_time
+from utils import iter_to_tuple, iter_to_list, get_uid, read_lines_with_pattern, RunningStats, encode, decode, wait_time, acquire_grb_env
 from pathlib import Path
 import hashlib
 import glob

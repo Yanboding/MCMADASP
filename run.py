@@ -605,7 +605,7 @@ def calculate_information_relexation_costs(env_args, experiment_name, train_samp
     zero_penalized_lowerbound_stats = RunningStats()
     gap_stats = RunningStats()
     n_workers = num_workers or min(test_sample_path_num, (os.cpu_count() or 1))
-    with ProcessPoolExecutor(max_workers=n_workers) as executor:
+    with ProcessPoolExecutor(max_workers=1) as executor:
         futures = {executor.submit(_evaluate_one_scenario, task): i
                    for i, task in enumerate(scenarios)}
         for future in as_completed(futures):
@@ -651,4 +651,4 @@ if __name__ == '__main__':
     # generating_function = LinearPenaltyFunction(env, coefficients=coefficients)
     # evaluate_information_relaxation_cost(**params, generating_function=generating_function, job_id=args.job_id)
     #calculate_penalized_lowerbound_with_same_initial_state(**params, lowerbound_args=lowerbound_args, generating_function=generating_function, job_id=args.job_id)
-    calculate_information_relexation_costs(**params, train_sample_path_num=350,test_sample_path_num=8000, job_id=args.job_id)
+    calculate_information_relexation_costs(**params, train_sample_path_num=30,test_sample_path_num=8, job_id=args.job_id)
