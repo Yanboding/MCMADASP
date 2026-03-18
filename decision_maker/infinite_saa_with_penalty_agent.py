@@ -317,27 +317,44 @@ class InfinitePenalizedSAAAgent(InfiniteRTAgent):
         return master_model, coefficient_vars, theta_vars
     
     def third_stage_builder_fn(self, coefficient_bound=GRB.INFINITY):
-        master_model = gp.Model(f"Subproblems", env=self.grb_env)
+        model = gp.Model(f"Subproblems", env=self.grb_env)
         # FORCES DUAL SIMPLEX (Crucial for Benders warm-starting)
-        master_model.setParam("Method", 1)
-        master_model.setParam("MultiObjPre", 0)
-        master_model.setParam("FeasibilityTol", 1e-9)
-        master_model.setParam("OptimalityTol", 1e-9)
-        theta_vars = np.array(
-            [master_model.addVar(vtype=GRB.CONTINUOUS, lb=-GRB.INFINITY, ub=1e10, name=f"eta_{omega}") for omega in range(len(self.delta))])
-        z = theta_vars.sum() / self.sample_path_number
-        post_action_regular_bookings_coeff_vars = np.array([master_model.addVar(vtype=GRB.CONTINUOUS, lb=-coefficient_bound, ub=coefficient_bound, name=f"theta^u_{j}") for j in range(self.env.planning_horizon)])
-        post_action_overtimes_coeff_vars = np.array([master_model.addVar(vtype=GRB.CONTINUOUS, lb=-coefficient_bound, ub=coefficient_bound, name=f"theta^v_{j}") for j in range(self.env.planning_horizon)])
-        post_action_waitlist_coeff_vars = np.array([master_model.addVar(vtype=GRB.CONTINUOUS, lb=-coefficient_bound, ub=coefficient_bound, name=f"theta^w_{i}") for i in range(self.env.num_types)])
-        advance_scheduling_decision_coeff_vars = np.array([[master_model.addVar(vtype=GRB.CONTINUOUS, lb=-coefficient_bound, ub=coefficient_bound, name=f"theta^x_{n}_{i}")  for i in range(self.env.num_types)] for n in range(self.env.booking_window_size)])
-        overtime_decision_coeff_vars = np.array([master_model.addVar(vtype=GRB.CONTINUOUS, lb=-coefficient_bound, ub=coefficient_bound, name=f"theta^y_{j}") for j in range(self.env.planning_horizon)])
-        coefficient_vars = (post_action_regular_bookings_coeff_vars.tolist() +
-                            post_action_overtimes_coeff_vars.tolist() +
-                            post_action_waitlist_coeff_vars.tolist() +
-                            advance_scheduling_decision_coeff_vars.reshape(-1).tolist() +
-                            overtime_decision_coeff_vars.tolist())
-        master_model.setObjective(z, GRB.MAXIMIZE)
-        return master_model, coefficient_vars, theta_vars
+        model.setParam("Method", 1)
+        model.setParam("MultiObjPre", 0)
+        model.setParam("FeasibilityTol", 1e-9)
+        model.setParam("OptimalityTol", 1e-9)
+        post_action_regular_bookings_coeff_vars = np.array([model.addVar(vtype=GRB.CONTINUOUS, lb=-GRB.INFINITY, ub=GRB.INFINITY, name=f"theta^u_{j}") for j in range(self.env.planning_horizon)])
+        post_action_overtimes_coeff_vars = np.array([model.addVar(vtype=GRB.CONTINUOUS, lb=-GRB.INFINITY, ub=GRB.INFINITY, name=f"theta^v_{j}") for j in range(self.env.planning_horizon)])
+        post_action_waitlist_coeff_vars = np.array([model.addVar(vtype=GRB.CONTINUOUS, lb=-GRB.INFINITY, ub=GRB.INFINITY, name=f"theta^w_{i}") for i in range(self.env.num_types)])
+        advance_scheduling_decision_coeff_vars = np.array([[model.addVar(vtype=GRB.CONTINUOUS, lb=-GRB.INFINITY, ub=GRB.INFINITY, name=f"theta^x_{n}_{i}")  for i in range(self.env.num_types)] for n in range(self.env.booking_window_size)])
+        overtime_decision_coeff_vars = np.array([model.addVar(vtype=GRB.CONTINUOUS, lb=-GRB.INFINITY, ub=GRB.INFINITY, name=f"theta^y_{j}") for j in range(self.env.planning_horizon)])
+        coefficient_vars = (post_action_regular_bookings_coeff_vars,
+                            post_action_overtimes_coeff_vars, 
+                            post_action_waitlist_coeff_vars, 
+                            advance_scheduling_decision_coeff_vars,
+                            overtime_decision_coeff_vars)
+        coefficient_linking_constraints = self.build_coefficient_linking_constraints(sub_model, coefficient_vars)
+        state = self.env.generate_initial_state()
+        state_var = self.get_state_var(sub_model)
+        state_linking_constraints = self.build_state_linking_constraints(sub_model, state_var)
+        flatten_state = flatten(state)
+        set_link_rhs(state_linking_constraints, flatten_state)
+        action_var = self.get_action_var(model=sub_model, advance_scheduling_type=GRB.CONTINUOUS)
+        self.add_action_space_constraints(model=sub_model, state_var=state_var, action_var=action_var)
+        # Initialize scenario state and action like in direct solution
+        cost = self.env.cost_fn(state_var, action_var, is_var=True)
+        for tau, new_arrival in enumerate(self.delta[scenario_id][1:], start=1):
+            penalty = self.generating_function.calculate_penalty(state_var, action_var, new_arrival, is_var=True, coefficients=coefficient_vars)
+            cost += penalty
+            state_var = self.get_next_state(model=sub_model,
+                                            state=state_var,
+                                            action=action_var,
+                                            new_arrival=new_arrival)
+            action_var = self.get_action_var(model=sub_model, advance_scheduling_type=self.future_decision_var_type)
+            self.add_action_space_constraints(model=sub_model, state_var=state_var, action_var=action_var)
+            cost += self.env.cost_fn(state_var, action_var, is_var=True)
+        model.setObjective(cost, GRB.MINIMIZE)
+        return model, coefficient_linking_constraints
 
 
     def benders_decomposition_solve(self, state, action=None,
@@ -698,18 +715,30 @@ if __name__ == "__main__":
     config = get_config_by_type('toy')
     env = config.env
     generating_function = LinearPenaltyFunction(env=env)
-    agent = InfinitePenalizedSAAAgent(env=env, discount_factor=env.discount_factor, sample_path_number=30, generating_function=generating_function, is_myopic=False)
+    agent = InfinitePenalizedSAAAgent(env=env, discount_factor=env.discount_factor, sample_path_number=256, generating_function=generating_function, is_myopic=False)
     #coefficients, obj, info = agent.train(verbose=True)
     #print("Trained coefficients:", coefficients)
     # 46799.670307168795
     # [7.501425403225804, 30.591338709677363, 30.426338709677378, 2.515147177419309, 29.261338709677364, 29.766338709677367, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 86.28025, -6.792641717918127e-16, 0.33000000000000895, 0.0]
+    env.reset_random_seeds()  # Reset random seeds before training again to ensure the same sample paths
+    start = time.time()
+    obj, direct_coefficients, info = agent.benders_decomposition_train(coefficient_bound=GRB.INFINITY, parallel=True, verbose=False)
+    end = time.time()
+    print(f"Benders decomposition training time: {end - start} seconds")
+    print('Obejctive from Benders decomposition training:', obj) # 46799.67030716401
+    print('Coefficients from Benders decomposition training:', direct_coefficients)
+    env.reset_random_seeds()  # Reset random seeds before training again to ensure the same sample paths
+    start = time.time()
+    obj, direct_coefficients, info = agent.benders_decomposition_train(coefficient_bound=GRB.INFINITY, parallel=False, verbose=False)
+    end = time.time()
+    print(f"Benders decomposition training time: {end - start} seconds")
+    print('Obejctive from Benders decomposition training:', obj) # 46799.67030716401
+    print('Coefficients from Benders decomposition training:', direct_coefficients)
     # env.reset_random_seeds()  # Reset random seeds before training again to ensure the same sample paths
-    # obj, direct_coefficients, info = agent.benders_decomposition_train(coefficient_bound=GRB.INFINITY, parallel=True, verbose=False)
-    # print("Initial state:", init_state)
-    # print('Obejctive from Benders decomposition training:', obj) # 46799.67030716401
-    # print('Coefficients from Benders decomposition training:', direct_coefficients) 
-    # env.reset_random_seeds()  # Reset random seeds before training again to ensure the same sample paths
+    # start = time.time()
     # obj, reformulate_coefficients, info = agent.reformulate_train(coefficient_bound=GRB.INFINITY, verbose=False)
+    # end = time.time()
+    # print(f"Reformulate training time: {end - start} seconds")
     # print('Obejctive from reformulate training:', obj)
     # print('Coefficients from reformulate training:', reformulate_coefficients)
     # # env.reset_random_seeds()
@@ -718,13 +747,13 @@ if __name__ == "__main__":
     # env.reset_random_seeds()
     # obj, coefficients, info = agent.sample_mean_penalized_lowerbound(coefficients=[0]*len(direct_coefficients), verbose=False)
     # print('Objective from sample mean zero penalized lower bound evaluation:', obj)
-    test_state = env.generate_initial_state()
-    valid_actions = env.valid_actions(test_state)
-    print("Test state:", test_state)
-    print('Valid actions for test state:', valid_actions)
-    obj, action, info = agent.solve(test_state, verbose=True)
-    print('Objective from reformulated solve:', obj)
-    print('Action from reformulated solve:', action)
-    obj, action, info = agent.benders_decomposition_solve(test_state, action=None, parallel=False, verbose=False)
-    print('Objective from Benders decomposition solve with trained coefficients:', obj)
-    print('Action from Benders decomposition solve with trained coefficients:', action)
+    # test_state = env.generate_initial_state()
+    # valid_actions = env.valid_actions(test_state)
+    # print("Test state:", test_state)
+    # print('Valid actions for test state:', valid_actions)
+    # obj, action, info = agent.solve(test_state, verbose=True)
+    # print('Objective from reformulated solve:', obj)
+    # print('Action from reformulated solve:', action)
+    # obj, action, info = agent.benders_decomposition_solve(test_state, action=None, parallel=False, verbose=False)
+    # print('Objective from Benders decomposition solve with trained coefficients:', obj)
+    # print('Action from Benders decomposition solve with trained coefficients:', action)
