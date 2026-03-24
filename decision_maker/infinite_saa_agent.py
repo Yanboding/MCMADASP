@@ -330,7 +330,7 @@ class InfiniteSAAAgent(InfiniteRTAgent):
             }
             with open('bender_error_info.json', 'w') as f:
                 f.write(json.dumps(debug_info))
-        return action_t, upper_bound, info
+        return upper_bound, action_t, info
     
     def solve(self, state, t=1, action=None,
                        batch_size=32,
@@ -389,7 +389,7 @@ class InfiniteSAAAgent(InfiniteRTAgent):
             }
             with open('bender_error_info.json', 'w') as f:
                 f.write(json.dumps(debug_info))
-        return action_t, upper_bound, info
+        return upper_bound, action_t, info
 
     def adaptive_master_builder_fn(self):
         master_model = gp.Model(f"SA_Advance_Adaptive_Master", env=self.grb_env)
@@ -417,29 +417,12 @@ if __name__ == "__main__":
     import time
     config = get_config_by_type('toy')
     env = config.env
-    agent = InfiniteSAAAgent(env=env, discount_factor=0.99, sample_path_number=256, geom_p=0.02, is_myopic=False)
-    state, info = env.reset()
-    print(state)
-    done = False
-    #action, obj, _ = agent.solve(state=state, verbose=False, use_pareto_cuts=True)
-    #print("time:", 1, "bender obj:", obj, "action:", action)
-    start = time.time()
-    action, obj, _ = agent.parallel_solve(state=state, verbose=False, use_pareto_cuts=False)
-    print("time:", 1, "bender obj:", obj, "action:", action) # 303045.6417575597
-    print(time.time() - start) # 159.18962907791138
-    # start = time.time()
-    # action, obj, _ = agent.solve(state=state, verbose=False, use_pareto_cuts=True)
-    # print("time:", 1, "bender obj:", obj, "action:", action)  # 303045.6417575597
-    # print(time.time() - start)
-    # start = time.time()
-    # action, obj, _ = agent.direct_solve(state=state, verbose=False)
-    # print("time:", 1, "bender obj:", obj, "action:", action) # Goal: 267616.65753353486
-    # print(time.time() - start)
-    start = time.time()
-    action, obj, _ = agent.solve(state=state, verbose=False)
-    print("time:", 1, "bender obj:", obj, "action:", action) # 303045.6417575597 195.55690169334412
-    print(time.time() - start)
-    #print(obj) # 11451.191239064321, 11476.191239064323
-    #print(action)
-
+    test_state = (np.array([0, 0, 0]), np.array([0, 0, 0]), np.array([5, 2]))
+    agent = InfiniteSAAAgent(env=env, discount_factor=env.discount_factor, sample_path_number=2, is_myopic=False)
+    obj, action, info = agent.parallel_solve(test_state, action=None, verbose=False)
+    print('Objective from Benders decomposition with trained coefficients:', obj)
+    print('Action from Benders decomposition with trained coefficients:', action)
+    obj, action, info = agent.direct_solve(test_state, action=None, verbose=False)
+    print('Objective from direct solve with trained coefficients:', obj)
+    print('Action from direct solve with trained coefficients:', action)
 

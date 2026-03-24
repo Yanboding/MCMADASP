@@ -7,7 +7,7 @@ from utils import get_solution_value, clean_value, acquire_grb_env
 
 class InfiniteRTAgent:
     TOKEN_WAIT = 15
-    def __init__(self, env, discount_factor, V=None, Q=None):
+    def __init__(self, env, discount_factor, V=None, Q=None, grb_env=None):
         self.env = env
         self.discount_factor = discount_factor
         self.V = V
@@ -16,7 +16,10 @@ class InfiniteRTAgent:
             self.Q = defaultdict(lambda: defaultdict(float))
         if V is None:
             self.V = {}
-        self.grb_env = acquire_grb_env({"Threads": 0}, verbose=False, wait=InfiniteRTAgent.TOKEN_WAIT)
+        if grb_env is None:
+            self.grb_env = acquire_grb_env({"Threads": 0}, verbose=False, wait=InfiniteRTAgent.TOKEN_WAIT)
+        else:
+            self.grb_env = grb_env
 
         self.state_var_counter = 0
         self.action_var_counter = 0

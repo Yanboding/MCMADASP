@@ -9,7 +9,9 @@ class LinearPenaltyFunction:
     
     def get_coefficients(self, solution):
         if solution is None:
-            return None, None, None, None, None
+            if self.coefficients is None:
+                return None, None, None, None, None
+            solution = self.coefficients
         it = iter(solution)
         theta_u = np.array([float(next(it)) for _ in range(self.env.planning_horizon)])
         theta_v = np.array([float(next(it)) for _ in range(self.env.planning_horizon)])
@@ -29,6 +31,17 @@ class LinearPenaltyFunction:
         linear_approx = np.sum(theta_u * post_action_regular_bookings) + np.sum(theta_v * post_action_overtimes) + np.sum(theta_w * post_action_waitlist) + np.sum(theta_x * advance_scheduling_decision) + np.sum(theta_y * overtime_decision)
         penalty_value = total_arrival_difference * linear_approx
         return penalty_value
+    
+    def calculate_gradient(self, state, action, new_arrival, is_var=False):
+        (post_action_regular_bookings, post_action_overtimes, post_action_waitlist) = self.env.post_action_state(state, action, is_var=is_var)
+        (advance_scheduling_decision, overtime_decision) = action
+        total_arrival_difference = np.sum(self.env.arrival_generator.mean_by_type - new_arrival)
+        gradient = np.concatenate([total_arrival_difference * post_action_regular_bookings,
+                                   total_arrival_difference * post_action_overtimes,
+                                   total_arrival_difference * post_action_waitlist,
+                                   total_arrival_difference * advance_scheduling_decision.flatten(),
+                                   total_arrival_difference * overtime_decision])
+        return gradient
 
 
 if __name__ == "__main__":
@@ -49,4 +62,6 @@ if __name__ == "__main__":
     print(penalty_function.theta_y)
     new_arrival = np.array([1, 1])  # Replace with your new arrival information
     penalty = penalty_function.calculate_penalty(state, action, new_arrival, is_var=False)
+    gradient = penalty_function.calculate_gradient(state, action, new_arrival)
     print(f"Calculated penalty: {penalty}")
+    print(f"Calculated gradient: {gradient}")

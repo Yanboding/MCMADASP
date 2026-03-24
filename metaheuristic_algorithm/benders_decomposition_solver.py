@@ -7,6 +7,7 @@ from gurobipy import GRB
 from utils import solve_and_handle_errors, get_solution_value, set_link_rhs
 from concurrent.futures import ThreadPoolExecutor
 
+
 def benders_callback(model, where):
     if where == GRB.Callback.MIPSOL:
         x_vars = model._action_vars
@@ -17,24 +18,24 @@ def benders_callback(model, where):
         pareto_epsilon = model._pareto_epsilon
         max_workers = model._max_workers
 
-        # 1. Get current solution (xk)
+        # 1. Get current candidate solution (xk)
         x_vals = np.array(model.cbGetSolution(x_vars))
         theta_vals = np.array(model.cbGetSolution(theta_vars))
 
-        # 2. Update the core point (Internal logic)
+        # 2. Update the core point with diminishing step size: alpha = 1 / (k + 1)
+        model._cb_iter += 1
+        k = model._cb_iter
         if model._core_point is None:
             model._core_point = np.copy(x_vals)
         else:
-            # Using your diminishing step formula: alpha = 1 / (k + 1)
-            alpha = 0.5
+            alpha = 1.0 / (k + 1.0)
             model._core_point = (1.0 - alpha) * model._core_point + alpha * x_vals
 
-        # Use the UPDATED core point for solving the Pareto subproblems
         current_core = model._core_point
-        # Solve subproblems
+
+        # 3. Solve subproblems (Parallel)
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             if use_pareto_cuts:
-                # Note: core_point here is static unless you update model._core_point in the callback
                 futures = [executor.submit(w.solve_pareto, x_vals, current_core, pareto_epsilon)
                            for w in workers[:len(theta_vars)]]
             else:
@@ -42,23 +43,23 @@ def benders_callback(model, where):
                            for w in workers[:len(theta_vars)]]
             results = [f.result() for f in futures]
 
+        # 4. Process results and add Lazy Constraints
         for i, (is_feasible, obj_val, duals) in enumerate(results):
-            # Construction using Gurobi-friendly math
-            # theta[i] >= obj_val + duals * (x - x_vals)
+            # Cut expression: theta[i] >= obj_val + duals^T * (x - x_vals)
             expr = obj_val + sum(duals[j] * (x_vars[j] - x_vals[j]) for j in range(len(x_vals)))
 
             if not is_feasible:
+                # Feasibility cut (Farkas Ray)
                 model.cbLazy(expr >= 0)
             else:
-                # Optimality cut depends strictly on the Master objective sense
+                # Optimality cut
                 if model.ModelSense == GRB.MINIMIZE:
-                    # Master is minimizing: theta must be greater than the subproblem lower bound
                     if theta_vals[i] < (obj_val - tol):
                         model.cbLazy(theta_vars[i] >= expr)
                 else:
-                    # Master is maximizing: theta must be less than the subproblem upper bound
                     if theta_vals[i] > (obj_val + tol):
                         model.cbLazy(theta_vars[i] <= expr)
+
 class SubproblemWorker:
     """
     One worker per scenario. Owns its own gp.Env and gp.Model.
@@ -73,77 +74,94 @@ class SubproblemWorker:
         self.subproblem_id = subproblem_id
         self.verbose = verbose
 
+    def _set_output_flag(self, model, verbose: bool):
+        model.Params.OutputFlag = 1 if verbose else 0
+
+    def _get_link_rows_in_derived_model(self, derived_model):
+        current_indices = [c.index for c in self.link_rows]
+        rows_in_model = derived_model.getConstrs()
+        return [rows_in_model[i] for i in current_indices]
+
+    def _get_feasibility_ray_for_link_rows(self, action_values, verbose: bool = False):
+        """Standard Farkas Dual logic for infeasible LPs or LP-relaxations."""
+        relax_model = self.model.relax() if self.model.IsMIP else self.model
+        try:
+            self._set_output_flag(relax_model, verbose)
+            relax_model.Params.InfUnbdInfo = 1
+            relax_link_rows = self._get_link_rows_in_derived_model(relax_model)
+            set_link_rhs(relax_link_rows, action_values)
+            relax_model.optimize()
+            if relax_model.Status == GRB.INFEASIBLE:
+                v = sum(c.FarkasDual * c.RHS for c in relax_model.getConstrs())
+                ray = np.array([c.FarkasDual for c in relax_link_rows], dtype=float)
+                return v, ray
+            raise RuntimeError(f"Relaxation not infeasible (Status {relax_model.Status})")
+        finally:
+            if self.model.IsMIP: relax_model.dispose()
+
     def solve(self, action_values, verbose: bool = False):
-        """
-        Set links to the candidate master action and optimize the subproblem.
-        Return (is_feasible, objective_value, dual_vector_or_ray_on_link_rows).
-        """
         set_link_rhs(self.link_rows, action_values)
-
-        if verbose:
-            self.model.Params.OutputFlag = 1
-        else:
-            self.model.Params.OutputFlag = 0
-
+        self._set_output_flag(self.model, verbose)
         self.model.optimize()
 
         if self.model.Status == GRB.OPTIMAL:
+            # For standard solve, we extract duals from the fixed MILP or the LP
             v = self.model.ObjVal
-            duals = np.array([c.Pi for c in self.link_rows], dtype=float)
+            if self.model.IsMIP:
+                fixed = self.model.fixed()
+                fixed.optimize()
+                fixed_rows = self._get_link_rows_in_derived_model(fixed)
+                duals = np.array([c.Pi for c in fixed_rows], dtype=float)
+                fixed.dispose()
+            else:
+                duals = np.array([c.Pi for c in self.link_rows], dtype=float)
             return True, v, duals
         else:
-            # Infeasible: use Farkas duals / ray
-            v = sum(c.FarkasDual * c.RHS for c in self.model.getConstrs())
-            ray = np.array([c.FarkasDual for c in self.link_rows], dtype=float)
+            v, ray = self._get_feasibility_ray_for_link_rows(action_values, verbose)
             return False, v, ray
 
     def solve_pareto(self, action_values, core_point, epsilon=1e-4, verbose: bool = False):
         """
-        Implements a simplified Magnanti-Wong/Papadakos cut.
-        core_point: a point in the interior of the feasible region (e.g., average of previous actions).
+        Fix-then-Perturb strategy: Solve MILP once, fix integers, 
+        then solve perturbed LP for Pareto-optimal duals.
         """
         set_link_rhs(self.link_rows, action_values)
-        self.model.Params.OutputFlag = 1 if verbose else 0
-
-        # --- Step 1: Solve standard subproblem ---
+        self._set_output_flag(self.model, verbose)
         self.model.optimize()
 
         if self.model.Status != GRB.OPTIMAL:
-            # If infeasible, handle with Farkas (Standard Benders)
-            v = sum(c.FarkasDual * c.RHS for c in self.model.getConstrs())
-            ray = np.array([c.FarkasDual for c in self.link_rows], dtype=float)
+            v, ray = self._get_feasibility_ray_for_link_rows(action_values, verbose)
             return False, v, ray
 
-        # Current optimal value
         z_star = self.model.ObjVal
 
-        # --- Step 2: Solve for Pareto-Optimal Duals ---
-        # We fix the objective value to z_star and change the objective to maximize
-        # the cut value at the 'core_point'.
+        # For MILP, we fix the optimal integer solution to find the strongest duals
+        # for that specific realization of the first-stage variables.
+        if self.model.IsMIP:
+            lp_model = self.model.fixed()
+        else:
+            lp_model = self.model.copy() # For pure LP, just copy to avoid modifying original
 
-        # 1. Add a temporary constraint to maintain optimality: dual_obj == z_star
-        # Note: In the primal, this means fixing the objective.
-        # In practice, it's easier to use Gurobi's 'Secondary Objective' or
-        # fix the primal variables that were basic.
+        try:
+            self._set_output_flag(lp_model, verbose)
+            lp_link_rows = self._get_link_rows_in_derived_model(lp_model)
+            
+            # Magnanti-Wong/Papadakos perturbation
+            perturbed_rhs = [(1 - epsilon) * action_values[i] + epsilon * core_point[i]
+                             for i in range(len(action_values))]
+            
+            set_link_rhs(lp_link_rows, perturbed_rhs)
+            lp_model.optimize()
 
-        # Shift the RHS toward the core point by a small epsilon
-        perturbed_rhs = [(1 - epsilon) * action_values[i] + epsilon * core_point[i]
-                         for i in range(len(action_values))]
-
-        set_link_rhs(self.link_rows, perturbed_rhs)
-        self.model.optimize()
-
-        # The duals from this slightly perturbed problem are biased toward the core point
-        v = self.model.ObjVal
-        duals = np.array([c.Pi for c in self.link_rows], dtype=float)
-
-        # Reset RHS for next iteration
-        set_link_rhs(self.link_rows, action_values)
-
-        return True, z_star, duals
-
-    def dispose(self):
-        self.model.dispose()
+            if lp_model.Status != GRB.OPTIMAL:
+                # Fallback to standard duals if perturbation causes numerical issues
+                set_link_rhs(lp_link_rows, action_values)
+                lp_model.optimize()
+            
+            duals = np.array([c.Pi for c in lp_link_rows], dtype=float)
+            return True, z_star, duals
+        finally:
+            lp_model.dispose()
 
 
 class BendersDecompositionSolver:
@@ -282,7 +300,7 @@ class BendersDecompositionSolver:
                     # update core point AFTER you have a valid x_k from the master
                     core_point = self.update_core_point(core_point, action, iteration, alpha=core_alpha)
 
-                    print(f"UB: {upper_bound}, LB: {lower_bound}, Gap: {abs(upper_bound - lower_bound)}")
+                    print(f"UB: {upper_bound}, LB: {lower_bound}, Gap: {abs(upper_bound - lower_bound)}, First-stage cost: {first_stage_cost}, Cost-to-go estimate: {cost_to_go_estimation}")
                     # Average the future cost across scenarios like in direct solution
                     if abs(upper_bound - lower_bound) < tol:
                         info = {}

@@ -10,8 +10,8 @@ from utils import get_solution_value, solve_and_handle_errors, clean_value
 
 class MyopicAgent(InfiniteRTAgent):
 
-    def __init__(self, env, discount_factor, V=None, Q=None):
-        super().__init__(env, discount_factor, V, Q)
+    def __init__(self, env, discount_factor, V=None, Q=None, grb_env=None):
+        super().__init__(env, discount_factor, V, Q, grb_env=grb_env)
 
     def solve(self, state, t, action=None, verbose=False):
         print(f"Computing myopic policy for state {state} at time {t}")

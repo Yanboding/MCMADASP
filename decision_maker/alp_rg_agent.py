@@ -8,8 +8,8 @@ from utils import get_solution_value, solve_and_handle_errors, clean_value
 
 class ALPRowGenerationAgent(InfiniteRTAgent):
 
-    def __init__(self, env, discount_factor, V=None, Q=None, coefficients=None, pretrain=False, decay_factor=0.9):
-        super().__init__(env, discount_factor, V, Q)
+    def __init__(self, env, discount_factor, V=None, Q=None, coefficients=None, pretrain=False, decay_factor=0.99, grb_env=None):
+        super().__init__(env, discount_factor, V, Q, grb_env=grb_env)
         self.is_trained = False
         self.decay_factor = decay_factor
         required_bookings = [(self.env.regular_capacity + self.env.overtime_capacity) * self.decay_factor**(j) for j in range(self.env.planning_horizon)]
