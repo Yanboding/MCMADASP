@@ -49,9 +49,7 @@ class InfinitePenalizedSAAAgent(InfiniteRTAgent):
                 if is_quasi_MC:
                     self.delta = self.arrival_generator.quasi_rvs(size=self.sample_path_number)
                 else:
-                    self.delta = self.arrival_generator.mc_rvs(size=self.sample_path_number)
-        for omega in range(len(self.delta)):
-            print(f'sample path {omega} length:', len(self.delta[omega]))
+                    self.delta = self.arrival_generator.mc_rvs(size=self.sample_path_number) 
         self.benders_solver = None
         self.is_include_discount_factor = is_include_discount_factor
         self.direct_model, self.state_linking_constraints, self.action_t_var = None, None, None
@@ -225,11 +223,10 @@ class InfinitePenalizedSAAAgent(InfiniteRTAgent):
             self.workers = []
             for omega in range(self.sample_path_number):
                 start = time.time()
-                print(f'Start build {omega}')
+                print(f'Start build {omega} with sample path length {len(self.delta[omega])}')
                 if parallel:
                     env = acquire_grb_env()
                 else:
-                    print('Pass')
                     env = self.grb_env
                 sub_model, action_linking_constraints, state_linking_constraints = self.subproblem_builder_fn(env=env, scenario_id=omega)
                 self.workers.append(SubproblemWorker(model=sub_model,

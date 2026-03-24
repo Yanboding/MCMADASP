@@ -882,7 +882,7 @@ def evaluate_policy_costs_with_information_relaxation(uid, experiment_name, init
             'warm_up_periods': warm_up_periods,
             'zero_information_relaxation_cost': float(zero_information_relaxation_cost),
             'penalized_information_relaxation_cost': float(penalized_information_relaxation_cost),
-            'gap_to_zero_information_relaxation': float(policy_result['penalized_cost'] - zero_information_relaxation_cost),
+            'gap_to_zero_information_relaxation': float(policy_result['total_cost'] - zero_information_relaxation_cost),
             'gap_to_penalized_information_relaxation': float(policy_result['penalized_cost'] - penalized_information_relaxation_cost),
         })
 
