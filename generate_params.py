@@ -361,7 +361,7 @@ if __name__ == '__main__':
     results = generate_test_paths_and_init_state(
         test_envs=test_envs,
         experiment_name=experiment_name, 
-        test_sample_path_num=2000,
+        test_sample_path_num=1600,
         warm_up_periods=0,
         num_periods=None,
         dat_file='table.dat'
