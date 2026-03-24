@@ -328,7 +328,8 @@ def generate_test_paths_and_init_state(test_envs, experiment_name, test_sample_p
                 "experiment_name": experiment_name,
                 **params,
                 "penalty_coefficients": direct_coefficients,
-                "alp_coefficients": alp_coefficients
+                "alp_coefficients": alp_coefficients,
+                "group_id": env_uid, # group_id is used to group different sample paths generated from the same environment together
             }
             results.append(save_params)
             

@@ -771,7 +771,7 @@ def calculate_policy_costs(uid, experiment_name, policy_id, agent_name, agent_ar
 
     return result
 
-def evaluate_policy_costs_with_information_relaxation(uid, experiment_name, init_state, sample_path, warm_up_periods, env_args, penalty_coefficients, alp_coefficients, job_id):
+def evaluate_policy_costs_with_information_relaxation(uid, experiment_name, init_state, sample_path, warm_up_periods, env_args, penalty_coefficients, alp_coefficients, group_id, job_id):
     init_state = tuple(np.array(item) for item in init_state)
     sample_path = np.array(sample_path)
 
@@ -878,6 +878,7 @@ def evaluate_policy_costs_with_information_relaxation(uid, experiment_name, init
 
         policy_result.update({
             'uid': uid,
+            'group_id': group_id,
             'experiment_name': experiment_name,
             'warm_up_periods': warm_up_periods,
             'zero_information_relaxation_cost': float(zero_information_relaxation_cost),
