@@ -143,11 +143,6 @@ def generate_simulation_params(test_envs, experiment_name, warm_up_periods, test
                     # {'agent_name': 'hindsight_approx', 'args': {'sample_path_number': 512, 'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False, 'sample_path_length': None, 'is_include_discount_factor':False, 'is_quasi_MC':False, 'max_periods':int(geom.ppf(0.995, 0.05)), "geom_p":0.05}},
                     # {'agent_name': 'hindsight_approx', 'args': {'sample_path_number': 512, 'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False, 'sample_path_length': None, 'is_include_discount_factor':False, 'is_quasi_MC':True, 'max_periods':int(geom.ppf(0.995, 0.05)), "geom_p":0.05}},
 
-                    # {'agent_name': 'hindsight_approx', 'args': {'sample_path_number': 256, 'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False, 'sample_path_length': None, 'is_include_discount_factor':False, 'is_quasi_MC':False, 'max_periods':int(geom.ppf(0.995, 0.1)), "geom_p":0.1}},
-                    # {'agent_name': 'hindsight_approx', 'args': {'sample_path_number': 256, 'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False, 'sample_path_length': None, 'is_include_discount_factor':False, 'is_quasi_MC':True, 'max_periods':int(geom.ppf(0.995, 0.1)), "geom_p":0.1}},
-                    # {'agent_name': 'hindsight_approx', 'args': {'sample_path_number': 256, 'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False, 'sample_path_length': None, 'is_include_discount_factor':False, 'is_quasi_MC':False, 'max_periods':int(geom.ppf(0.995, 0.02)), "geom_p":0.02}},
-                    # {'agent_name': 'hindsight_approx', 'args': {'sample_path_number': 256, 'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False, 'sample_path_length': None, 'is_include_discount_factor':False, 'is_quasi_MC':True, 'max_periods':int(geom.ppf(0.995, 0.02)), "geom_p":0.02}},
-                    
                     # {'agent_name': 'hindsight_approx', 'args': {'sample_path_number': 256, 'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False, 'sample_path_length': None, 'is_include_discount_factor':False, 'is_quasi_MC':False, 'max_periods':int(geom.ppf(0.5, 0.05)), "geom_p":0.05}},
                     # {'agent_name': 'hindsight_approx', 'args': {'sample_path_number': 256, 'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False, 'sample_path_length': None, 'is_include_discount_factor':False, 'is_quasi_MC':True, 'max_periods':int(geom.ppf(0.5, 0.05)), "geom_p":0.05}},
                     # {'agent_name': 'hindsight_approx', 'args': {'sample_path_number': 256, 'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous', 'is_myopic': False, 'sample_path_length': None, 'is_include_discount_factor':False, 'is_quasi_MC':False, 'max_periods':int(geom.ppf(0.8, 0.05)), "geom_p":0.05}},
@@ -268,24 +263,8 @@ def train_alp_coefficients(env_args, experiment_name):
     return obj, oefficients
 
 
-def generate_test_paths_and_init_state(test_envs, experiment_name, test_sample_path_num, warm_up_periods=0, num_periods=None, dat_file=None):
-    '''
-    Generate test parameters including initial state and sample paths for policy testing.
-    
-    Args:
-        test_envs: Dictionary of environment arguments to test {env_uid: env_args, ...}
-        experiment_name: Name of the experiment
-        test_sample_path_num: Number of test sample paths to generate per environment
-        warm_up_periods: Number of warm-up periods
-        num_periods: Total number of periods (if None, will use warm_up_periods + additional paths)
-        dat_file: Optional file path to save commands as shell script
-    
-    Returns:
-        list: List of params dicts with keys: 'uid', 'init_state', 'sample_path', 'warm_up_periods', 'env_args', 'experiment_name'
-    '''
+def generate_test_paths_and_init_state(test_envs, experiment_name, test_sample_path_num, warm_up_periods=0, num_periods=None, dat_file=None, num_groups=None):
     results = []
-    lines_to_write = []
-    line_index = 1
     
     for env_uid, env_args in test_envs.items():
         print(f"Processing env_uid: {env_uid}")
@@ -300,22 +279,16 @@ def generate_test_paths_and_init_state(test_envs, experiment_name, test_sample_p
         config_for_sample_path = get_config_by_type('infinite_custom', args=sample_gen_args)
         env_for_sample_path = config_for_sample_path.env
         for command_id in range(test_sample_path_num):
-            
-            # Generate init_state randomly for each sample path
             init_state = env_for_sample_path.generate_initial_state()
             init_state = list(item.tolist() for item in init_state)
-            
-            # Generate sample path
             if num_periods is None:
                 sample_path = env_for_sample_path.reset_arrivals(stop_time=warm_up_periods)
                 additional_sample_path = env_for_sample_path.reset_arrivals()
                 sample_path = np.append(sample_path, additional_sample_path, axis=0) if len(sample_path) > 0 else additional_sample_path
             else:
                 sample_path = env_for_sample_path.reset_arrivals(stop_time=num_periods)
-            
             sample_path = sample_path.tolist() if hasattr(sample_path, 'tolist') else sample_path
             max_length = max(max_length, len(sample_path))
-            
             params = {
                 'init_state': init_state,
                 'sample_path': sample_path,
@@ -329,34 +302,29 @@ def generate_test_paths_and_init_state(test_envs, experiment_name, test_sample_p
                 **params,
                 "penalty_coefficients": direct_coefficients,
                 "alp_coefficients": alp_coefficients,
-                "group_id": env_uid, # group_id is used to group different sample paths generated from the same environment together
+                "group_id": env_uid,
             }
             results.append(save_params)
-            
-            # Add command line to file if dat_file is specified
-            if dat_file:
-                lines_to_write.append(f"{line_index} python run.py --params '" + json.dumps(save_params) + "'\n")
-                line_index += 1
-        
         print("max sample path length:", max_length)
-    
+
     # Write to dat file if specified
     if dat_file:
+        lines_to_write = []
+        n = num_groups if num_groups and num_groups > 0 else len(results)
+        # Split results into n groups as evenly as possible
+        groups = [results[i::n] for i in range(min(n, len(results)))]
+        for line_index, group in enumerate(groups, start=1):
+            lines_to_write.append(
+                f"{line_index} python run.py --params '" + json.dumps(group) + "'\n"
+            )
         with open(dat_file, 'w') as f:
             f.writelines(lines_to_write)
-        print(f"Saved {len(lines_to_write)} commands to {dat_file}")
-    
+        print(f"Saved {len(lines_to_write)} group commands to {dat_file}")
+
     return results
 
 if __name__ == '__main__':
     test_envs, experiment_name = generate_waiting_penalty_params(dat_file='table_waiting_penalty.dat')
-    # generate_simulation_params(test_envs=test_envs, 
-    #                            experiment_name=experiment_name, 
-    #                            warm_up_periods=0,
-    #                            test_sample_path_num=2000,
-    #                            num_periods=None,
-    #                            dat_file='table.dat')
-    
     generate_high_priority_arrival_rate(dat_file='table_high_priority_arrival_rate.dat')
     results = generate_test_paths_and_init_state(
         test_envs=test_envs,
@@ -364,8 +332,9 @@ if __name__ == '__main__':
         test_sample_path_num=5000,
         warm_up_periods=0,
         num_periods=None,
-        dat_file='table.dat'
+        dat_file='table.dat',
+        num_groups=998,  # divide into N groups
     )
-    
 
-    
+
+

@@ -771,7 +771,7 @@ def calculate_policy_costs(uid, experiment_name, policy_id, agent_name, agent_ar
 
     return result
 
-def evaluate_policy_costs_with_information_relaxation(uid, experiment_name, init_state, sample_path, warm_up_periods, env_args, penalty_coefficients, alp_coefficients, group_id, job_id):
+def evaluate_policy_costs_with_information_relaxation(uid, experiment_name, init_state, sample_path, warm_up_periods, env_args, penalty_coefficients, alp_coefficients, group_id, grb_env, job_id):
     init_state = tuple(np.array(item) for item in init_state)
     sample_path = np.array(sample_path)
 
@@ -785,8 +785,6 @@ def evaluate_policy_costs_with_information_relaxation(uid, experiment_name, init
     discount_factor = env_args.get('discount_factor', env.discount_factor)
     true_geom_p = round(1 - discount_factor, 2)
     max_periods = int(geom.ppf(0.9999, true_geom_p)) if true_geom_p > 0 else len(sample_path)
-
-    grb_env = acquire_grb_env({"Threads": 0}, verbose=False, wait=15)
 
     zero_lowerbound_args = {
         'current_decision_var_type': 'integer',
@@ -946,4 +944,6 @@ if __name__ == '__main__':
     # evaluate_information_relaxation_cost(**params, generating_function=generating_function, job_id=args.job_id)
     #calculate_penalized_lowerbound_with_same_initial_state(**params, lowerbound_args=lowerbound_args, generating_function=generating_function, job_id=args.job_id)
     # calculate_information_relexation_costs(**params, train_sample_path_num=30,test_sample_path_num=8, job_id=args.job_id)
-    evaluate_policy_costs_with_information_relaxation(**params, job_id=args.job_id)
+    grb_env = acquire_grb_env({"Threads": 0}, verbose=False, wait=15)
+    for param in params:
+        evaluate_policy_costs_with_information_relaxation(**param, grb_env=grb_env, job_id=args.job_id)
