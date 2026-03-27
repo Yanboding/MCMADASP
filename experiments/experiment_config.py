@@ -177,8 +177,8 @@ class ExperimentConfig:
             "overtime_cost_by_day": 100,
             "postponing_cost": 2000,
             "duration": 1,
-            "regular_capacity": 7,
-            "overtime_capacity": 2,
+            "regular_capacity": 5,
+            "overtime_capacity": 5,
             "discount_factor": 0.99,
             "reset_params": {
                 'percentage_occupied': 0,

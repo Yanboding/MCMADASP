@@ -66,13 +66,18 @@ class SubproblemWorker:
     Build once, then call solve(action) repeatedly.
     """
 
-    def __init__(self, model, link_rows, state_linking_constraints, subproblem_id, verbose: bool = True):
+    def __init__(self, model, link_rows, state_linking_constraints, subproblem_id, verbose: bool = True,
+                 objective_builder_fn=None, cut_gradient_fn=None):
         # Build the model and linking constraints inside THIS env.
         self.model = model
         self.link_rows = link_rows
         self.state_linking_constraints = state_linking_constraints
         self.subproblem_id = subproblem_id
         self.verbose = verbose
+        # Optional hooks for generalized Benders: treat first-stage values as constants
+        # in subproblem objective and return custom cut gradients.
+        self.objective_builder_fn = objective_builder_fn
+        self.cut_gradient_fn = cut_gradient_fn
 
     def _set_output_flag(self, model, verbose: bool):
         model.Params.OutputFlag = 1 if verbose else 0
@@ -100,23 +105,33 @@ class SubproblemWorker:
             if self.model.IsMIP: relax_model.dispose()
 
     def solve(self, action_values, verbose: bool = False):
-        set_link_rhs(self.link_rows, action_values)
+        if self.link_rows is not None and len(self.link_rows) > 0:
+            set_link_rhs(self.link_rows, action_values)
+        if self.objective_builder_fn is not None:
+            self.objective_builder_fn(self.model, action_values)
         self._set_output_flag(self.model, verbose)
         self.model.optimize()
 
         if self.model.Status == GRB.OPTIMAL:
-            # For standard solve, we extract duals from the fixed MILP or the LP
             v = self.model.ObjVal
-            if self.model.IsMIP:
-                fixed = self.model.fixed()
-                fixed.optimize()
-                fixed_rows = self._get_link_rows_in_derived_model(fixed)
-                duals = np.array([c.Pi for c in fixed_rows], dtype=float)
-                fixed.dispose()
+            if self.cut_gradient_fn is not None:
+                duals = np.asarray(self.cut_gradient_fn(self.model, action_values), dtype=float)
             else:
-                duals = np.array([c.Pi for c in self.link_rows], dtype=float)
+                # For standard solve, we extract duals from the fixed MILP or the LP
+                if self.model.IsMIP:
+                    fixed = self.model.fixed()
+                    fixed.optimize()
+                    fixed_rows = self._get_link_rows_in_derived_model(fixed)
+                    duals = np.array([c.Pi for c in fixed_rows], dtype=float)
+                    fixed.dispose()
+                else:
+                    duals = np.array([c.Pi for c in self.link_rows], dtype=float)
             return True, v, duals
         else:
+            if self.link_rows is None or len(self.link_rows) == 0:
+                raise RuntimeError(
+                    f"Subproblem {self.subproblem_id} is infeasible/unbounded but has no linking constraints for feasibility rays"
+                )
             v, ray = self._get_feasibility_ray_for_link_rows(action_values, verbose)
             return False, v, ray
 
@@ -125,7 +140,13 @@ class SubproblemWorker:
         Fix-then-Perturb strategy: Solve MILP once, fix integers, 
         then solve perturbed LP for Pareto-optimal duals.
         """
+        if self.link_rows is None or len(self.link_rows) == 0:
+            # Fallback for generalized workers that provide custom subgradients
+            # and do not expose classical linking-constraint duals.
+            return self.solve(action_values, verbose)
         set_link_rhs(self.link_rows, action_values)
+        if self.objective_builder_fn is not None:
+            self.objective_builder_fn(self.model, action_values)
         self._set_output_flag(self.model, verbose)
         self.model.optimize()
 

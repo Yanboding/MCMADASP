@@ -303,7 +303,7 @@ class InfinitePenalizedSAAAgent(InfiniteRTAgent):
         master_model.setObjective(z, GRB.MAXIMIZE)
         return master_model, coefficient_vars, theta_vars
 
-    def train_subproblem_builder_fn(self, env, scenario_id):
+    def train_subproblem_builder_fn(self, env, scenario_id, init_state = None):
         sub_model = gp.Model(f"Subproblem_SA_Advance_{scenario_id}", env=env)
         # FORCES DUAL SIMPLEX (Crucial for Benders warm-starting)
         sub_model.setParam("Method", 1)
@@ -324,7 +324,7 @@ class InfinitePenalizedSAAAgent(InfiniteRTAgent):
                             advance_scheduling_decision_coeff_vars,
                             overtime_decision_coeff_vars)
         coefficient_linking_constraints = self.build_coefficient_linking_constraints(sub_model, coefficient_vars)
-        state = self.env.generate_initial_state()
+        state = self.env.generate_initial_state() if init_state is None else init_state
         state_var = self.get_state_var(sub_model)
         state_linking_constraints = self.build_state_linking_constraints(sub_model, state_var)
         flatten_state = flatten(state)
@@ -350,21 +350,37 @@ class InfinitePenalizedSAAAgent(InfiniteRTAgent):
             self.add_action_space_constraints(model=sub_model, state_var=state_var, action_var=action_var)
             cost += self.env.cost_fn(state_var, action_var, is_var=True)
         sub_model.setObjective(cost, GRB.MINIMIZE)
-        return sub_model, coefficient_linking_constraints
+
+        def objective_builder(model, coefficients):
+            coeff = np.asarray(coefficients, dtype=float)
+            penalty = gp.quicksum(coeff[i] * penalty_basis_terms[i] for i in range(len(penalty_basis_terms)))
+            model.setObjective(base_cost + penalty, GRB.MINIMIZE)
+
+        def cut_gradient_builder(model, _coefficients):
+            return np.array([
+                term.getValue() if hasattr(term, 'getValue') else float(term)
+                for term in penalty_basis_terms
+            ], dtype=float)
+
+        return sub_model, coefficient_linking_constraints, objective_builder, cut_gradient_builder
     
-    def benders_decomposition_train(self, coefficient_bound=GRB.INFINITY, parallel=True, verbose=False):
+    def benders_decomposition_train(self, coefficient_bound=GRB.INFINITY, init_state = None, parallel=True, verbose=False):
         # This function can be implemented to train the coefficients using Benders decomposition, which can potentially handle larger sample sizes more efficiently.
         master_model, coefficient_vars, theta_vars = self.train_master_builder_fn(coefficient_bound)
         workers = []
         for scenario_id in range(self.sample_path_number):
             start = time.time()
             print(f'Start build {scenario_id}')
-            grb_env = acquire_grb_env({"Threads": 0}, verbose=False, wait=InfiniteRTAgent.TOKEN_WAIT)
-            worker_model, link_rows = self.train_subproblem_builder_fn(env=grb_env, scenario_id=scenario_id)
+            grb_env = self.grb_env
+            if parallel:
+                grb_env = acquire_grb_env({"Threads": 0}, verbose=False, wait=InfiniteRTAgent.TOKEN_WAIT)
+            worker_model, coefficient_linking_constraints, objective_builder, cut_gradient_builder = self.train_subproblem_builder_fn(env=grb_env, scenario_id=scenario_id, init_state=init_state)
             workers.append(SubproblemWorker(model=worker_model,
-                                            link_rows=link_rows,
+                                            link_rows=coefficient_linking_constraints,
                                             state_linking_constraints=None,
                                             subproblem_id=scenario_id,
+                                            objective_builder_fn=None,
+                                            cut_gradient_fn=None,
                                             verbose=verbose))
             print(f'Finished build {scenario_id} in {time.time()-start} seconds')
         benders_solver = BendersDecompositionSolver(master_model=master_model,
@@ -378,7 +394,7 @@ class InfinitePenalizedSAAAgent(InfiniteRTAgent):
         coefficients = [var.X for var in coefficient_vars]
         return upper_bound, coefficients, info
     
-    def sample_mean_penalized_lowerbound(self, coefficients, ratio=1, verbose=False):
+    def sample_mean_penalized_lowerbound(self, coefficients, ratio=1, init_state = None, verbose=False):
         coefficients = self.generating_function.get_coefficients(coefficients)
         start = time.time()
         direct_model = gp.Model(f"SA_Advance_Direct_Model", env=self.grb_env)
@@ -389,7 +405,7 @@ class InfinitePenalizedSAAAgent(InfiniteRTAgent):
         # ---------- 1. objective ----------
         total_cost = 0
         for omega in range(self.sample_path_number):
-            state = self.env.generate_initial_state()
+            state = self.env.generate_initial_state() if init_state is None else init_state
             state_var = self.get_state_var(direct_model)
             state_linking_constraints = self.build_state_linking_constraints(direct_model, state_var)
             flatten_state = flatten(state)
@@ -422,14 +438,13 @@ if __name__ == "__main__":
     import matplotlib.pyplot as plt
     config = get_config_by_type('toy')
     env = config.env
-    test_state = (np.array([0, 0, 0]), np.array([0, 0, 0]), np.array([5, 2]))
+    test_state = (np.array([2, 2, 0]), np.array([0, 0, 0]), np.array([1, 2]))
     test_action = (np.array([[4, 0],
                              [1, 2],
                              [0, 0]]), np.array([1, 0, 0]))
-    coefficients = [14.30738636363273, 38.49280303029202, 231.5023863636273, 10.05284090909538, 33.61780303028979, 229.83988636362687, 723.9102095170437, 615.8835546874996, 381.4280007102528, 397.3400000000039, 381.42800071024215, 396.39000000000027, -199.97574928975777, 0.0, 1.5046787345508003e-12, -0.12499999999766413, 0.0]
     #coefficients = [0] * len(coefficients)
     generating_function = LinearPenaltyFunction(env=env)
-    agent = InfinitePenalizedSAAAgent(env=env, discount_factor=env.discount_factor, sample_path_number=10, generating_function=generating_function, is_myopic=False)
+    agent = InfinitePenalizedSAAAgent(env=env, discount_factor=env.discount_factor, sample_path_number=256, generating_function=generating_function, is_myopic=False)
     # env.reset_random_seeds()
     # print('Test state:', test_state)
     # obj, action, info = agent.benders_decomposition_solve(test_state, action=None, parallel=True, verbose=False)
@@ -441,15 +456,13 @@ if __name__ == "__main__":
     # print('Action from direct solve with trained coefficients:', action)
     #coefficients, obj, info = agent.train(verbose=True)
     #print("Trained coefficients:", coefficients)
-    # 46799.670307168795
-    # [7.501425403225804, 30.591338709677363, 30.426338709677378, 2.515147177419309, 29.261338709677364, 29.766338709677367, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 86.28025, -6.792641717918127e-16, 0.33000000000000895, 0.0]
-    env.reset_random_seeds()  # Reset random seeds before training again to ensure the same sample paths
-    start = time.time()
-    obj, direct_coefficients, info = agent.benders_decomposition_train(coefficient_bound=GRB.INFINITY, parallel=True, verbose=False)
-    end = time.time()
-    print(f"Benders decomposition training time: {end - start} seconds")
-    print('Obejctive from Benders decomposition training:', obj) # 46799.67030716401
-    print('Coefficients from Benders decomposition training:', direct_coefficients)
+    # env.reset_random_seeds()  # Reset random seeds before training again to ensure the same sample paths
+    # start = time.time()
+    # obj, direct_coefficients, info = agent.benders_decomposition_train(coefficient_bound=GRB.INFINITY, parallel=True, init_state=test_state, verbose=False)
+    # end = time.time()
+    # print(f"Benders decomposition training time: {end - start} seconds")
+    # print('Obejctive from Benders decomposition training:', obj) # 46799.67030716401
+    # print('Coefficients from Benders decomposition training:', direct_coefficients)
     # env.reset_random_seeds()  # Reset random seeds before training again to ensure the same sample paths
     # start = time.time()
     # obj, reformulate_coefficients, info = agent.reformulate_train(coefficient_bound=GRB.INFINITY, verbose=False)
@@ -457,9 +470,19 @@ if __name__ == "__main__":
     # print(f"Reformulate training time: {end - start} seconds")
     # print('Obejctive from reformulate training:', obj)
     # print('Coefficients from reformulate training:', reformulate_coefficients)
+    # LP with imediate action have integer constraint.
+    #direct_coefficients = [9.281778046800301, 18.406982109217235, 211.7776403012647, 1.8317253609339224, 17.076982109219387, 211.1143069679426, 454.97928707153835, 432.75496421837806, 390.1621061706687, 396.04000000002765, 391.2989818770426, 395.9409999999887, -190.9698684057874, 0.0, 1.9440832013001023e-12, 0.32999999999992724, 0.0]
+    # MILP with imediate action have integer constraint.
+    direct_coefficients = [9.268191043987258, 18.399990576954398, 211.77769372497636, 1.779482715174383, 17.06978530519917, 211.11833006741278, 454.88242227211236, 432.7775535054471, 390.28763575751765, 396.03190327939177, 391.3760703787603, 395.9341759642607, -190.85357865534522, 0.0, -0.0003694891595442083, 0.3287273151188725, 0.0] 
+    # FULL MILP
+    #direct_coefficients = [9.147308288146675, 19.002800405200663, 205.95900694128812, 3.1162106277479382, 14.888631287719091, 203.99516141290258, 497.61674182911685, 469.0295179497762, 389.4843489749785, 381.84105713537247, 383.43078908601046, 384.1750962073562, -181.40992640734066, 0.0, 0.5656574831678151, 3.221326122856308, 0.0]
     env.reset_random_seeds()
-    obj, coefficients, info = agent.sample_mean_penalized_lowerbound(coefficients=direct_coefficients, verbose=False)
-    print('Objective from sample mean penalized lower bound evaluation using original problem coefficients:', obj)
+    penalized_obj, coefficients, info = agent.sample_mean_penalized_lowerbound(coefficients=direct_coefficients, init_state=test_state, verbose=False)
+    print('Objective from sample mean penalized lower bound evaluation using original problem coefficients:', penalized_obj)
+    env.reset_random_seeds()
+    zero_penalized_obj, coefficients, info = agent.sample_mean_penalized_lowerbound(coefficients=direct_coefficients, ratio=0,init_state=test_state, verbose=False)
+    print('Objective from sample mean zero penalized lower bound evaluation using original problem coefficients:', zero_penalized_obj)
+    print('Difference between penalized and zero-penalized objectives:', (penalized_obj - zero_penalized_obj)/zero_penalized_obj * 100)  
     # env.reset_random_seeds()
     # obj, coefficients, info = agent.sample_mean_penalized_lowerbound(coefficients=[0]*len(direct_coefficients), verbose=False)
     # print('Objective from sample mean zero penalized lower bound evaluation:', obj)
