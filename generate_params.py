@@ -52,6 +52,21 @@ def _save_training_result(experiment_name, file_name, env_args, agent_name, obj_
         f.write(json.dumps(record) + '\n')
     return record
 
+def _split_list_into_groups(results, num_groups, dat_file=None):
+    n = num_groups if num_groups and num_groups > 0 else len(results)
+    # Split results into n groups as evenly as possible
+    groups = [results[i::n] for i in range(min(n, len(results)))]
+    lines_to_write = []
+    for line_index, group in enumerate(groups, start=1):
+        lines_to_write.append(
+            f"{line_index} python run.py --params '" + json.dumps(group) + "'\n"
+        )
+    if dat_file:
+        with open(dat_file, 'w') as f:
+            f.writelines(lines_to_write)
+        print(f"Saved {len(lines_to_write)} group commands to {dat_file}")
+    return lines_to_write
+
 def generate_waiting_penalty_params(dat_file):
     # This function can be implemented to generate parameters for testing the impact of different waiting penalties on the performance of the agents.
     experiment_name = 'waiting_penalty_impact'
@@ -92,6 +107,32 @@ def generate_high_priority_arrival_rate(dat_file):
     test_params = {}
     for i, arrival_rate in enumerate(arrival_rates, start=1):
         env_args['arrival_rates'] = arrival_rate
+        save_params = {
+                        'experiment_name': experiment_name,
+                        'env_args': env_args,
+                      }
+        env_uid = get_uid(env_args)
+        lines_to_write.append(f"{i} python run.py --params '" + json.dumps(save_params) + "'\n")
+        test_params[env_uid] = copy.deepcopy(env_args)
+    with open(dat_file, 'w') as f:
+        f.writelines(lines_to_write)
+    return test_params, experiment_name
+
+def generate_inital_state_variation(dat_file):
+    # This function can be implemented to generate parameters for testing the impact of different initial states on the performance of the agents.
+    experiment_name = 'initial_state_variation_impact'
+    config_type = 'toy'
+    env_args = get_config_by_type(config_type).args
+    initial_states = [([2, 2, 0], [0, 0, 0], [1, 2]),
+                      ([5, 5, 0], [0, 0, 0], [1, 2]),
+                      ([5, 5, 0], [3, 3, 0], [1, 2]),]
+    lines_to_write = []
+    test_params = {}
+    for i, initial_state in enumerate(initial_states, start=1):
+        reset_params = {
+            "init_state": initial_state,
+        }
+        env_args['reset_params'] = reset_params
         save_params = {
                         'experiment_name': experiment_name,
                         'env_args': env_args,
@@ -236,6 +277,26 @@ def generate_test_paths_and_init_state(test_envs, experiment_name, test_sample_p
 
     return results
 
+def generate_train_env(test_envs, experiment_name, number_replication, dat_file, num_groups=None):
+    # This function can be implemented to generate parameters for training the agents. The parameters can include different environment configurations, initial states, and sample paths.
+    results = []
+    for env_uid, env_args in test_envs.items():
+        for i in range(number_replication):
+            save_env_args = copy.deepcopy(env_args)
+            save_env_args['env_random_seed'] = env_args.get('env_random_seed', 0) + i
+            save_env_args['arrival_random_seed'] = env_args.get('arrival_random_seed', 1) + i
+            save_env_args['stop_time_random_seed'] = env_args.get('stop_time_random_seed', 42) + i
+            save_params = {
+                'uid': get_uid(save_env_args),
+                'experiment_name': experiment_name,
+                'env_args': save_env_args,
+                'group_id': env_uid,
+            }
+            results.append(save_params)
+    _split_list_into_groups(results, num_groups=num_groups, dat_file=dat_file)
+    return results
+
+
 if __name__ == '__main__':
     # test_envs, experiment_name = generate_waiting_penalty_params(dat_file='table_waiting_penalty.dat')
     # generate_high_priority_arrival_rate(dat_file='table_high_priority_arrival_rate.dat')
@@ -248,10 +309,15 @@ if __name__ == '__main__':
     #     dat_file='table.dat',
     #     num_groups=998,  # divide into N groups
     # )
-    discount_factor = 0.99
-    true_geom_p = round(1 - discount_factor, 2)
-    max_periods = int(geom.ppf(0.99999, true_geom_p))
-    print(f"max_periods for quasi MC sampling: {max_periods}, true_geom_p: {true_geom_p}, discount_factor: {discount_factor}")  
+    test_envs, experiment_name = generate_inital_state_variation(dat_file='initial_state_variation_impact.dat')
+    results = generate_train_env(
+        test_envs=test_envs,
+        experiment_name=experiment_name,
+        number_replication=5000,
+        dat_file='train.dat',
+        num_groups=998,  # divide into N groups
+    )
+
 
 
 

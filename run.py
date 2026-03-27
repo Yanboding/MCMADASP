@@ -17,6 +17,23 @@ from utils import iter_to_tuple, get_uid, safe_open, RunningStats, encode, decod
 from decision_maker import InfiniteSAAAgent, InfinitePenalizedSAAAgent, MyopicAgent, ALPRowGenerationAgent, LinearPenaltyFunction
 from policy_evaluator import PolicyEvaluator
 
+def jsonl_result_exists(path, uid, policy_id):
+    """Return True if (uid, policy_id) already exists in JSONL output."""
+    if not os.path.isfile(path):
+        return False
+    with open(path, 'r') as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if row.get('uid') == uid and row.get('policy_id') == policy_id:
+                return True
+    return False
+
 def run_lower_bound_solver(experiment_name, param_value, env_args, agent_args, sample_path, uid, job_id):
     res = {}
     res["uid"] = uid
@@ -905,22 +922,38 @@ def evaluate_policy_costs_with_information_relaxation(uid, experiment_name, init
 
     return summary_rows
 
-def jsonl_result_exists(path, uid, policy_id):
-    """Return True if (uid, policy_id) already exists in JSONL output."""
-    if not os.path.isfile(path):
-        return False
-    with open(path, 'r') as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                row = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if row.get('uid') == uid and row.get('policy_id') == policy_id:
-                return True
-    return False
+def coefficient_training_test(uid, experiment_name, env_args, group_id, grb_env, job_id):
+    test_state = env_args['reset_params']['init_state']
+    test_state = tuple(np.array(item) for item in test_state)
+    config_for_train = get_config_by_type('infinite_custom', args=env_args)
+    env = config_for_train.env
+    generating_function = LinearPenaltyFunction(env=env)
+    agent = InfinitePenalizedSAAAgent(env=env, discount_factor=env.discount_factor, sample_path_number=256, generating_function=generating_function, is_myopic=False, grb_env=grb_env)
+    env.reset_random_seeds()  # Reset random seeds before training again to ensure the same sample paths
+    obj, direct_coefficients, info = agent.benders_decomposition_train(coefficient_bound=GRB.INFINITY, init_state=test_state, parallel=False, verbose=False)
+    print('Obejctive from Benders decomposition training:', obj) # Full MILP:39050.05571672409 # LP: 21524.097118570513
+    print('Coefficients from Benders decomposition training:', direct_coefficients)
+    env.reset_random_seeds()
+    penalized_obj, coefficients, info = agent.sample_mean_penalized_lowerbound(coefficients=direct_coefficients, ratio=1, init_state=test_state, verbose=False)
+    print('Objective from sample mean penalized lower bound evaluation using original problem coefficients:', penalized_obj)
+    env.reset_random_seeds()
+    zero_penalized_obj, coefficients, info = agent.sample_mean_penalized_lowerbound(coefficients=direct_coefficients, ratio=0, init_state=test_state, verbose=False)
+    print('Objective from sample mean zero penalized lower bound evaluation using original problem coefficients:', zero_penalized_obj)
+    print('Difference between penalized and zero-penalized objectives:', (penalized_obj - zero_penalized_obj)/zero_penalized_obj * 100)
+
+    result = {
+            'uid': uid,
+            'group_id': group_id,
+            'experiment_name': experiment_name,
+            'penalized_lower_bound_objective': penalized_obj,
+            'zero_penalized_lower_bound_objective': zero_penalized_obj,
+            'gap_between_penalized_and_zero': penalized_obj - zero_penalized_obj,
+            'coefficients': direct_coefficients,
+        }
+    output_file = os.path.join('experiments', 'results', experiment_name, f'{job_id}.jsonl')
+    os.makedirs(os.path.dirname(output_file), exist_ok=True)
+    with open(output_file, 'a') as f:
+        f.write(json.dumps(result) + '\n')
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Example of using argparse to pass in a list of lists.")
@@ -946,4 +979,5 @@ if __name__ == '__main__':
     # calculate_information_relexation_costs(**params, train_sample_path_num=30,test_sample_path_num=8, job_id=args.job_id)
     grb_env = acquire_grb_env({"Threads": 0}, verbose=False, wait=15)
     for param in params:
-        evaluate_policy_costs_with_information_relaxation(**param, grb_env=grb_env, job_id=args.job_id)
+        # pprint(param['env_args'])
+        coefficient_training_test(**param, grb_env=grb_env, job_id=args.job_id)

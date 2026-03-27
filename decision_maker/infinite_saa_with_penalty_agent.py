@@ -54,6 +54,7 @@ class InfinitePenalizedSAAAgent(InfiniteRTAgent):
         self.is_include_discount_factor = is_include_discount_factor
         self.direct_model, self.state_linking_constraints, self.action_t_var = None, None, None
         self.master_model, self.workers = None, None
+        print(self.delta[-1])
 
 
     def set_sample_path(self, sample_path):
@@ -329,7 +330,7 @@ class InfinitePenalizedSAAAgent(InfiniteRTAgent):
         state_linking_constraints = self.build_state_linking_constraints(sub_model, state_var)
         flatten_state = flatten(state)
         set_link_rhs(state_linking_constraints, flatten_state)
-        action_var = self.get_action_var(model=sub_model, advance_scheduling_type=self.current_decision_var_type)
+        action_var = self.get_action_var(model=sub_model, advance_scheduling_type=self.future_decision_var_type)
         # action_var = self.get_action_var(model=sub_model, advance_scheduling_type=self.future_decision_var_type)
         self.add_action_space_constraints(model=sub_model, state_var=state_var, action_var=action_var)
         # Initialize scenario state and action like in direct solution
@@ -346,7 +347,7 @@ class InfinitePenalizedSAAAgent(InfiniteRTAgent):
                                             action=action_var,
                                             new_arrival=new_arrival)
             # action_var = self.get_action_var(model=sub_model, advance_scheduling_type=self.future_decision_var_type)
-            action_var = self.get_action_var(model=sub_model, advance_scheduling_type=self.current_decision_var_type)
+            action_var = self.get_action_var(model=sub_model, advance_scheduling_type=self.future_decision_var_type)
             self.add_action_space_constraints(model=sub_model, state_var=state_var, action_var=action_var)
             cost += self.env.cost_fn(state_var, action_var, is_var=True)
         sub_model.setObjective(cost, GRB.MINIMIZE)

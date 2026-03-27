@@ -43,7 +43,7 @@ class MultiClassPoissonArrivalGenerator:
         self.geom_p = geom_p
 
         self.use_qmc = use_qmc
-        self.qmc_seed = qmc_seed
+        self.qmc_seed = random_seed
         if use_qmc:
             self.qmc_dim = 1 + (self.max_periods * self.num_types)
             # Note: Optimization=True is slower to init but better quality
