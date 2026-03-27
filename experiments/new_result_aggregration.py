@@ -96,30 +96,11 @@ class SimulateEvaluationResult:
                     }
                 pickle.dump(res, f)
         for (group_id, policy_id), stats in self.zero_penalized_gap.items():
-            self.zero_penalized_improvement[(group_id, policy_id)] = self.zero_penalized_gap[(group_id, policy_id)] / self.zero_penalized_information_relaxation_cost[group_id].mean / 0.01
+            self.zero_penalized_improvement[(group_id, policy_id)] = self.zero_penalized_gap[(group_id, policy_id)] / self.policy_costs[(group_id, policy_id)].mean / 0.01
         for (group_id, policy_id), stats in self.penalized_gap.items():
-            self.penalized_improvement[(group_id, policy_id)] = self.penalized_gap[(group_id, policy_id)] / self.penalized_information_relaxation_cost[group_id].mean / 0.01
+            self.penalized_improvement[(group_id, policy_id)] = self.penalized_gap[(group_id, policy_id)] / self.policy_costs[(group_id, policy_id)].mean / 0.01
         for group_id, stats in self.gap_to_information_relaxation.items():
-            self.improvement[group_id] = self.gap_to_information_relaxation[group_id] / self.zero_penalized_information_relaxation_cost[group_id].mean / 0.01
-        print("Policy Costs")
-        pprint(self.policy_costs)
-        print("Zero Penalized Gap")
-        pprint(self.zero_penalized_gap)
-        print("Penalized Gap")
-        pprint(self.penalized_gap)
-        print("Zero Penalized Improvement")
-        pprint(self.zero_penalized_improvement)
-        print("Penalized Improvement")
-        pprint(self.penalized_improvement)
-        print("Zero Penalized Information Relaxation Cost")
-        pprint(self.zero_penalized_information_relaxation_cost)
-        print("Penalized Information Relaxation Cost")
-        pprint(self.penalized_information_relaxation_cost)
-
-        print("Gap to Information Relaxation")
-        pprint(self.gap_to_information_relaxation)
-        print("Improvement")
-        pprint(self.improvement)
+            self.improvement[group_id] = self.gap_to_information_relaxation[group_id] / self.policy_costs[(group_id, policy_id)].mean / 0.01
     
     def load(self, data):
         policy_id = data['policy_id']
@@ -141,4 +122,23 @@ if __name__ == "__main__":
     # 20: 39.3842249382221 0.5255526412672854
     file_pattern = '[0-9]*.jsonl'
     ser = SimulateEvaluationResult(directory_path, file_pattern, is_reuse=False)
+    print("Policy Costs")
+    pprint(ser.policy_costs)
+    print("Zero Penalized Gap")
+    pprint(ser.zero_penalized_gap)
+    print("Penalized Gap")
+    pprint(ser.penalized_gap)
+    print("Zero Penalized Improvement")
+    pprint(ser.zero_penalized_improvement)
+    print("Penalized Improvement")
+    pprint(ser.penalized_improvement)
+    print("Zero Penalized Information Relaxation Cost")
+    pprint(ser.zero_penalized_information_relaxation_cost)
+    print("Penalized Information Relaxation Cost")
+    pprint(ser.penalized_information_relaxation_cost)
+
+    print("Gap to Information Relaxation")
+    pprint(ser.gap_to_information_relaxation)
+    print("Improvement")
+    pprint(ser.improvement)
         

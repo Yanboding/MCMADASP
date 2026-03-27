@@ -314,7 +314,7 @@ if __name__ == '__main__':
         test_envs=test_envs,
         experiment_name=experiment_name,
         number_replication=5000,
-        dat_file='train.dat',
+        dat_file='table.dat',
         num_groups=998,  # divide into N groups
     )
 
