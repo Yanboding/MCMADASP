@@ -789,6 +789,9 @@ def calculate_policy_costs(uid, experiment_name, policy_id, agent_name, agent_ar
     return result
 
 def evaluate_policy_costs_with_information_relaxation(uid, experiment_name, init_state, sample_path, warm_up_periods, env_args, penalty_coefficients, alp_coefficients, group_id, grb_env, job_id):
+    '''
+    This function evaluates the costs of different policies and their gaps to the information relaxation lower bounds.
+    '''
     init_state = tuple(np.array(item) for item in init_state)
     sample_path = np.array(sample_path)
 
@@ -923,6 +926,9 @@ def evaluate_policy_costs_with_information_relaxation(uid, experiment_name, init
     return summary_rows
 
 def coefficient_training_test(uid, experiment_name, env_args, group_id, grb_env, job_id):
+    '''
+    This function tests the training of penalty coefficients using Benders decomposition and evaluates the resulting coefficients by calculating the penalized lower bound and zero-penalty lower bound with the same initial state and sample path.
+    '''
     test_state = env_args['reset_params']['init_state']
     test_state = tuple(np.array(item) for item in test_state)
     config_for_train = get_config_by_type('infinite_custom', args=env_args)
@@ -955,6 +961,49 @@ def coefficient_training_test(uid, experiment_name, env_args, group_id, grb_env,
     with open(output_file, 'a') as f:
         f.write(json.dumps(result) + '\n')
 
+def coefficient_out_of_sample_test(uid, experiment_name, env_args, coefficients, sample_path, group_id, grb_env, job_id):
+    '''
+    This function tests the out-of-sample performance of the trained coefficients by evaluating the penalized lower bound and zero-penalty lower bound on same initial state but different sample path that were not seen during training.
+    '''
+    test_state = env_args['reset_params']['init_state']
+    test_state = tuple(np.array(item) for item in test_state)
+    config_for_train = get_config_by_type('infinite_custom', args=env_args)
+    env = config_for_train.env
+    generating_function = LinearPenaltyFunction(env=env, coefficients=coefficients)
+    zero_penalized_args = {
+        'current_decision_var_type': 'integer',
+        'future_decision_var_type': 'integer',
+        'is_myopic': False,
+        'is_include_discount_factor': False,
+        'sample_path': sample_path,
+        'generating_function': generating_function,
+        'penalty_ratio': 0,
+        'grb_env': grb_env,
+    }
+    penalized_args = {
+        'current_decision_var_type': 'integer',
+        'future_decision_var_type': 'integer',
+        'is_myopic': False,
+        'is_include_discount_factor': False,
+        'sample_path': sample_path,
+        'generating_function': generating_function,
+        'penalty_ratio': 1,
+        'grb_env': grb_env,
+    }
+    zero_penalized_agent = InfinitePenalizedSAAAgent(env=env, discount_factor=env.discount_factor, **zero_penalized_args)
+    penalized_agent = InfinitePenalizedSAAAgent(env=env, discount_factor=env.discount_factor, **penalized_args)
+    zero_penalized_information_relaxation_cost, _, _ = zero_penalized_agent.direct_solve(test_state)
+    penalized_information_relaxation_cost, _, _ = penalized_agent.direct_solve(test_state)
+    result = {
+            'uid': uid,
+            'group_id': group_id,
+            'experiment_name': experiment_name,
+            'penalized_lower_bound_objective': penalized_information_relaxation_cost,
+            'zero_penalized_lower_bound_objective': zero_penalized_information_relaxation_cost,
+            'gap_between_penalized_and_zero': penalized_information_relaxation_cost - zero_penalized_information_relaxation_cost,
+            'coefficients': coefficients,
+        }
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Example of using argparse to pass in a list of lists.")
     parser.add_argument('--params', help='Input JSON-encoded list of lists', type=str)
@@ -978,6 +1027,18 @@ if __name__ == '__main__':
     #calculate_penalized_lowerbound_with_same_initial_state(**params, lowerbound_args=lowerbound_args, generating_function=generating_function, job_id=args.job_id)
     # calculate_information_relexation_costs(**params, train_sample_path_num=30,test_sample_path_num=8, job_id=args.job_id)
     grb_env = acquire_grb_env({"Threads": 0}, verbose=False, wait=15)
+    failed_jobs = []
     for param in params:
         # pprint(param['env_args'])
-        coefficient_training_test(**param, grb_env=grb_env, job_id=args.job_id)
+        try:
+            # coefficient_training_test(**param, grb_env=grb_env, job_id=args.job_id)
+            # coefficient_out_of_sample_test(**param, grb_env=grb_env, job_id=args.job_id)
+            evaluate_policy_costs_with_information_relaxation(**param, grb_env=grb_env, job_id=args.job_id)
+        except Exception as e:
+            print(f"Job failed for param: {param}, error: {e}")
+            failed_jobs.append(param)
+        #coefficient_training_test(**param, grb_env=grb_env, job_id=args.job_id)
+    if failed_jobs:
+        with open(dat_file, 'w') as f:
+            f.writelines(failed_jobs)
+        print(f"Saved {len(failed_jobs)} group commands to {dat_file}")

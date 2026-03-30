@@ -96,9 +96,9 @@ class SimulateEvaluationResult:
                     }
                 pickle.dump(res, f)
         for (group_id, policy_id), stats in self.zero_penalized_gap.items():
-            self.zero_penalized_improvement[(group_id, policy_id)] = self.zero_penalized_gap[(group_id, policy_id)] / self.policy_costs[(group_id, policy_id)].mean / 0.01
+            self.zero_penalized_improvement[(group_id, policy_id)] = self.zero_penalized_gap[(group_id, policy_id)] / self.penalized_information_relaxation_cost[(group_id)].mean / 0.01
         for (group_id, policy_id), stats in self.penalized_gap.items():
-            self.penalized_improvement[(group_id, policy_id)] = self.penalized_gap[(group_id, policy_id)] / self.policy_costs[(group_id, policy_id)].mean / 0.01
+            self.penalized_improvement[(group_id, policy_id)] = self.penalized_gap[(group_id, policy_id)] / self.penalized_information_relaxation_cost[(group_id)].mean / 0.01
         for group_id, stats in self.gap_to_information_relaxation.items():
             self.improvement[group_id] = self.gap_to_information_relaxation[group_id] / self.policy_costs[(group_id, policy_id)].mean / 0.01
     
