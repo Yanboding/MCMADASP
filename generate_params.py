@@ -163,8 +163,8 @@ def train_penalty_coefficients(env_args, experiment_name, sample_path_number):
     generating_function = LinearPenaltyFunction(env=env)
     agent = InfinitePenalizedSAAAgent(env=env, discount_factor=env.discount_factor, 
                                       sample_path_number=sample_path_number, 
-                                      current_decision_var_type='integer', 
-                                      future_decision_var_type='integer',
+                                      current_decision_var_type='continuous', 
+                                      future_decision_var_type='continuous',
                                       generating_function=generating_function, 
                                       is_myopic=False)
     env.reset_random_seeds()  # Reset random seeds before training again to ensure the same sample paths
@@ -223,7 +223,7 @@ def generate_test_paths_and_init_state(test_envs, experiment_name, test_sample_p
     for env_uid, env_args in test_envs.items():
         print(f"Processing env_uid: {env_uid}")
         obj_alp_train, alp_coefficients = train_alp_coefficients(env_args=env_args, experiment_name=experiment_name)
-        obj, direct_coefficients, info = train_penalty_coefficients(env_args=env_args, experiment_name=experiment_name, sample_path_number=256)
+        obj, direct_coefficients, info = train_penalty_coefficients(env_args=env_args, experiment_name=experiment_name, sample_path_number=512)
         print(f"Trained penalty coefficients for env_uid {env_uid}: {direct_coefficients}")
         max_length = 0
         sample_gen_args = copy.deepcopy(env_args)
@@ -298,25 +298,25 @@ def generate_train_env(test_envs, experiment_name, number_replication, dat_file,
 
 
 if __name__ == '__main__':
-    # test_envs, experiment_name = generate_waiting_penalty_params(dat_file='table_waiting_penalty.dat')
-    # generate_high_priority_arrival_rate(dat_file='table_high_priority_arrival_rate.dat')
-    # results = generate_test_paths_and_init_state(
-    #     test_envs=test_envs,
-    #     experiment_name=experiment_name, 
-    #     test_sample_path_num=5000,
-    #     warm_up_periods=0,
-    #     num_periods=None,
-    #     dat_file='table.dat',
-    #     num_groups=998,  # divide into N groups
-    # )
-    test_envs, experiment_name = generate_inital_state_variation(dat_file='initial_state_variation_impact.dat')
-    results = generate_train_env(
+    test_envs, experiment_name = generate_waiting_penalty_params(dat_file='table_waiting_penalty.dat')
+    generate_high_priority_arrival_rate(dat_file='table_high_priority_arrival_rate.dat')
+    results = generate_test_paths_and_init_state(
         test_envs=test_envs,
-        experiment_name=experiment_name,
-        number_replication=5000,
+        experiment_name=experiment_name, 
+        test_sample_path_num=5000,
+        warm_up_periods=0,
+        num_periods=None,
         dat_file='table.dat',
         num_groups=998,  # divide into N groups
     )
+    # test_envs, experiment_name = generate_inital_state_variation(dat_file='initial_state_variation_impact.dat')
+    # results = generate_train_env(
+    #     test_envs=test_envs,
+    #     experiment_name=experiment_name,
+    #     number_replication=5000,
+    #     dat_file='table.dat',
+    #     num_groups=998,  # divide into N groups
+    # )
 
 
 
