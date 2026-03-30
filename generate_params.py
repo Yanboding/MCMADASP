@@ -125,7 +125,7 @@ def generate_inital_state_variation(dat_file):
     env_args = get_config_by_type(config_type).args
     initial_states = [([2, 2, 0], [0, 0, 0], [1, 2]),
                       ([5, 5, 0], [0, 0, 0], [1, 2]),
-                      ([5, 5, 0], [3, 3, 0], [1, 2]),]
+                      ([5, 5, 0], [3, 3, 0], [1, 2]),][:]
     lines_to_write = []
     test_params = {}
     for i, initial_state in enumerate(initial_states, start=1):
@@ -167,8 +167,12 @@ def train_penalty_coefficients(env_args, experiment_name, sample_path_number):
                                       future_decision_var_type='continuous',
                                       generating_function=generating_function, 
                                       is_myopic=False)
+    init_state = None if 'init_state' not in env_args.get('reset_params', {}) else env_args['reset_params']['init_state']
+    print(f"Training penalty coefficients for env_uid {get_uid(env_args)} with init_state: {init_state} and sample_path_number: {sample_path_number}")
+    if init_state is not None:
+        init_state = tuple(np.array(item) for item in init_state)
     env.reset_random_seeds()  # Reset random seeds before training again to ensure the same sample paths
-    obj, direct_coefficients, info = agent.benders_decomposition_train(coefficient_bound=GRB.INFINITY, parallel=True, verbose=False)
+    obj, direct_coefficients, info = agent.benders_decomposition_train(coefficient_bound=GRB.INFINITY, init_state = init_state, parallel=True, verbose=False)
     print('Obejctive from Benders decomposition training:', obj) # Full MILP:39050.05571672409 # LP: 21524.097118570513
     print('Coefficients from Benders decomposition training:', direct_coefficients)
 
@@ -233,8 +237,8 @@ def generate_test_paths_and_init_state(test_envs, experiment_name, test_sample_p
         config_for_sample_path = get_config_by_type('infinite_custom', args=sample_gen_args)
         env_for_sample_path = config_for_sample_path.env
         for command_id in range(test_sample_path_num):
-            init_state = env_for_sample_path.generate_initial_state()
-            init_state = list(item.tolist() for item in init_state)
+            init_state = env_for_sample_path.generate_initial_state() if 'init_state' not in env_args.get('reset_params', {}) else env_args['reset_params']['init_state']
+            init_state = tuple(np.array(item).tolist() for item in init_state)
             if num_periods is None:
                 sample_path = env_for_sample_path.reset_arrivals(stop_time=warm_up_periods)
                 additional_sample_path = env_for_sample_path.reset_arrivals()
@@ -298,12 +302,13 @@ def generate_train_env(test_envs, experiment_name, number_replication, dat_file,
 
 
 if __name__ == '__main__':
-    test_envs, experiment_name = generate_waiting_penalty_params(dat_file='table_waiting_penalty.dat')
-    generate_high_priority_arrival_rate(dat_file='table_high_priority_arrival_rate.dat')
+    # test_envs, experiment_name = generate_waiting_penalty_params(dat_file='table_waiting_penalty.dat')
+    # test_envs, experiment_name = generate_high_priority_arrival_rate(dat_file='table_high_priority_arrival_rate.dat')
+    test_envs, experiment_name = generate_inital_state_variation(dat_file='initial_state_variation_impact.dat')
     results = generate_test_paths_and_init_state(
         test_envs=test_envs,
         experiment_name=experiment_name, 
-        test_sample_path_num=5000,
+        test_sample_path_num=1,
         warm_up_periods=0,
         num_periods=None,
         dat_file='table.dat',

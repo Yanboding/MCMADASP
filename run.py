@@ -961,15 +961,14 @@ def coefficient_training_test(uid, experiment_name, env_args, group_id, grb_env,
     with open(output_file, 'a') as f:
         f.write(json.dumps(result) + '\n')
 
-def coefficient_out_of_sample_test(uid, experiment_name, env_args, coefficients, sample_path, group_id, grb_env, job_id):
+def coefficient_out_of_sample_test(uid, experiment_name, env_args, penalty_coefficients, init_state, sample_path, warm_up_periods, group_id, grb_env, job_id, alp_coefficients):
     '''
     This function tests the out-of-sample performance of the trained coefficients by evaluating the penalized lower bound and zero-penalty lower bound on same initial state but different sample path that were not seen during training.
     '''
-    test_state = env_args['reset_params']['init_state']
-    test_state = tuple(np.array(item) for item in test_state)
+    test_state = tuple(np.array(item) for item in init_state)
     config_for_train = get_config_by_type('infinite_custom', args=env_args)
     env = config_for_train.env
-    generating_function = LinearPenaltyFunction(env=env, coefficients=coefficients)
+    generating_function = LinearPenaltyFunction(env=env, coefficients=penalty_coefficients)
     zero_penalized_args = {
         'current_decision_var_type': 'integer',
         'future_decision_var_type': 'integer',
@@ -1001,8 +1000,12 @@ def coefficient_out_of_sample_test(uid, experiment_name, env_args, coefficients,
             'penalized_lower_bound_objective': penalized_information_relaxation_cost,
             'zero_penalized_lower_bound_objective': zero_penalized_information_relaxation_cost,
             'gap_between_penalized_and_zero': penalized_information_relaxation_cost - zero_penalized_information_relaxation_cost,
-            'coefficients': coefficients,
+            'coefficients': penalty_coefficients,
         }
+    output_file = os.path.join('experiments', 'results', experiment_name, f'{job_id}.jsonl')
+    os.makedirs(os.path.dirname(output_file), exist_ok=True)
+    with open(output_file, 'a') as f:
+        f.write(json.dumps(result) + '\n')
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Example of using argparse to pass in a list of lists.")
@@ -1030,15 +1033,6 @@ if __name__ == '__main__':
     failed_jobs = []
     for param in params:
         # pprint(param['env_args'])
-        try:
-            # coefficient_training_test(**param, grb_env=grb_env, job_id=args.job_id)
-            # coefficient_out_of_sample_test(**param, grb_env=grb_env, job_id=args.job_id)
-            evaluate_policy_costs_with_information_relaxation(**param, grb_env=grb_env, job_id=args.job_id)
-        except Exception as e:
-            print(f"Job failed for param: {param}, error: {e}")
-            failed_jobs.append(param)
-        #coefficient_training_test(**param, grb_env=grb_env, job_id=args.job_id)
-    if failed_jobs:
-        with open(dat_file, 'w') as f:
-            f.writelines(failed_jobs)
-        print(f"Saved {len(failed_jobs)} group commands to {dat_file}")
+        # coefficient_training_test(**param, grb_env=grb_env, job_id=args.job_id)
+        coefficient_out_of_sample_test(**param, grb_env=grb_env, job_id=args.job_id)
+        # evaluate_policy_costs_with_information_relaxation(**param, grb_env=grb_env, job_id=args.job_id)

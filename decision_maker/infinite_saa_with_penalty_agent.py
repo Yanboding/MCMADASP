@@ -54,7 +54,6 @@ class InfinitePenalizedSAAAgent(InfiniteRTAgent):
         self.is_include_discount_factor = is_include_discount_factor
         self.direct_model, self.state_linking_constraints, self.action_t_var = None, None, None
         self.master_model, self.workers = None, None
-        print(self.delta[-1])
 
 
     def set_sample_path(self, sample_path):
@@ -383,7 +382,7 @@ class InfinitePenalizedSAAAgent(InfiniteRTAgent):
                                             objective_builder_fn=None,
                                             cut_gradient_fn=None,
                                             verbose=verbose))
-            print(f'Finished build {scenario_id} in {time.time()-start} seconds')
+            print(f'Finished build {scenario_id} with sample path length {len(self.delta[scenario_id])} in {time.time()-start} seconds')
         benders_solver = BendersDecompositionSolver(master_model=master_model,
                                                     workers=workers,
                                                     imm_cost=None,
@@ -439,13 +438,13 @@ if __name__ == "__main__":
     import matplotlib.pyplot as plt
     config = get_config_by_type('toy')
     env = config.env
-    test_state = (np.array([2, 2, 0]), np.array([0, 0, 0]), np.array([1, 2]))
+    test_state = (np.array([5, 5, 0]), np.array([0, 0, 0]), np.array([1, 2]))
     test_action = (np.array([[4, 0],
                              [1, 2],
                              [0, 0]]), np.array([1, 0, 0]))
     #coefficients = [0] * len(coefficients)
     generating_function = LinearPenaltyFunction(env=env)
-    agent = InfinitePenalizedSAAAgent(env=env, discount_factor=env.discount_factor, sample_path_number=256, generating_function=generating_function, is_myopic=False)
+    agent = InfinitePenalizedSAAAgent(env=env, discount_factor=env.discount_factor, sample_path_number=512, generating_function=generating_function, is_myopic=False)
     # env.reset_random_seeds()
     # print('Test state:', test_state)
     # obj, action, info = agent.benders_decomposition_solve(test_state, action=None, parallel=True, verbose=False)
@@ -457,13 +456,13 @@ if __name__ == "__main__":
     # print('Action from direct solve with trained coefficients:', action)
     #coefficients, obj, info = agent.train(verbose=True)
     #print("Trained coefficients:", coefficients)
-    # env.reset_random_seeds()  # Reset random seeds before training again to ensure the same sample paths
-    # start = time.time()
-    # obj, direct_coefficients, info = agent.benders_decomposition_train(coefficient_bound=GRB.INFINITY, parallel=True, init_state=test_state, verbose=False)
-    # end = time.time()
-    # print(f"Benders decomposition training time: {end - start} seconds")
-    # print('Obejctive from Benders decomposition training:', obj) # 46799.67030716401
-    # print('Coefficients from Benders decomposition training:', direct_coefficients)
+    env.reset_random_seeds()  # Reset random seeds before training again to ensure the same sample paths
+    start = time.time()
+    obj, direct_coefficients, info = agent.benders_decomposition_train(coefficient_bound=GRB.INFINITY, parallel=True, init_state=test_state, verbose=False)
+    end = time.time()
+    print(f"Benders decomposition training time: {end - start} seconds")
+    print('Obejctive from Benders decomposition training:', obj) # 46799.67030716401
+    print('Coefficients from Benders decomposition training:', direct_coefficients)
     # env.reset_random_seeds()  # Reset random seeds before training again to ensure the same sample paths
     # start = time.time()
     # obj, reformulate_coefficients, info = agent.reformulate_train(coefficient_bound=GRB.INFINITY, verbose=False)
@@ -474,7 +473,7 @@ if __name__ == "__main__":
     # LP with imediate action have integer constraint.
     #direct_coefficients = [9.281778046800301, 18.406982109217235, 211.7776403012647, 1.8317253609339224, 17.076982109219387, 211.1143069679426, 454.97928707153835, 432.75496421837806, 390.1621061706687, 396.04000000002765, 391.2989818770426, 395.9409999999887, -190.9698684057874, 0.0, 1.9440832013001023e-12, 0.32999999999992724, 0.0]
     # MILP with imediate action have integer constraint.
-    direct_coefficients = [9.268191043987258, 18.399990576954398, 211.77769372497636, 1.779482715174383, 17.06978530519917, 211.11833006741278, 454.88242227211236, 432.7775535054471, 390.28763575751765, 396.03190327939177, 391.3760703787603, 395.9341759642607, -190.85357865534522, 0.0, -0.0003694891595442083, 0.3287273151188725, 0.0] 
+    # direct_coefficients = [9.268191043987258, 18.399990576954398, 211.77769372497636, 1.779482715174383, 17.06978530519917, 211.11833006741278, 454.88242227211236, 432.7775535054471, 390.28763575751765, 396.03190327939177, 391.3760703787603, 395.9341759642607, -190.85357865534522, 0.0, -0.0003694891595442083, 0.3287273151188725, 0.0] 
     # FULL MILP
     #direct_coefficients = [9.147308288146675, 19.002800405200663, 205.95900694128812, 3.1162106277479382, 14.888631287719091, 203.99516141290258, 497.61674182911685, 469.0295179497762, 389.4843489749785, 381.84105713537247, 383.43078908601046, 384.1750962073562, -181.40992640734066, 0.0, 0.5656574831678151, 3.221326122856308, 0.0]
     env.reset_random_seeds()
