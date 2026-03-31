@@ -1034,5 +1034,5 @@ if __name__ == '__main__':
     for param in params:
         # pprint(param['env_args'])
         # coefficient_training_test(**param, grb_env=grb_env, job_id=args.job_id)
-        coefficient_out_of_sample_test(**param, grb_env=grb_env, job_id=args.job_id)
-        # evaluate_policy_costs_with_information_relaxation(**param, grb_env=grb_env, job_id=args.job_id)
+        # coefficient_out_of_sample_test(**param, grb_env=grb_env, job_id=args.job_id)
+        evaluate_policy_costs_with_information_relaxation(**param, grb_env=grb_env, job_id=args.job_id)
