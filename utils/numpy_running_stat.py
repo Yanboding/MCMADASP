@@ -79,10 +79,10 @@ class RunningStats:
         return half
 
     # ... (confidence_interval and __repr__ remain the same) ...
-    def confidence_interval(self, confidence: float = 0.95) -> tuple[float, float]:
-        if self._n < 2: return self.mean, self.mean
+    def confidence_interval(self, confidence: float = 0.95) -> str:
+        if self._n < 2: return f"{self.mean} \pm 0.0"
         half_window = self.half_window(confidence)
-        return self.mean - half_window, self.mean + half_window
+        return f"{round(self.mean)} \pm {round(half_window,1)}"
 
     def __repr__(self) -> str:
         return f"RunningStats(n={self.n}, mean={self.mean:.4f}, std={self.std:.4f}, 95% CI={self.mean:.4f} \pm {self.half_window(0.95):.4f})"
