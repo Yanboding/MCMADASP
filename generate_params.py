@@ -337,9 +337,9 @@ if __name__ == '__main__':
     results = generate_test_paths_and_init_state(
         test_envs=test_envs,
         experiment_name=experiment_name, 
-        test_sample_path_num=5,
+        test_sample_path_num=2000,
         warm_up_periods=1,
-        num_periods=5,
+        num_periods=999,
         dat_file='table.dat',
         num_groups=998,  # divide into N groups
     )
