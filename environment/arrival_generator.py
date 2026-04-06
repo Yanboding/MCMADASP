@@ -15,8 +15,7 @@ class MultiClassPoissonArrivalGenerator:
                  is_precompute_state=False, 
                  use_qmc=True, 
                  max_periods=100, 
-                 geom_p=0.1,
-                 qmc_seed=123):
+                 geom_p=0.1):
         self.mean_arrival = mean_arrival_rate
         self.maximum_arrival = maximum_arrival
         self.type_probs = np.asarray(type_probs)
@@ -67,10 +66,10 @@ class MultiClassPoissonArrivalGenerator:
         ])
         return arrivals
     
-    def simulate_arrival_path(self, uniform_samples,  size):
+    def simulate_arrival_path(self, uniform_samples,  size, is_positive_integer_support=False):
         """Simulate a single arrival path given uniform samples.
         uniform_samples: shape (1 + max_periods + max_periods * (num_types - 1),)
-        0: stop time
+        0: last decision period (geometric length)
         1:max_periods: determine total N in each period
         max_periods+1:: determine types for each period
         total dim 1 + max_periods * num_types
@@ -80,7 +79,11 @@ class MultiClassPoissonArrivalGenerator:
         u_len = uniform_samples[:, 0]
         # Inverse Transform on Geometric Distribution
         # We clip at max_horizon to prevent array out-of-bounds
-        lengths = (geom.ppf(u_len, self.geom_p)-1).astype(int)
+        if is_positive_integer_support:
+            # Geometric distribution with support {1, 2, ...} (shifted by 1)
+            lengths = geom.ppf(u_len, self.geom_p).astype(int)
+        else:
+            lengths = (geom.ppf(u_len, self.geom_p)-1).astype(int)
         lengths = np.minimum(lengths, self.max_periods)
         # --- PHASE B: Determine Total Arrivals Per Period ---
         # Dimensions 1 to 1 + max_horizon
@@ -132,7 +135,7 @@ class MultiClassPoissonArrivalGenerator:
             arrivals.append(path_slice)
         return arrivals
     
-    def mc_rvs(self, size=1):
+    def mc_rvs(self, size=1, is_positive_integer_support=False):
         """Standard Monte Carlo generation using PRNG for both N and the multinomial split.
         size: sample of paths
         0: stop time
@@ -142,9 +145,9 @@ class MultiClassPoissonArrivalGenerator:
         """
         # 1. Generate Uniform PRNG samples
         u_mc = self.rng.uniform(size=(size, 1 + self.max_periods + self.max_periods * (self.num_types - 1)))
-        return self.simulate_arrival_path(u_mc, size)
+        return self.simulate_arrival_path(u_mc, size, is_positive_integer_support=is_positive_integer_support)
 
-    def quasi_rvs(self, size=1):
+    def quasi_rvs(self, size=1, is_positive_integer_support=False):
         """Quasi-Monte Carlo (QMC) generation using Sobol sequence for both N and the multinomial split.
         size: sample of paths
         0: stop time
@@ -157,7 +160,7 @@ class MultiClassPoissonArrivalGenerator:
         # Get 'size' points drawn from the d-dimensional hypercube [0,1)^d
         # Shape: (size, 1 + maximum_arrival)
         u_qmc = self.qmc_sampler.random(n=size)
-        return self.simulate_arrival_path(u_qmc, size)
+        return self.simulate_arrival_path(u_qmc, size, is_positive_integer_support=is_positive_integer_support)
 
     def arrival_type_rvs(self, arrival_num, size=1):
         arrivals = self.rng.multinomial(arrival_num, self.type_probs,size=size)
@@ -296,9 +299,12 @@ if __name__ == "__main__":
         random_seed=42,
         is_precompute_state=False,
         use_qmc=True,
-        max_periods=100,
-        qmc_seed=888
+        max_periods=int(geom.ppf(0.9999, p=0.01)), # to ensure that the probability of generating more than max_periods arrivals is very small
+        geom_p=0.01
     )
 
-    print(geom.ppf(0.8, 0.05))
-    print(geom.cdf(100, p=0.05))
+    delta = generator_qmc.rvs(size=1024)
+    average_length = np.mean([len(path) for path in delta])
+    print(f"Average path length (QMC): {average_length:.2f}")
+    average_arrivals_per_period = np.mean([np.sum(path, axis=0) for path in delta], axis=0)
+    print(f"Average arrivals per type (QMC): {average_arrivals_per_period}")

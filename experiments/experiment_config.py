@@ -307,12 +307,13 @@ class ExperimentConfig:
         type_probs = arrival_rates / total_arrival_rate_mean
         if maximum_total_arrival is None:
             maximum_total_arrival = 3 * total_arrival_rate_mean
+        geom_p = 1 - discount_factor
         arrival_generator = MultiClassPoissonArrivalGenerator(total_arrival_rate_mean, maximum_total_arrival,
                                                               type_probs,
                                                               random_seed=arrival_random_seed,
                                                               use_qmc=True, 
-                                                              max_periods=int(geom.ppf(0.999, p=1-discount_factor)), # to ensure that the probability of generating more than max_periods arrivals is very small
-                                                              geom_p=(1-discount_factor),
+                                                              max_periods=int(geom.ppf(0.9999, p=geom_p)), # to ensure that the probability of generating more than max_periods arrivals is very small
+                                                              geom_p=geom_p,
                                                               is_precompute_state=False)
         holding_cost_by_day_by_type = np.array(holding_cost_by_day_by_type)
         holding_cost_fn = HoldingCostCalculator(holding_cost_by_day_by_type)

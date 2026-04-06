@@ -230,7 +230,7 @@ class RTEnv:
             self.new_arrivals = self.reset_arrivals()
         else:
             self.new_arrivals = new_arrivals
-        self.decision_epoch = len(self.new_arrivals)
+        self.decision_epoch = len(self.new_arrivals) + 1
         if init_state == None:
             init_state = self.reset_initial_state(percentage_occupied, self.new_arrivals[0])
         bookings, overtimes, waitlist = init_state
@@ -304,6 +304,7 @@ class RTEnv:
         cost = self.cost_fn(self.state, action)
         post_action_state = self.post_action_state(self.state, action)
         post_action_regular_bookings, post_action_overtimes, post_action_waitlist = post_action_state
+        print('time:', self.t + self.tau)
         done = self.t + self.tau == self.decision_epoch
         # record performance metric
         # implement info: include the type-dependent waiting times and overtime use
@@ -318,12 +319,12 @@ class RTEnv:
         self.postponing_decision_number[self.tau] = post_action_waitlist
         self.waiting_number[self.tau] = waitlist
         # update state
-        self.tau += 1
-        if self.t + self.tau > self.decision_epoch:
+        if self.t + self.tau >= self.decision_epoch:
             delta = np.zeros(self.num_types, dtype=int)
         else:
             delta = self.new_arrivals[self.t + self.tau - 1]
         self.state = self.post_action_state_to_new_state(post_action_state, delta)
+        self.tau += 1
         return self.state, cost, done, {'wait_time_by_type': self.wait_time_by_type, 
                                         'overtime': self.overtime, 
                                         'target_violations': self.waiting_time_target_violations,

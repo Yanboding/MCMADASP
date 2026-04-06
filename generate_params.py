@@ -144,6 +144,29 @@ def generate_inital_state_variation(dat_file):
         f.writelines(lines_to_write)
     return test_params, experiment_name
 
+def generate_steady_state_distribution_variation(dat_file):
+    # This function can be implemented to generate parameters for testing the impact of different steady state distributions on the performance of the agents.
+    experiment_name = 'steady_state_distribution_variation_impact'
+    config_type = 'toy'
+    env_args = get_config_by_type(config_type).args
+    initial_state = ([0, 0, 0], [0, 0, 0], [1, 2])
+    reset_params = {
+            "init_state": initial_state,
+        }
+    env_args['reset_params'] = reset_params
+    lines_to_write = []
+    test_params = {}
+    save_params = {
+                    'experiment_name': experiment_name,
+                    'env_args': env_args,
+                    }
+    env_uid = get_uid(env_args)
+    lines_to_write.append(f"{1} python run.py --params '" + json.dumps(save_params) + "'\n")
+    test_params[env_uid] = copy.deepcopy(env_args)
+    with open(dat_file, 'w') as f:
+        f.writelines(lines_to_write)
+    return test_params, experiment_name
+
 
 def train_penalty_coefficients(env_args, experiment_name, sample_path_number):
     '''
@@ -222,12 +245,15 @@ def train_alp_coefficients(env_args, experiment_name):
 
 
 def generate_test_paths_and_init_state(test_envs, experiment_name, test_sample_path_num, warm_up_periods=0, num_periods=None, dat_file=None, num_groups=None):
+    '''
+    Inital state is considered as period 1. sample path will start from period 2.
+    '''
     results = []
     
     for env_uid, env_args in test_envs.items():
         print(f"Processing env_uid: {env_uid}")
         obj_alp_train, alp_coefficients = train_alp_coefficients(env_args=env_args, experiment_name=experiment_name)
-        obj, direct_coefficients, info = train_penalty_coefficients(env_args=env_args, experiment_name=experiment_name, sample_path_number=512)
+        obj, direct_coefficients, info = train_penalty_coefficients(env_args=env_args, experiment_name=experiment_name, sample_path_number=256)
         print(f"Trained penalty coefficients for env_uid {env_uid}: {direct_coefficients}")
         max_length = 0
         sample_gen_args = copy.deepcopy(env_args)
@@ -240,8 +266,10 @@ def generate_test_paths_and_init_state(test_envs, experiment_name, test_sample_p
             init_state = env_for_sample_path.generate_initial_state() if 'init_state' not in env_args.get('reset_params', {}) else env_args['reset_params']['init_state']
             init_state = tuple(np.array(item).tolist() for item in init_state)
             if num_periods is None:
-                sample_path = env_for_sample_path.reset_arrivals(stop_time=warm_up_periods)
+                sample_path = env_for_sample_path.reset_arrivals(stop_time=warm_up_periods-1)
                 additional_sample_path = env_for_sample_path.reset_arrivals()
+                print("sample path: ")
+                print(len(sample_path))
                 sample_path = np.append(sample_path, additional_sample_path, axis=0) if len(sample_path) > 0 else additional_sample_path
             else:
                 sample_path = env_for_sample_path.reset_arrivals(stop_time=num_periods)
@@ -304,13 +332,14 @@ def generate_train_env(test_envs, experiment_name, number_replication, dat_file,
 if __name__ == '__main__':
     # test_envs, experiment_name = generate_waiting_penalty_params(dat_file='table_waiting_penalty.dat')
     # test_envs, experiment_name = generate_high_priority_arrival_rate(dat_file='table_high_priority_arrival_rate.dat')
-    test_envs, experiment_name = generate_inital_state_variation(dat_file='initial_state_variation_impact.dat')
+    # test_envs, experiment_name = generate_inital_state_variation(dat_file='initial_state_variation_impact.dat')
+    test_envs, experiment_name = generate_steady_state_distribution_variation(dat_file='steady_state_distribution_variation_impact.dat')
     results = generate_test_paths_and_init_state(
         test_envs=test_envs,
         experiment_name=experiment_name, 
-        test_sample_path_num=5000,
-        warm_up_periods=0,
-        num_periods=None,
+        test_sample_path_num=5,
+        warm_up_periods=1,
+        num_periods=5,
         dat_file='table.dat',
         num_groups=998,  # divide into N groups
     )

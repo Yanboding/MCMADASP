@@ -42,14 +42,14 @@ class InfinitePenalizedSAAAgent(InfiniteRTAgent):
         # self.W_0, self.U, self.V, self.W = self.get_coefficients(coefficients)
         self.delta = []
         if self.sample_path is not None:
-            self.set_sample_path(self.sample_path[1:])
+            self.set_sample_path(self.sample_path)
         # sample path length is sample_path_length
         if not is_myopic and sample_path is None:
             if self.sample_path_length is None:
                 if is_quasi_MC:
-                    self.delta = self.arrival_generator.quasi_rvs(size=self.sample_path_number)
+                    self.delta = self.arrival_generator.quasi_rvs(size=self.sample_path_number, is_positive_integer_support=True)
                 else:
-                    self.delta = self.arrival_generator.mc_rvs(size=self.sample_path_number) 
+                    self.delta = self.arrival_generator.mc_rvs(size=self.sample_path_number, is_positive_integer_support=True)
         self.benders_solver = None
         self.is_include_discount_factor = is_include_discount_factor
         self.direct_model, self.state_linking_constraints, self.action_t_var = None, None, None
@@ -121,7 +121,7 @@ class InfinitePenalizedSAAAgent(InfiniteRTAgent):
         self.add_action_space_constraints(model=model, state_var=state_t_var, action_var=action_t_var)
         # ---------- 1. objective ----------
         imm_cost = self.env.cost_fn(state_t_var, action_t_var, is_var=True)
-        total_cost = imm_cost * self.sample_path_number
+        future_cost = 0
         costs = [[imm_cost] for _ in range(self.sample_path_number)]
         actions = [[action_t_var] for _ in range(self.sample_path_number)]
         penalties = [[] for _ in range(self.sample_path_number)]
@@ -138,21 +138,19 @@ class InfinitePenalizedSAAAgent(InfiniteRTAgent):
                 action_var = self.get_action_var(model=model, advance_scheduling_type=self.future_decision_var_type)
                 self.add_action_space_constraints(model=model, state_var=state_var, action_var=action_var)
                 one_time_cost = self.env.cost_fn(state_var, action_var, is_var=True)
-                if self.is_include_discount_factor:
-                    cost = (self.discount_factor ** tau) * (one_time_cost + penalty)
-                else:
-                    cost = one_time_cost + penalty
-                total_cost += cost
+                cost = one_time_cost + penalty
+                future_cost += cost
                 costs[omega].append(one_time_cost)
                 actions[omega].append(action_var)
                 penalties[omega].append(penalty)
-        average_cost = total_cost / self.sample_path_number
-        model.setObjective(average_cost, GRB.MINIMIZE)
+        average_future_cost = future_cost / self.sample_path_number
+        model.setObjective(imm_cost + self.discount_factor * average_future_cost, GRB.MINIMIZE)
         info = {
             'costs': costs,
             'actions': actions,
             'penalties': penalties
         }
+        print('samplepath length', len(self.delta[0]), 'number', self.sample_path_number)
         return model, state_linking_constraints, action_t_var, info
     
     def master_builder_fn(self):
@@ -199,7 +197,7 @@ class InfinitePenalizedSAAAgent(InfiniteRTAgent):
             action_var = self.get_action_var(model=model, advance_scheduling_type=self.future_decision_var_type)
             self.add_action_space_constraints(model=model, state_var=state_var, action_var=action_var)
             cost += self.env.cost_fn(state_var, action_var, is_var=True)
-        model.setObjective(cost, GRB.MINIMIZE)
+        model.setObjective(self.discount_factor * cost, GRB.MINIMIZE)
         return model, action_linking_constraints, state_linking_constraints
 
 
@@ -264,7 +262,7 @@ class InfinitePenalizedSAAAgent(InfiniteRTAgent):
                 f.write(json.dumps(debug_info))
         return obj, action_t, info
     
-    def direct_solve(self, state, action=None, verbose=False):
+    def direct_solve(self, state, t,action=None, verbose=False):
         if self.direct_model is None:
             self.direct_model, self.state_linking_constraints, self.action_t_var, info = self.direct_builder_fn()
         flatten_state = flatten(state)
@@ -337,7 +335,7 @@ class InfinitePenalizedSAAAgent(InfiniteRTAgent):
         # Store trajectory for primal-based subgradient computation (needed for MILP subproblems
         # where Pi is unavailable). Each entry is (state_vars, action_vars, new_arrival).
         trajectory = []
-        for tau, new_arrival in enumerate(self.delta[scenario_id][1:], start=1):
+        for tau, new_arrival in enumerate(self.delta[scenario_id], start=2):
             penalty = self.generating_function.calculate_penalty(state_var, action_var, new_arrival, is_var=True, coefficients=coefficient_vars)
             cost += penalty
             trajectory.append((state_var, action_var, new_arrival))
@@ -351,18 +349,7 @@ class InfinitePenalizedSAAAgent(InfiniteRTAgent):
             cost += self.env.cost_fn(state_var, action_var, is_var=True)
         sub_model.setObjective(cost, GRB.MINIMIZE)
 
-        def objective_builder(model, coefficients):
-            coeff = np.asarray(coefficients, dtype=float)
-            penalty = gp.quicksum(coeff[i] * penalty_basis_terms[i] for i in range(len(penalty_basis_terms)))
-            model.setObjective(base_cost + penalty, GRB.MINIMIZE)
-
-        def cut_gradient_builder(model, _coefficients):
-            return np.array([
-                term.getValue() if hasattr(term, 'getValue') else float(term)
-                for term in penalty_basis_terms
-            ], dtype=float)
-
-        return sub_model, coefficient_linking_constraints, objective_builder, cut_gradient_builder
+        return sub_model, coefficient_linking_constraints
     
     def benders_decomposition_train(self, coefficient_bound=GRB.INFINITY, init_state = None, parallel=True, verbose=False):
         # This function can be implemented to train the coefficients using Benders decomposition, which can potentially handle larger sample sizes more efficiently.
@@ -374,7 +361,7 @@ class InfinitePenalizedSAAAgent(InfiniteRTAgent):
             grb_env = self.grb_env
             if parallel:
                 grb_env = acquire_grb_env({"Threads": 0}, verbose=False, wait=InfiniteRTAgent.TOKEN_WAIT)
-            worker_model, coefficient_linking_constraints, objective_builder, cut_gradient_builder = self.train_subproblem_builder_fn(env=grb_env, scenario_id=scenario_id, init_state=init_state)
+            worker_model, coefficient_linking_constraints = self.train_subproblem_builder_fn(env=grb_env, scenario_id=scenario_id, init_state=init_state)
             workers.append(SubproblemWorker(model=worker_model,
                                             link_rows=coefficient_linking_constraints,
                                             state_linking_constraints=None,
@@ -414,7 +401,7 @@ class InfinitePenalizedSAAAgent(InfiniteRTAgent):
             # add action constraint
             self.add_action_space_constraints(model=direct_model, state_var=state_var, action_var=action_var)
             cost = self.env.cost_fn(state_var, action_var, is_var=True)
-            for tau, new_arrival in enumerate(self.delta[omega][1:], start=1):
+            for tau, new_arrival in enumerate(self.delta[omega], start=2):
                 penalty = ratio * self.generating_function.calculate_penalty(state_var, action_var, new_arrival, is_var=True, coefficients=coefficients)
                 cost += penalty
                 state_var = self.get_next_state(model=direct_model,
@@ -439,21 +426,23 @@ if __name__ == "__main__":
     config = get_config_by_type('toy')
     env = config.env
     test_state = (np.array([5, 5, 0]), np.array([0, 0, 0]), np.array([1, 2]))
+    test_state = None
     test_action = (np.array([[4, 0],
                              [1, 2],
                              [0, 0]]), np.array([1, 0, 0]))
-    #coefficients = [0] * len(coefficients)
-    generating_function = LinearPenaltyFunction(env=env)
-    agent = InfinitePenalizedSAAAgent(env=env, discount_factor=env.discount_factor, sample_path_number=512, generating_function=generating_function, is_myopic=False)
+    coefficients = [9.281778046800301, 18.406982109217235, 211.7776403012647, 1.8317253609339224, 17.076982109219387, 211.1143069679426, 454.97928707153835, 432.75496421837806, 390.1621061706687, 396.04000000002765, 391.2989818770426, 395.9409999999887, -190.9698684057874, 0.0, 1.9440832013001023e-12, 0.32999999999992724, 0.0]
+    generating_function = LinearPenaltyFunction(env=env, coefficients=coefficients)
+    agent = InfinitePenalizedSAAAgent(env=env, discount_factor=env.discount_factor, sample_path_number=256, generating_function=generating_function, is_myopic=False)
     # env.reset_random_seeds()
     # print('Test state:', test_state)
-    # obj, action, info = agent.benders_decomposition_solve(test_state, action=None, parallel=True, verbose=False)
+    # obj, action, info = agent.solve(test_state, action=None, parallel=True, verbose=False)
     # print('Objective from Benders decomposition solve with trained coefficients:', obj)
     # print('Action from Benders decomposition solve with trained coefficients:', action)
 
-    # obj, action, info = agent.direct_solve(test_state, action=None, verbose=False)
-    # print('Objective from direct solve with trained coefficients:', obj)
+    # direct_obj, action, info = agent.direct_solve(test_state, action=None, verbose=False)
+    # print('Objective from direct solve with trained coefficients:', direct_obj)
     # print('Action from direct solve with trained coefficients:', action)
+    # print("gap between direct and Benders decomposition solve:", (direct_obj - obj)/direct_obj * 100)
     #coefficients, obj, info = agent.train(verbose=True)
     #print("Trained coefficients:", coefficients)
     env.reset_random_seeds()  # Reset random seeds before training again to ensure the same sample paths
@@ -471,11 +460,11 @@ if __name__ == "__main__":
     # print('Obejctive from reformulate training:', obj)
     # print('Coefficients from reformulate training:', reformulate_coefficients)
     # LP with imediate action have integer constraint.
-    #direct_coefficients = [9.281778046800301, 18.406982109217235, 211.7776403012647, 1.8317253609339224, 17.076982109219387, 211.1143069679426, 454.97928707153835, 432.75496421837806, 390.1621061706687, 396.04000000002765, 391.2989818770426, 395.9409999999887, -190.9698684057874, 0.0, 1.9440832013001023e-12, 0.32999999999992724, 0.0]
+    # direct_coefficients = [-1.3594687499522706, 17.558399553583435, 178.1039650297289, 1.1157723214212893, 15.68357812501477, 177.20034895834002, 419.8851277901139, 364.9403883928951, 328.4328333333303, 330.3090773809399, 332.4114291293804, 330.2100773809448, -153.41132459057022, 0.0, 0.028794642858840806, 0.8172321428525413, 0.0]
     # MILP with imediate action have integer constraint.
     # direct_coefficients = [9.268191043987258, 18.399990576954398, 211.77769372497636, 1.779482715174383, 17.06978530519917, 211.11833006741278, 454.88242227211236, 432.7775535054471, 390.28763575751765, 396.03190327939177, 391.3760703787603, 395.9341759642607, -190.85357865534522, 0.0, -0.0003694891595442083, 0.3287273151188725, 0.0] 
     # FULL MILP
-    #direct_coefficients = [9.147308288146675, 19.002800405200663, 205.95900694128812, 3.1162106277479382, 14.888631287719091, 203.99516141290258, 497.61674182911685, 469.0295179497762, 389.4843489749785, 381.84105713537247, 383.43078908601046, 384.1750962073562, -181.40992640734066, 0.0, 0.5656574831678151, 3.221326122856308, 0.0]
+    # direct_coefficients = [9.147308288146675, 19.002800405200663, 205.95900694128812, 3.1162106277479382, 14.888631287719091, 203.99516141290258, 497.61674182911685, 469.0295179497762, 389.4843489749785, 381.84105713537247, 383.43078908601046, 384.1750962073562, -181.40992640734066, 0.0, 0.5656574831678151, 3.221326122856308, 0.0]
     env.reset_random_seeds()
     penalized_obj, coefficients, info = agent.sample_mean_penalized_lowerbound(coefficients=direct_coefficients, init_state=test_state, verbose=False)
     print('Objective from sample mean penalized lower bound evaluation using original problem coefficients:', penalized_obj)

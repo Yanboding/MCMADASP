@@ -714,14 +714,13 @@ def calculate_policy_costs(uid, experiment_name, policy_id, agent_name, agent_ar
     else:
         t = 1
         s, _ = env.reset(init_state=init_state, t=t, new_arrivals=sample_path)
-
-    for tau in range(len(sample_path) - t + 1):
+    for tau in range(len(sample_path) - t + 2):
         current_t = t + tau
         _, action, _ = agent_instance.solve(s, current_t)
         next_state, cost, done, _ = env.step(action)
 
-        if current_t < len(sample_path):
-            new_arrivals = sample_path[current_t]
+        if current_t <= len(sample_path):
+            new_arrivals = sample_path[current_t - 1]
             penalty = local_generating_function.calculate_penalty(s, action, new_arrivals)
             penalties.append(_to_float(penalty))
 
@@ -740,7 +739,6 @@ def calculate_policy_costs(uid, experiment_name, policy_id, agent_name, agent_ar
                     'costs': costs,
                     'penalties': penalties,
                 }, f)
-
         if done:
             break
 
@@ -829,8 +827,8 @@ def evaluate_policy_costs_with_information_relaxation(uid, experiment_name, init
 
     zero_lowerbound_instance = InfinitePenalizedSAAAgent(env, discount_factor=env.discount_factor, **zero_lowerbound_args)
     penalized_lowerbound_instance = InfinitePenalizedSAAAgent(env, discount_factor=env.discount_factor, **penalized_lowerbound_args)
-    zero_information_relaxation_cost, _, _ = zero_lowerbound_instance.direct_solve(init_state)
-    penalized_information_relaxation_cost, _, _ = penalized_lowerbound_instance.direct_solve(init_state)
+    zero_information_relaxation_cost, _, _ = zero_lowerbound_instance.direct_solve(init_state, t=1)
+    penalized_information_relaxation_cost, _, _ = penalized_lowerbound_instance.direct_solve(init_state, t=1)
 
     policy_specs = [
         {
