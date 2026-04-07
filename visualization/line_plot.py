@@ -61,6 +61,8 @@ def approximate_value_plot(df, xlabel, ylabel, approx_labels, text_labels, plot_
 def approximate_value_plot_from_running_stats_dict(running_stats_dict, x_vals, xticks, xticklabels, xlabel, ylabel, plot_labels, title, save_file, is_show_text=True, is_set_x_color=False, ncol=2):
     fig, ax = plt.subplots(1, 1, figsize=(15, 10))
     lines = []
+    if x_vals is None:
+        x_vals = sorted(list(next(iter(running_stats_dict.values())).keys()))
     for label in plot_labels:
         running_stats_by_x_val = running_stats_dict[label]
         means = []

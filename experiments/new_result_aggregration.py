@@ -64,6 +64,8 @@ class SimulateEvaluationResult:
         self.gap_to_information_relaxation = defaultdict(RunningStats)
         self.improvement = defaultdict(RunningStats)
         
+        self.one_time_cost_by_policy = dd_dd_rs_factory()
+        self.number_of_periods = None
 
         pickle_file = os.path.join(self.directory_path, 'simulate_evaluation_result', 'scenario_results.pickle')
         # Make sure the parent directories exist
@@ -76,6 +78,7 @@ class SimulateEvaluationResult:
             self.zero_penalized_information_relaxation_cost = data['zero_penalized_information_relaxation_cost']
             self.penalized_information_relaxation_cost = data['penalized_information_relaxation_cost']
             self.gap_to_information_relaxation = data['gap_to_information_relaxation']
+            self.one_time_cost_by_policy = data['one_time_cost_by_policy']
         else:
             pattern = os.path.join(self.directory_path, self.file_pattern)
             jsonl_files = glob.glob(pattern)
@@ -93,6 +96,7 @@ class SimulateEvaluationResult:
                     'zero_penalized_information_relaxation_cost': self.zero_penalized_information_relaxation_cost,
                     'penalized_information_relaxation_cost': self.penalized_information_relaxation_cost,
                     'gap_to_information_relaxation': self.gap_to_information_relaxation,
+                    'one_time_cost_by_policy': self.one_time_cost_by_policy,
                     }
                 pickle.dump(res, f)
         for (group_id, policy_id), stats in self.zero_penalized_gap.items():
@@ -113,6 +117,10 @@ class SimulateEvaluationResult:
             self.gap_to_information_relaxation[group_id] += data['penalized_information_relaxation_cost'] - data['zero_information_relaxation_cost']
         self.zero_penalized_gap[(group_id, policy_id)] += data['gap_to_zero_information_relaxation']
         self.penalized_gap[(group_id, policy_id)] += data['gap_to_penalized_information_relaxation']
+        if self.number_of_periods is None:
+            self.number_of_periods = len(data['costs'])
+        for t, cost in enumerate(data['costs']):
+            self.one_time_cost_by_policy[policy_id][t] += cost
 
     def generate_table(self):
         opc_20 = 'acbffa87277103d172340d09fb3d6714'
@@ -138,7 +146,7 @@ class SimulateEvaluationResult:
         print(table)
 
 if __name__ == "__main__":
-    directory_path = os.path.join('.', 'experiments', 'results', "initial_state_variation_impact")
+    directory_path = os.path.join('.', 'experiments', 'results', "steady_state_distribution_variation_impact")
     # 5: 33.1989634321917 0.13896181129865617
     # 10: 36.687370600414376 0.1486390341192171
     # 20: 39.3842249382221 0.5255526412672854
@@ -165,4 +173,16 @@ if __name__ == "__main__":
     pprint(ser.improvement)
 
     ser.generate_table()
+    print(ser.one_time_cost_by_policy)
+    approximate_value_plot_from_running_stats_dict(running_stats_dict=ser.one_time_cost_by_policy,
+                                                   x_vals=None,
+                                                   xticks=None,
+                                                   xticklabels=None,
+                                                   xlabel='Time step',
+                                                   ylabel="One-time cost",
+                                                   plot_labels={'approx_hindsight': "Hindsight", 'approx_penalized_hindsight': "Penalized Hindsight", 'myopic': "Myopic", 'row_gen_alp': "ALP"},
+                                                   title=None,
+                                                   save_file='one_time_cost_by_policy.svg',
+                                                   is_show_text=False,
+                                                   is_set_x_color=True)
         
