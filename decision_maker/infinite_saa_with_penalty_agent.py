@@ -150,7 +150,6 @@ class InfinitePenalizedSAAAgent(InfiniteRTAgent):
             'actions': actions,
             'penalties': penalties
         }
-        print('samplepath length', len(self.delta[0]), 'number', self.sample_path_number)
         return model, state_linking_constraints, action_t_var, info
     
     def master_builder_fn(self):

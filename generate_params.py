@@ -267,7 +267,7 @@ def generate_test_paths_and_init_state(test_envs, experiment_name, test_sample_p
             init_state = env_for_sample_path.generate_initial_state() if 'init_state' not in env_args.get('reset_params', {}) else env_args['reset_params']['init_state']
             init_state = tuple(np.array(item).tolist() for item in init_state)
             if num_periods is None:
-                sample_path = env_for_sample_path.reset_arrivals(stop_time=warm_up_periods-1)
+                sample_path = env_for_sample_path.reset_arrivals(stop_time=warm_up_periods)
                 additional_sample_path = env_for_sample_path.reset_arrivals()
                 sample_path = np.append(sample_path, additional_sample_path, axis=0) if len(sample_path) > 0 else additional_sample_path
             else:
@@ -337,9 +337,9 @@ if __name__ == '__main__':
     results = generate_test_paths_and_init_state(
         test_envs=test_envs,
         experiment_name=experiment_name, 
-        test_sample_path_num=1,
-        warm_up_periods=1,
-        num_periods=5,
+        test_sample_path_num=5000,
+        warm_up_periods=100,
+        num_periods=None,
         dat_file='table.dat',
         num_groups=998,  # divide into N groups
     )

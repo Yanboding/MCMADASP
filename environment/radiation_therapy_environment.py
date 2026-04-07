@@ -304,7 +304,6 @@ class RTEnv:
         cost = self.cost_fn(self.state, action)
         post_action_state = self.post_action_state(self.state, action)
         post_action_regular_bookings, post_action_overtimes, post_action_waitlist = post_action_state
-        print('time:', self.t + self.tau)
         done = self.t + self.tau == self.decision_epoch
         # record performance metric
         # implement info: include the type-dependent waiting times and overtime use

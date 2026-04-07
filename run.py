@@ -763,9 +763,10 @@ def calculate_policy_costs(uid, experiment_name, policy_id, agent_name, agent_ar
         postponing_decisions.append(waitlist - advance_scheduling_decision.sum(axis=0))
 
     postponing_decisions = np.array(postponing_decisions).sum(axis=0) if postponing_decisions else np.zeros(env.num_types)
-    total_cost = float(sum(costs))
-    total_penalty = float(sum(penalties))
+    total_cost = float(sum(costs[warm_up_periods:]))
+    total_penalty = float(sum(penalties[warm_up_periods:]))
     penalized_cost = total_cost + total_penalty
+    warmup_state = tuple(np.array(item).tolist() for item in states[warm_up_periods])
 
     result = {
         'policy_id': policy_id,
@@ -774,6 +775,7 @@ def calculate_policy_costs(uid, experiment_name, policy_id, agent_name, agent_ar
         'penalized_cost': penalized_cost,
         'total_cost': total_cost,
         'total_penalty': total_penalty,
+        "warmup_state": warmup_state,
         'costs': [float(v) for v in costs],
         'penalties': [float(v) for v in penalties],
         'scheduled_patients': scheduled_patients,
@@ -809,7 +811,7 @@ def evaluate_policy_costs_with_information_relaxation(uid, experiment_name, init
         'future_decision_var_type': 'integer',
         'is_myopic': False,
         'is_include_discount_factor': False,
-        'sample_path': sample_path,
+        'sample_path': sample_path[warm_up_periods:],
         'generating_function': generating_function,
         'penalty_ratio': 0,
         'grb_env': grb_env,
@@ -819,7 +821,7 @@ def evaluate_policy_costs_with_information_relaxation(uid, experiment_name, init
         'future_decision_var_type': 'integer',
         'is_myopic': False,
         'is_include_discount_factor': False,
-        'sample_path': sample_path,
+        'sample_path': sample_path[warm_up_periods:],
         'generating_function': generating_function,
         'penalty_ratio': 1,
         'grb_env': grb_env,
@@ -827,8 +829,6 @@ def evaluate_policy_costs_with_information_relaxation(uid, experiment_name, init
 
     zero_lowerbound_instance = InfinitePenalizedSAAAgent(env, discount_factor=env.discount_factor, **zero_lowerbound_args)
     penalized_lowerbound_instance = InfinitePenalizedSAAAgent(env, discount_factor=env.discount_factor, **penalized_lowerbound_args)
-    zero_information_relaxation_cost, _, _ = zero_lowerbound_instance.direct_solve(init_state, t=1)
-    penalized_information_relaxation_cost, _, _ = penalized_lowerbound_instance.direct_solve(init_state, t=1)
 
     policy_specs = [
         {
@@ -889,9 +889,12 @@ def evaluate_policy_costs_with_information_relaxation(uid, experiment_name, init
             env_args=env_args,
             init_state=tuple(np.array(item) for item in init_state),
             sample_path=sample_path,
+            warm_up_periods=warm_up_periods,
             generating_function=generating_function,
         )
-
+        warmup_sate = tuple(np.array(item) for item in policy_result.get('warmup_state', init_state))
+        zero_information_relaxation_cost, _, _ = zero_lowerbound_instance.direct_solve(warmup_sate, t=warm_up_periods+1)
+        penalized_information_relaxation_cost, _, _ = penalized_lowerbound_instance.direct_solve(warmup_sate, t=warm_up_periods+1)
         policy_result.update({
             'uid': uid,
             'group_id': group_id,
