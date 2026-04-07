@@ -263,7 +263,7 @@ class InfinitePenalizedSAAAgent(InfiniteRTAgent):
     
     def direct_solve(self, state, t,action=None, verbose=False):
         if self.direct_model is None:
-            self.direct_model, self.state_linking_constraints, self.action_t_var, info = self.direct_builder_fn()
+            self.direct_model, self.state_linking_constraints, self.action_t_var, self.info = self.direct_builder_fn()
         flatten_state = flatten(state)
         set_link_rhs(self.state_linking_constraints, flatten_state)
         if action is not None:
@@ -274,7 +274,7 @@ class InfinitePenalizedSAAAgent(InfiniteRTAgent):
             raise RuntimeError("Direct model optimal solution not found")
         # ---------- 8. return ----------
         action = self.get_solution(self.action_t_var, is_final=True)
-        return self.direct_model.ObjVal, action, info
+        return self.direct_model.ObjVal, action, self.info
     
     
     def train_master_builder_fn(self, coefficient_bound=GRB.INFINITY):
