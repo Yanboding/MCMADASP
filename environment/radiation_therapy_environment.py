@@ -336,14 +336,8 @@ if __name__ == '__main__':
     from experiments import get_config_by_type
     config = get_config_by_type('toy')
     env = config.env
-    for i in range(10):
-        state = env.generate_initial_state()
-        print("initial state:", state)
-        action = env.generate_valid_action(state)
-        post_action_state = env.post_action_state(state, action)
-        print("post action state:", post_action_state)
-        next_state = env.post_action_state_to_new_state(post_action_state, new_arrival=np.array([1, 0]))
-        next_state2 = env.post_action_state_to_new_state_2(post_action_state, new_arrival=np.array([1, 0]))
-        
-        print("next state:", next_state)
-        print("next state 2:", next_state2)
+    average_sample_path_length = 0
+    for i in range(5000):
+        sample_path = env.reset_arrivals()
+        average_sample_path_length += len(sample_path)
+    print("average sample path length:", average_sample_path_length / 5000)

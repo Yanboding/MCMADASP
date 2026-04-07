@@ -258,23 +258,23 @@ def generate_test_paths_and_init_state(test_envs, experiment_name, test_sample_p
         max_length = 0
         sample_gen_args = copy.deepcopy(env_args)
         sample_gen_args["env_random_seed"] = env_args.get("env_random_seed", 0) + 1000 # make sure the random seed for sample path generation is different from the random seed for training ALP
-        sample_gen_args['arrival_random_seed'] = env_args.get("arrival_random_seed", 1) + 1000 # Seed for sample path generation
-        sample_gen_args['stop_time_random_seed'] = env_args.get("stop_time_random_seed", 0) + 1000
+        sample_gen_args['arrival_random_seed'] = env_args.get("arrival_random_seed", 42) + 1000 # Seed for sample path generation
+        sample_gen_args['stop_time_random_seed'] = env_args.get("stop_time_random_seed", 1) + 1000
         config_for_sample_path = get_config_by_type('infinite_custom', args=sample_gen_args)
         env_for_sample_path = config_for_sample_path.env
+        average_sample_path_length = 0
         for command_id in range(test_sample_path_num):
             init_state = env_for_sample_path.generate_initial_state() if 'init_state' not in env_args.get('reset_params', {}) else env_args['reset_params']['init_state']
             init_state = tuple(np.array(item).tolist() for item in init_state)
             if num_periods is None:
                 sample_path = env_for_sample_path.reset_arrivals(stop_time=warm_up_periods-1)
                 additional_sample_path = env_for_sample_path.reset_arrivals()
-                print("sample path: ")
-                print(len(sample_path))
                 sample_path = np.append(sample_path, additional_sample_path, axis=0) if len(sample_path) > 0 else additional_sample_path
             else:
                 sample_path = env_for_sample_path.reset_arrivals(stop_time=num_periods)
             sample_path = sample_path.tolist() if hasattr(sample_path, 'tolist') else sample_path
             max_length = max(max_length, len(sample_path))
+            average_sample_path_length += len(sample_path)
             params = {
                 'init_state': init_state,
                 'sample_path': sample_path,
@@ -292,7 +292,7 @@ def generate_test_paths_and_init_state(test_envs, experiment_name, test_sample_p
             }
             results.append(save_params)
         print("max sample path length:", max_length)
-
+        print("average sample path length:", average_sample_path_length / test_sample_path_num)
     # Write to dat file if specified
     if dat_file:
         lines_to_write = []
@@ -337,9 +337,9 @@ if __name__ == '__main__':
     results = generate_test_paths_and_init_state(
         test_envs=test_envs,
         experiment_name=experiment_name, 
-        test_sample_path_num=2000,
+        test_sample_path_num=1,
         warm_up_periods=1,
-        num_periods=999,
+        num_periods=5,
         dat_file='table.dat',
         num_groups=998,  # divide into N groups
     )

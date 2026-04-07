@@ -649,7 +649,7 @@ def calculate_information_relexation_costs(env_args, experiment_name, train_samp
     print("Gap:", gap_stats)
     print("Relative improvement stats:", relative_improvement_stats)
 
-def calculate_policy_costs(uid, experiment_name, policy_id, agent_name, agent_args, env_args, init_state, sample_path, generating_function):
+def calculate_policy_costs(uid, experiment_name, policy_id, agent_name, agent_args, env_args, init_state, sample_path, warm_up_periods, generating_function):
     def _to_float(v):
         if hasattr(v, "getValue"):
             return float(v.getValue())
