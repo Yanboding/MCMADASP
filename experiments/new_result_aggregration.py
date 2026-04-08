@@ -144,9 +144,30 @@ class SimulateEvaluationResult:
         \quad Zero penalty gap & \({self.zero_penalized_gap[(opc_20, 'row_gen_alp')].confidence_interval()}\) & \({self.zero_penalized_improvement[(opc_20, 'row_gen_alp')].confidence_interval()}\) & \({self.zero_penalized_gap[(opc_50, 'row_gen_alp')].confidence_interval()}\) & \({self.zero_penalized_improvement[(opc_50, 'row_gen_alp')].confidence_interval()}\) & \({self.zero_penalized_gap[(opc_80, 'row_gen_alp')].confidence_interval()}\) & \({self.zero_penalized_improvement[(opc_80, 'row_gen_alp')].confidence_interval()}\)\\\\
         \quad Max penalty gap & \({self.penalized_gap[(opc_20, 'row_gen_alp')].confidence_interval()}\) & \({self.penalized_improvement[(opc_20, 'row_gen_alp')].confidence_interval()}\) & \({self.penalized_gap[(opc_50, 'row_gen_alp')].confidence_interval()}\) & \({self.penalized_improvement[(opc_50, 'row_gen_alp')].confidence_interval()}\) & \({self.penalized_gap[(opc_80, 'row_gen_alp')].confidence_interval()}\) & \({self.penalized_improvement[(opc_80, 'row_gen_alp')].confidence_interval()}\)\\\\"""
         print(table)
+    
+    def generate_table_2(self):
+        opc = '54b1938e617254f1b82b47467f64784e'
+        table = f"""
+        Hindsight & & \\\\ 
+        \quad Policy cost & \({self.policy_costs[(opc, 'approx_hindsight')].confidence_interval()}\) &  \\\\
+        \quad Zero penalty gap & \({self.zero_penalized_gap[(opc, 'approx_hindsight')].confidence_interval()}\) & \({self.zero_penalized_improvement[(opc, 'approx_hindsight')].confidence_interval()}\) \\\\
+        \quad Max penalty gap & \({self.penalized_gap[(opc, 'approx_hindsight')].confidence_interval()}\) & \({self.penalized_improvement[(opc, 'approx_hindsight')].confidence_interval()}\) \\\\
+        Penalized Hindsight & & \\\\
+        \quad Policy cost & \({self.policy_costs[(opc, 'approx_penalized_hindsight')].confidence_interval()}\) & \\\\
+        \quad Zero penalty gap & \({self.zero_penalized_gap[(opc, 'approx_penalized_hindsight')].confidence_interval()}\) & \({self.zero_penalized_improvement[(opc, 'approx_penalized_hindsight')].confidence_interval()}\) \\\\
+        \quad Max penalty gap & \({self.penalized_gap[(opc, 'approx_penalized_hindsight')].confidence_interval()}\) & \({self.penalized_improvement[(opc, 'approx_penalized_hindsight')].confidence_interval()}\) \\\\
+        Myopic & & \\\\
+        \quad Policy cost & \({self.policy_costs[(opc, 'myopic')].confidence_interval()}\) & \\\\
+        \quad Zero penalty gap & \({self.zero_penalized_gap[(opc, 'myopic')].confidence_interval()}\) & \({self.zero_penalized_improvement[(opc, 'myopic')].confidence_interval()}\) \\\\
+        \quad Max penalty gap & \({self.penalized_gap[(opc, 'myopic')].confidence_interval()}\) & \({self.penalized_improvement[(opc, 'myopic')].confidence_interval()}\) \\\\
+        ALP & & \\\\
+        \quad Policy cost & \({self.policy_costs[(opc, 'row_gen_alp')].confidence_interval()}\) & \\\\
+        \quad Zero penalty gap & \({self.zero_penalized_gap[(opc, 'row_gen_alp')].confidence_interval()}\) & \({self.zero_penalized_improvement[(opc, 'row_gen_alp')].confidence_interval()}\) \\\\
+        \quad Max penalty gap & \({self.penalized_gap[(opc, 'row_gen_alp')].confidence_interval()}\) & \({self.penalized_improvement[(opc, 'row_gen_alp')].confidence_interval()}\)\\\\"""
+        print(table)
 
 if __name__ == "__main__":
-    directory_path = os.path.join('.', 'experiments', 'results', "steady_state_distribution_variation_impact")
+    directory_path = os.path.join('.', 'experiments', 'results', "steady_state_distribution_variation_impact_warmup")
     # 5: 33.1989634321917 0.13896181129865617
     # 10: 36.687370600414376 0.1486390341192171
     # 20: 39.3842249382221 0.5255526412672854
@@ -172,17 +193,17 @@ if __name__ == "__main__":
     print("Improvement")
     pprint(ser.improvement)
 
-    ser.generate_table()
-    print(ser.one_time_cost_by_policy)
-    approximate_value_plot_from_running_stats_dict(running_stats_dict=ser.one_time_cost_by_policy,
-                                                   x_vals=None,
-                                                   xticks=None,
-                                                   xticklabels=None,
-                                                   xlabel='Time step',
-                                                   ylabel="One-time cost",
-                                                   plot_labels={'approx_hindsight': "Hindsight", 'approx_penalized_hindsight': "Penalized Hindsight", 'myopic': "Myopic", 'row_gen_alp': "ALP"},
-                                                   title=None,
-                                                   save_file='one_time_cost_by_policy.svg',
-                                                   is_show_text=False,
-                                                   is_set_x_color=True)
+    ser.generate_table_2()
+    # print(ser.one_time_cost_by_policy)
+    # approximate_value_plot_from_running_stats_dict(running_stats_dict=ser.one_time_cost_by_policy,
+    #                                                x_vals=None,
+    #                                                xticks=None,
+    #                                                xticklabels=None,
+    #                                                xlabel='Time step',
+    #                                                ylabel="One-time cost",
+    #                                                plot_labels={'approx_hindsight': "Hindsight", 'approx_penalized_hindsight': "Penalized Hindsight", 'myopic': "Myopic", 'row_gen_alp': "ALP"},
+    #                                                title=None,
+    #                                                save_file='one_time_cost_by_policy.svg',
+    #                                                is_show_text=False,
+    #                                                is_set_x_color=True)
         
