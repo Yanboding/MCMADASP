@@ -167,6 +167,31 @@ def generate_steady_state_distribution_variation(dat_file):
         f.writelines(lines_to_write)
     return test_params, experiment_name
 
+def generate_case_study_params(dat_file):
+    # This function can be implemented to generate parameters for testing the performance of the agents on a case study environment. The parameters can include different environment configurations, initial states, and sample paths.
+    experiment_name = 'case_study'
+    config_type = 'ejor'
+    config = get_config_by_type(config_type)
+    env_args = config.args
+    env = config.env
+    initial_state = ([0]*env.planning_horizon, [0]*env.planning_horizon, np.round(env.arrival_generator.mean_by_type).tolist())
+    reset_params = {
+            "init_state": initial_state,
+        }
+    env_args['reset_params'] = reset_params
+    lines_to_write = []
+    test_params = {}
+    save_params = {
+                    'experiment_name': experiment_name,
+                    'env_args': env_args,
+                    }
+    env_uid = get_uid(env_args)
+    lines_to_write.append(f"{1} python run.py --params '" + json.dumps(save_params) + "'\n")
+    test_params[env_uid] = copy.deepcopy(env_args)
+    with open(dat_file, 'w') as f:
+        f.writelines(lines_to_write)
+    return test_params, experiment_name
+
 
 def train_penalty_coefficients(env_args, experiment_name, sample_path_number):
     '''
@@ -199,7 +224,7 @@ def train_penalty_coefficients(env_args, experiment_name, sample_path_number):
     print('Obejctive from Benders decomposition training:', obj) # Full MILP:39050.05571672409 # LP: 21524.097118570513
     print('Coefficients from Benders decomposition training:', direct_coefficients)
 
-    # # direct_coefficients = [4.5050629088130085, 19.007403595529222, 210.52084330182836, 0.6690122556727325, 17.81240359552962, 210.1258433018285, 469.6670526138236, 469.667052613824, 383.49566005697466, 395.9814464036324, 383.1616355414874, 395.8926130702999, 9.70567848715938e-13, 0.0, -0.015222222219714846, 0.19500000000251028, 0.0]
+    # direct_coefficients = [4.5050629088130085, 19.007403595529222, 210.52084330182836, 0.6690122556727325, 17.81240359552962, 210.1258433018285, 469.6670526138236, 469.667052613824, 383.49566005697466, 395.9814464036324, 383.1616355414874, 395.8926130702999, 9.70567848715938e-13, 0.0, -0.015222222219714846, 0.19500000000251028, 0.0]
     # direct_coefficients = direct_coefficients = [5.799735521230385, 20.437279922776042, 209.3610285715884, 1.1901698841543076, 18.11727992276178, 208.3710285715395, 444.697203860891, 444.69720386089654, 377.872261776431, 390.7855706566974, 377.61857065670546, 390.68657065670726, -7.140954494389007e-13, 0.0, -0.3300000000072032, -5.093170329928398e-11, 0.0]
     # env.reset_random_seeds()
     # obj, coefficients, info = agent.sample_mean_penalized_lowerbound(coefficients=direct_coefficients, ratio=0, verbose=False)
@@ -244,17 +269,20 @@ def train_alp_coefficients(env_args, experiment_name):
     return obj, oefficients
 
 
-def generate_test_paths_and_init_state(test_envs, experiment_name, test_sample_path_num, warm_up_periods=0, num_periods=None, dat_file=None, num_groups=None):
+def generate_test_paths_and_init_state(test_envs, experiment_name, test_sample_path_num, warm_up_periods=0, num_periods=None, dat_file=None, num_groups=None, is_require_alp_coefficients=True, is_require_penalty_coefficients=True):
     '''
     Inital state is considered as period 1. sample path will start from period 2.
     '''
     results = []
     
     for env_uid, env_args in test_envs.items():
+        env = get_config_by_type('infinite_custom', args=env_args).env
         print(f"Processing env_uid: {env_uid}")
-        obj_alp_train, alp_coefficients = train_alp_coefficients(env_args=env_args, experiment_name=experiment_name)
-        obj, direct_coefficients, info = train_penalty_coefficients(env_args=env_args, experiment_name=experiment_name, sample_path_number=256)
-        print(f"Trained penalty coefficients for env_uid {env_uid}: {direct_coefficients}")
+        obj_alp_train, alp_coefficients = train_alp_coefficients(env_args=env_args, experiment_name=experiment_name) if is_require_alp_coefficients else (None, None)
+        if is_require_penalty_coefficients:
+            obj, direct_coefficients, info = train_penalty_coefficients(env_args=env_args, experiment_name=experiment_name, sample_path_number=256)
+        else:
+            direct_coefficients = [0] * (env.planning_horizon * 2 + env.num_types + env.booking_window_size * env.num_types + env.planning_horizon)
         max_length = 0
         sample_gen_args = copy.deepcopy(env_args)
         sample_gen_args["env_random_seed"] = env_args.get("env_random_seed", 0) + 1000 # make sure the random seed for sample path generation is different from the random seed for training ALP
@@ -333,15 +361,18 @@ if __name__ == '__main__':
     # test_envs, experiment_name = generate_waiting_penalty_params(dat_file='table_waiting_penalty.dat')
     # test_envs, experiment_name = generate_high_priority_arrival_rate(dat_file='table_high_priority_arrival_rate.dat')
     # test_envs, experiment_name = generate_inital_state_variation(dat_file='initial_state_variation_impact.dat')
-    test_envs, experiment_name = generate_steady_state_distribution_variation(dat_file='steady_state_distribution_variation_impact.dat')
+    # test_envs, experiment_name = generate_steady_state_distribution_variation(dat_file='steady_state_distribution_variation_impact.dat')
+    test_envs, experiment_name = generate_case_study_params(dat_file='case_study.dat')
     results = generate_test_paths_and_init_state(
         test_envs=test_envs,
         experiment_name=experiment_name, 
-        test_sample_path_num=5000,
-        warm_up_periods=100,
-        num_periods=None,
+        test_sample_path_num=1000,
+        warm_up_periods=750,
+        num_periods=1500,
         dat_file='table.dat',
         num_groups=998,  # divide into N groups
+        is_require_alp_coefficients=True,
+        is_require_penalty_coefficients=False,
     )
     # test_envs, experiment_name = generate_inital_state_variation(dat_file='initial_state_variation_impact.dat')
     # results = generate_train_env(
