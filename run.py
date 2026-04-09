@@ -495,6 +495,7 @@ def calculate_penalized_lowerbound_with_same_initial_state(env_args, experiment_
         penalties = data['penalties'][:warm_up_periods]
         t = 1
         warmup_state, info = env.reset(**config.reset_params)
+        print(warmup_state)
         for tau in range(warm_up_periods):
             a = actions[tau]
             warmup_state, cost, done, info = env.step(a)
@@ -808,7 +809,7 @@ def evaluate_policy_costs_with_information_relaxation(uid, experiment_name, init
 
     zero_lowerbound_args = {
         'current_decision_var_type': 'integer',
-        'future_decision_var_type': 'integer',
+        'future_decision_var_type': 'continuous',
         'is_myopic': False,
         'is_include_discount_factor': False,
         'sample_path': sample_path[warm_up_periods:],
@@ -818,7 +819,7 @@ def evaluate_policy_costs_with_information_relaxation(uid, experiment_name, init
     }
     penalized_lowerbound_args = {
         'current_decision_var_type': 'integer',
-        'future_decision_var_type': 'integer',
+        'future_decision_var_type': 'continuous',
         'is_myopic': False,
         'is_include_discount_factor': False,
         'sample_path': sample_path[warm_up_periods:],
@@ -831,43 +832,43 @@ def evaluate_policy_costs_with_information_relaxation(uid, experiment_name, init
     penalized_lowerbound_instance = InfinitePenalizedSAAAgent(env, discount_factor=env.discount_factor, **penalized_lowerbound_args)
 
     policy_specs = [
-        {
-            'policy_id': 'approx_hindsight',
-            'agent_name': 'approx_hindsight',
-            'agent_args': {
-                'sample_path_number': 256,
-                'current_decision_var_type': 'integer',
-                'future_decision_var_type': 'continuous',
-                'is_myopic': False,
-                'penalty_ratio': 0,
-                'is_quasi_MC': True,
-                'max_periods': max_periods,
-                'geom_p': true_geom_p,
-                'grb_env': grb_env,
-            },
-        },
-        {
-            'policy_id': 'approx_penalized_hindsight',
-            'agent_name': 'approx_penalized_hindsight',
-            'agent_args': {
-                'sample_path_number': 256,
-                'current_decision_var_type': 'integer',
-                'future_decision_var_type': 'continuous',
-                'is_myopic': False,
-                'penalty_ratio': 1,
-                'is_quasi_MC': True,
-                'max_periods': max_periods,
-                'geom_p': true_geom_p,
-                'grb_env': grb_env,
-            },
-        },
-        {
-            'policy_id': 'myopic',
-            'agent_name': 'myopic',
-            'agent_args': {
-                'grb_env': grb_env,
-            },
-        },
+        # {
+        #     'policy_id': 'approx_hindsight',
+        #     'agent_name': 'approx_hindsight',
+        #     'agent_args': {
+        #         'sample_path_number': 256,
+        #         'current_decision_var_type': 'integer',
+        #         'future_decision_var_type': 'continuous',
+        #         'is_myopic': False,
+        #         'penalty_ratio': 0,
+        #         'is_quasi_MC': True,
+        #         'max_periods': max_periods,
+        #         'geom_p': true_geom_p,
+        #         'grb_env': grb_env,
+        #     },
+        # },
+        # {
+        #     'policy_id': 'approx_penalized_hindsight',
+        #     'agent_name': 'approx_penalized_hindsight',
+        #     'agent_args': {
+        #         'sample_path_number': 256,
+        #         'current_decision_var_type': 'integer',
+        #         'future_decision_var_type': 'continuous',
+        #         'is_myopic': False,
+        #         'penalty_ratio': 1,
+        #         'is_quasi_MC': True,
+        #         'max_periods': max_periods,
+        #         'geom_p': true_geom_p,
+        #         'grb_env': grb_env,
+        #     },
+        # },
+        # {
+        #     'policy_id': 'myopic',
+        #     'agent_name': 'myopic',
+        #     'agent_args': {
+        #         'grb_env': grb_env,
+        #     },
+        # },
         {
             'policy_id': 'row_gen_alp',
             'agent_name': 'row_gen_alp',

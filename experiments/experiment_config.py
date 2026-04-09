@@ -103,7 +103,7 @@ class ExperimentConfig:
             "stop_time_random_seed": 1,
             "arrival_random_seed": 42,
         }
-        return cls.from_ejor_custom_case(**env_args)
+        return cls.from_custom_case(**env_args)
     
     @classmethod
     def from_small_case(cls):
@@ -154,7 +154,7 @@ class ExperimentConfig:
             "stop_time_random_seed": 1,
             "arrival_random_seed": 42,
         }
-        return cls.from_ejor_custom_case(**env_args)
+        return cls.from_custom_case(**env_args)
     
     @classmethod
     def from_toy_case(cls):
@@ -191,7 +191,7 @@ class ExperimentConfig:
             "stop_time_random_seed": 1,
             "arrival_random_seed": 42,
         }
-        return cls.from_ejor_custom_case(**env_args)
+        return cls.from_custom_case(**env_args)
 
     @classmethod
     def from_ejor_base_case(cls):
@@ -222,7 +222,7 @@ class ExperimentConfig:
                          0.29, 0.15, 0.04][:class_num]
         total_arrival_rate = sum(arrival_rates)
         env_args = {
-            "booking_window_size": 20,
+            "booking_window_size": 25,
             'arrival_rates': arrival_rates,
             'patterns': ['1 * 2 + 4 * 1',
                          '1 * 2',
@@ -250,7 +250,7 @@ class ExperimentConfig:
             "overtime_capacity": 15,
             'discount_factor': 0.99,
             'reset_params': {
-                'percentage_occupied': 0.99,
+                'percentage_occupied': 0,
                 't': 1
             },
             'maximum_total_arrival': math.ceil(total_arrival_rate * 3),
@@ -260,10 +260,10 @@ class ExperimentConfig:
             'stop_time_random_seed':1,
             'arrival_random_seed': 42
         }
-        return cls.from_ejor_custom_case(**env_args)
+        return cls.from_custom_case(**env_args)
     
     @classmethod
-    def from_ejor_custom_case(cls,
+    def from_custom_case(cls,
                               booking_window_size,
                               arrival_rates,
                               patterns,
@@ -360,7 +360,7 @@ def get_config_by_type(case_type, args=None):
     elif case_type == 'toy':
         config = ExperimentConfig.from_toy_case()
     elif case_type == 'infinite_custom':
-        config = ExperimentConfig.from_ejor_custom_case(**args)
+        config = ExperimentConfig.from_custom_case(**args)
     return config
 
 if __name__ == '__main__':

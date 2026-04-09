@@ -50,7 +50,7 @@ if __name__ == "__main__":
     # Example usage
     env = config.env  # Replace with your environment instance
     state, info = env.reset(**config.reset_params)  # Replace with your state initialization logic
-    coefficients = [0.5] * (env.planning_horizon * 2 + env.num_types + env.booking_window_size * env.num_types + env.planning_horizon)  # Replace with your coefficients
+    coefficients = [0] * (env.planning_horizon * 2 + env.num_types + env.booking_window_size * env.num_types + env.planning_horizon)  # Replace with your coefficients
     penalty_function = LinearPenaltyFunction(env, coefficients=coefficients)
     action = list(env.valid_actions(state))[-1]  # Replace with your action selection logic
     print(state)
