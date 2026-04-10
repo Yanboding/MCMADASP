@@ -63,6 +63,11 @@ class SimulateEvaluationResult:
         
         self.gap_to_information_relaxation = defaultdict(RunningStats)
         self.improvement = defaultdict(RunningStats)
+
+        self.waiting_time_target_ptc_by_day = defaultdict(dd_rs_factory)
+        
+        # Triple-nested structure
+        self.waiting_time_target_ptc_by_day_type = defaultdict(dd_dd_rs_factory)
         
         self.one_time_cost_by_policy = dd_dd_rs_factory()
         self.number_of_periods = None
@@ -79,6 +84,8 @@ class SimulateEvaluationResult:
             self.penalized_information_relaxation_cost = data['penalized_information_relaxation_cost']
             self.gap_to_information_relaxation = data['gap_to_information_relaxation']
             self.one_time_cost_by_policy = data['one_time_cost_by_policy']
+            self.waiting_time_target_ptc_by_day = data['waiting_time_target_ptc_by_day']
+            self.waiting_time_target_ptc_by_day_type = data['waiting_time_target_ptc_by_day_type']
         else:
             pattern = os.path.join(self.directory_path, self.file_pattern)
             jsonl_files = glob.glob(pattern)
@@ -97,19 +104,21 @@ class SimulateEvaluationResult:
                     'penalized_information_relaxation_cost': self.penalized_information_relaxation_cost,
                     'gap_to_information_relaxation': self.gap_to_information_relaxation,
                     'one_time_cost_by_policy': self.one_time_cost_by_policy,
+                    'waiting_time_target_ptc_by_day': self.waiting_time_target_ptc_by_day,
+                    'waiting_time_target_ptc_by_day_type': self.waiting_time_target_ptc_by_day_type,
                     }
                 pickle.dump(res, f)
+        '''
         for (group_id, policy_id), stats in self.zero_penalized_gap.items():
             self.zero_penalized_improvement[(group_id, policy_id)] = self.zero_penalized_gap[(group_id, policy_id)] / self.penalized_information_relaxation_cost[(group_id)].mean / 0.01
         for (group_id, policy_id), stats in self.penalized_gap.items():
             self.penalized_improvement[(group_id, policy_id)] = self.penalized_gap[(group_id, policy_id)] / self.penalized_information_relaxation_cost[(group_id)].mean / 0.01
         for group_id, stats in self.gap_to_information_relaxation.items():
             self.improvement[group_id] = self.gap_to_information_relaxation[group_id] / self.policy_costs[(group_id, policy_id)].mean / 0.01
-    
+        '''
     def load(self, data):
         policy_id = data['policy_id']
         group_id = data['group_id']
-        print(f"Loading data for group_id: {group_id}, policy_id: {policy_id}")
         self.policy_costs[(group_id, policy_id)] += data['total_cost']
         if policy_id == 'approx_hindsight':
             self.zero_penalized_information_relaxation_cost[group_id] += data['zero_information_relaxation_cost']
@@ -121,6 +130,23 @@ class SimulateEvaluationResult:
             self.number_of_periods = len(data['costs'])
         for t, cost in enumerate(data['costs']):
             self.one_time_cost_by_policy[policy_id][t] += cost
+        
+        warm_up_periods = data["warm_up_periods"]
+        
+        scheduled_patients = np.array(data["scheduled_patients"])[warm_up_periods:].sum(axis=0) if len(data["scheduled_patients"]) > warm_up_periods else np.array(data["scheduled_patients"]).sum(axis=0)
+        
+        total_scheduled_patients = scheduled_patients.sum()
+
+        cum_scheduled_patients = scheduled_patients.cumsum(axis=0)
+        total_scheduled_patients_by_type = scheduled_patients.sum(axis=0)
+        scheduled_patients_ptc_by_day = cum_scheduled_patients/total_scheduled_patients_by_type * 100
+        cum_total_scheduled_patients_by_day = scheduled_patients.sum(axis=1).cumsum(axis=0)
+        total_scheduled_patients_ptc_by_day = cum_total_scheduled_patients_by_day/total_scheduled_patients * 100
+
+        for day in range(len(scheduled_patients)):
+            for treatment_type in range(len(scheduled_patients[day])):
+                self.waiting_time_target_ptc_by_day_type[policy_id][treatment_type][day] += scheduled_patients_ptc_by_day[day][treatment_type]
+                self.waiting_time_target_ptc_by_day[policy_id][day] += total_scheduled_patients_ptc_by_day[day]
 
     def generate_table(self):
         opc_20 = 'acbffa87277103d172340d09fb3d6714'
@@ -145,34 +171,38 @@ class SimulateEvaluationResult:
         \quad Max penalty gap & \({self.penalized_gap[(opc_20, 'row_gen_alp')].confidence_interval()}\) & \({self.penalized_improvement[(opc_20, 'row_gen_alp')].confidence_interval()}\) & \({self.penalized_gap[(opc_50, 'row_gen_alp')].confidence_interval()}\) & \({self.penalized_improvement[(opc_50, 'row_gen_alp')].confidence_interval()}\) & \({self.penalized_gap[(opc_80, 'row_gen_alp')].confidence_interval()}\) & \({self.penalized_improvement[(opc_80, 'row_gen_alp')].confidence_interval()}\)\\\\"""
         print(table)
     
-    def generate_table_2(self):
-        opc = '54b1938e617254f1b82b47467f64784e'
-        table = f"""
-        Hindsight & & \\\\ 
-        \quad Policy cost & \({self.policy_costs[(opc, 'approx_hindsight')].confidence_interval()}\) &  \\\\
-        \quad Zero penalty gap & \({self.zero_penalized_gap[(opc, 'approx_hindsight')].confidence_interval()}\) & \({self.zero_penalized_improvement[(opc, 'approx_hindsight')].confidence_interval()}\) \\\\
-        \quad Max penalty gap & \({self.penalized_gap[(opc, 'approx_hindsight')].confidence_interval()}\) & \({self.penalized_improvement[(opc, 'approx_hindsight')].confidence_interval()}\) \\\\
-        Penalized Hindsight & & \\\\
-        \quad Policy cost & \({self.policy_costs[(opc, 'approx_penalized_hindsight')].confidence_interval()}\) & \\\\
-        \quad Zero penalty gap & \({self.zero_penalized_gap[(opc, 'approx_penalized_hindsight')].confidence_interval()}\) & \({self.zero_penalized_improvement[(opc, 'approx_penalized_hindsight')].confidence_interval()}\) \\\\
-        \quad Max penalty gap & \({self.penalized_gap[(opc, 'approx_penalized_hindsight')].confidence_interval()}\) & \({self.penalized_improvement[(opc, 'approx_penalized_hindsight')].confidence_interval()}\) \\\\
-        Myopic & & \\\\
-        \quad Policy cost & \({self.policy_costs[(opc, 'myopic')].confidence_interval()}\) & \\\\
-        \quad Zero penalty gap & \({self.zero_penalized_gap[(opc, 'myopic')].confidence_interval()}\) & \({self.zero_penalized_improvement[(opc, 'myopic')].confidence_interval()}\) \\\\
-        \quad Max penalty gap & \({self.penalized_gap[(opc, 'myopic')].confidence_interval()}\) & \({self.penalized_improvement[(opc, 'myopic')].confidence_interval()}\) \\\\
-        ALP & & \\\\
-        \quad Policy cost & \({self.policy_costs[(opc, 'row_gen_alp')].confidence_interval()}\) & \\\\
-        \quad Zero penalty gap & \({self.zero_penalized_gap[(opc, 'row_gen_alp')].confidence_interval()}\) & \({self.zero_penalized_improvement[(opc, 'row_gen_alp')].confidence_interval()}\) \\\\
-        \quad Max penalty gap & \({self.penalized_gap[(opc, 'row_gen_alp')].confidence_interval()}\) & \({self.penalized_improvement[(opc, 'row_gen_alp')].confidence_interval()}\)\\\\"""
-        print(table)
+    def format_table(self):
+        kys = self.waiting_time_target_ptc_by_day_type.keys()
+        experiment_labels = 'ALP'
+        for agent_name in kys:
+            table = defaultdict(list)
+            table2 = {}
+            for day in [1, 5, 10, 15, 20]:
+                total_mean = self.waiting_time_target_ptc_by_day[agent_name][day].mean
+                total_hw = self.waiting_time_target_ptc_by_day[agent_name][day].half_window(0.95)
+                table2[day] = (round(total_mean, 2), round(total_hw, 3))
+                for type in range(len(self.waiting_time_target_ptc_by_day_type[agent_name])):
+                    mean = self.waiting_time_target_ptc_by_day_type[agent_name][type][day].mean
+                    hw = self.waiting_time_target_ptc_by_day_type[agent_name][type][day].half_window(0.95)
+                    table[type+1].append((day, round(mean), round(hw)))
+            print(table2)
+            print('ALP')
+            for type in sorted(table.keys()):
+                line = f'{type} '
+                for (day, ptc, hw) in table[type]:
+                    line += f' & {ptc} $\pm$ {hw}'
+                line += r' \\'
+                print(line)
+            line = r'\textbf{Total} '
+            for day, (ptc, hw) in table2.items():
+                line += f' & {ptc} $\pm$ {hw}'
+            line += r' \\'
+            print(line)
 
 if __name__ == "__main__":
-    directory_path = os.path.join('.', 'experiments', 'results', "steady_state_distribution_variation_impact_warmup")
-    # 5: 33.1989634321917 0.13896181129865617
-    # 10: 36.687370600414376 0.1486390341192171
-    # 20: 39.3842249382221 0.5255526412672854
+    directory_path = os.path.join('.', 'experiments', 'results', "case_study")
     file_pattern = '[0-9]*.jsonl'
-    ser = SimulateEvaluationResult(directory_path, file_pattern, is_reuse=True)
+    ser = SimulateEvaluationResult(directory_path, file_pattern, is_reuse=False)
     print("Policy Costs")
     pprint(ser.policy_costs)
     print("Zero Penalized Gap")
@@ -193,7 +223,14 @@ if __name__ == "__main__":
     print("Improvement")
     pprint(ser.improvement)
 
-    ser.generate_table_2()
+    print('waiting_time_target_ptc_by_day_type')
+    pprint(ser.waiting_time_target_ptc_by_day_type)
+    print('waiting_time_target_ptc_by_day')
+    pprint(ser.waiting_time_target_ptc_by_day)
+
+    ser.format_table()
+
+    # ser.generate_table()
     # print(ser.one_time_cost_by_policy)
     # approximate_value_plot_from_running_stats_dict(running_stats_dict=ser.one_time_cost_by_policy,
     #                                                x_vals=None,
