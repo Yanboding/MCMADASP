@@ -73,11 +73,11 @@ def generate_waiting_penalty_params(dat_file):
     config_type = 'toy'
     env_args = get_config_by_type(config_type).args
     l = [[[(0, 1, 0), (1, 3, 100)],
-         [(0, 1, 0), (1, 3, 20)]],
+         [(0, 1, 0), (1, 3, 10)]],
         [[(0, 1, 0), (1, 3, 100)],
          [(0, 1, 0), (1, 3, 50)]],
         [[(0, 1, 0), (1, 3, 100)],
-         [(0, 1, 0), (1, 3, 80)]]][:]
+         [(0, 1, 0), (1, 3, 90)]]][:]
     lines_to_write = []
     test_params = {}
     for i, waiting_penalty in enumerate(l, start=1):
@@ -366,7 +366,7 @@ if __name__ == '__main__':
     results = generate_test_paths_and_init_state(
         test_envs=test_envs,
         experiment_name=experiment_name, 
-        test_sample_path_num=5000,
+        test_sample_path_num=2,
         warm_up_periods=100,
         num_periods=None,
         dat_file='table.dat',

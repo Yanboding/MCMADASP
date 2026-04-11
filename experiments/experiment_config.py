@@ -167,8 +167,10 @@ class ExperimentConfig:
         # treatment_patterns = ["1 * 2"]
         # arrival_rates = [3]
         # l = [[(0, 1, 10), (1, 5, 100), (5, 100, 150)]]
+        
         holding_cost = [wait_time(l[i]) for i in range(len(treatment_patterns))]
         holding_cost = np.array(holding_cost).T
+        initial_state = ([0]*booking_window_size, [0]*booking_window_size, arrival_rates.copy())
         env_args = {
             "booking_window_size": booking_window_size,
             "arrival_rates": arrival_rates,
@@ -181,8 +183,7 @@ class ExperimentConfig:
             "overtime_capacity": 5,
             "discount_factor": 0.99,
             "reset_params": {
-                'percentage_occupied': 0,
-                't': 1
+                "init_state": initial_state,
             },
             "maximum_total_arrival": math.ceil(sum(arrival_rates) * 3),
             "init_state": None,
@@ -221,8 +222,10 @@ class ExperimentConfig:
         arrival_rates = [0.19, 0.11, 0.11, 1.43, 0.59, 0.45, 1.42, 1.36, 0.57, 0.38, 0.18, 0.18, 0.29, 0.21, 0.3,
                          0.29, 0.15, 0.04][:class_num]
         total_arrival_rate = sum(arrival_rates)
+        booking_window_size = 25
+        initial_state = ([0]*booking_window_size, [0]*booking_window_size, np.round(arrival_rates).astype(int).tolist())
         env_args = {
-            "booking_window_size": 25,
+            "booking_window_size": booking_window_size,
             'arrival_rates': arrival_rates,
             'patterns': ['1 * 2 + 4 * 1',
                          '1 * 2',
@@ -250,8 +253,7 @@ class ExperimentConfig:
             "overtime_capacity": 15,
             'discount_factor': 0.99,
             'reset_params': {
-                'percentage_occupied': 0,
-                't': 1
+                "init_state": initial_state,
             },
             'maximum_total_arrival': math.ceil(total_arrival_rate * 3),
             'init_state': None,
@@ -364,96 +366,8 @@ def get_config_by_type(case_type, args=None):
     return config
 
 if __name__ == '__main__':
-    import re
-    from utils.treatment_pattern import treatment_pattern2str
-    def slot_session_rate(treatment_pattern_str):
-        '''
-        1*2 + 15*1 + 1*2 + 3*1
-        '''
-        term_re = re.compile(r'\s*(\d+)\s*\*\s*(\d+)\s*')
-        slot_num = 0
-        session_num = 0
-        for term in treatment_pattern_str.split('+'):
-            term = term.strip()
-            m = term_re.fullmatch(term)
-            if not m:
-                raise ValueError(f"Invalid term: '{term}' (expected form 'x*y')")
-            x, y = map(int, m.groups())
-            slot_num += x * y
-            session_num += x
-        return slot_num / session_num
-    type1 = ['1 * 2 + 4 * 1',
-             '1 * 2',
-             '1 * 2 + 3 * 1',]
-    rate1 = np.array([0.19, 0.11, 0.11,])
-    prob1 = rate1 / np.sum(rate1)
-    treatment_pattern1 = str2treatment_patterns(type1)
-    pattern1 = np.round(prob1 @ treatment_pattern1.T).astype(int)
-    pattern1_str = treatment_pattern2str(pattern1)
-    print(pattern1_str)
-    type2 = ['1 * 2 + 15 * 1',
-             '1 * 2 + 15*1 + 1*2 + 3*1',
-             '1 * 3 + 15 * 2',]
-    rate2 = np.array([1.43, 0.59, 0.45,])
-    prob2 = rate2 / np.sum(rate2)
-    treatment_pattern2 = str2treatment_patterns(type2)
-    pattern2 = np.round(prob2 @ treatment_pattern2.T).astype(int)
-    pattern2_str = treatment_pattern2str(pattern2)
-    print(pattern2_str)
-    type3 = ['1 * 2',
-             '1 * 2 + 4 * 1',
-             '1 * 2 + 9 * 1',
-             '1 * 2 + 3 * 1',
-             '1 * 2 + 14 * 1',
-             '1 * 1',]
-    rate3 = np.array([1.42, 1.36, 0.57, 0.38, 0.18, 0.18,])
-    prob3 = rate3 / np.sum(rate3)
-    treatment_pattern3 = str2treatment_patterns(type3)
-    pattern3 = np.round(prob3 @ treatment_pattern3.T).astype(int)
-    pattern3_str = treatment_pattern2str(pattern3)
-    print(pattern3_str)
-    type4 = ['1 * 2 + 19 * 1',
-             '1 * 3 + 34 * 2',]
-    rate4 = np.array([0.29, 0.21,])
-    prob4 = rate4 / np.sum(rate4)
-    treatment_pattern4 = str2treatment_patterns(type4)
-    pattern4 = np.round(prob4 @ treatment_pattern4.T).astype(int)
-    pattern4_str = treatment_pattern2str(pattern4)
-    print(pattern4_str)
-    type5 = ['1 * 2 + 32 * 1',
-             '1 * 2 + 36 * 1',
-             '1 * 2 + 21 * 1 + 1 * 2 + 14 * 1',]
-    rate5 = np.array([0.3, 0.29, 0.15,])
-    prob5 = rate5 / np.sum(rate5)
-    treatment_pattern5 = str2treatment_patterns(type5)
-    pattern5 = np.round(prob5 @ treatment_pattern5.T).astype(int)
-    pattern5_str = treatment_pattern2str(pattern5)
-    print(pattern5_str)
-    type6 = ['1 * 2 + 32 * 1']
-    rate6 = np.array([0.04])
-    prob6 = rate6 / np.sum(rate6)
-    treatment_pattern6 = str2treatment_patterns(type6)
-    pattern6 = np.round(prob6 @ treatment_pattern6.T).astype(int)
-    pattern6_str = treatment_pattern2str(pattern6)
-    print(pattern6_str)
-
-    treatment_pattern = type1 + type2 + type3 + type4 + type5 + type6
-    arrival_rates = np.concatenate([rate1, rate2, rate3, rate4, rate5, rate6])
-    average_workload = 0
-    for tratment_pattern_str, rate in zip(treatment_pattern, arrival_rates):
-        ss_rate = slot_session_rate(tratment_pattern_str)
-        workload = rate * ss_rate
-        average_workload += workload
-    print('Average workload:', average_workload)
-
-    treatment_pattern = [pattern1_str, pattern2_str, pattern3_str, pattern4_str, pattern5_str, pattern6_str]
-    arrival_rates = np.array([np.sum(rate1), np.sum(rate2), np.sum(rate3), np.sum(rate4), np.sum(rate5), np.sum(rate6)])
-    print('Arrival rates:', arrival_rates)
-    average_workload = 0
-    for tratment_pattern_str, rate in zip(treatment_pattern, arrival_rates):
-        ss_rate = slot_session_rate(tratment_pattern_str)
-        workload = rate * ss_rate
-        average_workload += workload
-    print('Average workload:', average_workload)
+    config = get_config_by_type('ejor')
+    print(config.args['reset_params'])
+    
 
 

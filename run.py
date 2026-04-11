@@ -832,43 +832,43 @@ def evaluate_policy_costs_with_information_relaxation(uid, experiment_name, init
     penalized_lowerbound_instance = InfinitePenalizedSAAAgent(env, discount_factor=env.discount_factor, **penalized_lowerbound_args)
 
     policy_specs = [
-        # {
-        #     'policy_id': 'approx_hindsight',
-        #     'agent_name': 'approx_hindsight',
-        #     'agent_args': {
-        #         'sample_path_number': 256,
-        #         'current_decision_var_type': 'integer',
-        #         'future_decision_var_type': 'continuous',
-        #         'is_myopic': False,
-        #         'penalty_ratio': 0,
-        #         'is_quasi_MC': True,
-        #         'max_periods': max_periods,
-        #         'geom_p': true_geom_p,
-        #         'grb_env': grb_env,
-        #     },
-        # },
-        # {
-        #     'policy_id': 'approx_penalized_hindsight',
-        #     'agent_name': 'approx_penalized_hindsight',
-        #     'agent_args': {
-        #         'sample_path_number': 256,
-        #         'current_decision_var_type': 'integer',
-        #         'future_decision_var_type': 'continuous',
-        #         'is_myopic': False,
-        #         'penalty_ratio': 1,
-        #         'is_quasi_MC': True,
-        #         'max_periods': max_periods,
-        #         'geom_p': true_geom_p,
-        #         'grb_env': grb_env,
-        #     },
-        # },
-        # {
-        #     'policy_id': 'myopic',
-        #     'agent_name': 'myopic',
-        #     'agent_args': {
-        #         'grb_env': grb_env,
-        #     },
-        # },
+        {
+            'policy_id': 'approx_hindsight',
+            'agent_name': 'approx_hindsight',
+            'agent_args': {
+                'sample_path_number': 256,
+                'current_decision_var_type': 'integer',
+                'future_decision_var_type': 'continuous',
+                'is_myopic': False,
+                'penalty_ratio': 0,
+                'is_quasi_MC': True,
+                'max_periods': max_periods,
+                'geom_p': true_geom_p,
+                'grb_env': grb_env,
+            },
+        },
+        {
+            'policy_id': 'approx_penalized_hindsight',
+            'agent_name': 'approx_penalized_hindsight',
+            'agent_args': {
+                'sample_path_number': 256,
+                'current_decision_var_type': 'integer',
+                'future_decision_var_type': 'continuous',
+                'is_myopic': False,
+                'penalty_ratio': 1,
+                'is_quasi_MC': True,
+                'max_periods': max_periods,
+                'geom_p': true_geom_p,
+                'grb_env': grb_env,
+            },
+        },
+        {
+            'policy_id': 'myopic',
+            'agent_name': 'myopic',
+            'agent_args': {
+                'grb_env': grb_env,
+            },
+        },
         {
             'policy_id': 'row_gen_alp',
             'agent_name': 'row_gen_alp',

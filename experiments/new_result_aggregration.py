@@ -108,14 +108,14 @@ class SimulateEvaluationResult:
                     'waiting_time_target_ptc_by_day_type': self.waiting_time_target_ptc_by_day_type,
                     }
                 pickle.dump(res, f)
-        '''
+        
         for (group_id, policy_id), stats in self.zero_penalized_gap.items():
             self.zero_penalized_improvement[(group_id, policy_id)] = self.zero_penalized_gap[(group_id, policy_id)] / self.penalized_information_relaxation_cost[(group_id)].mean / 0.01
         for (group_id, policy_id), stats in self.penalized_gap.items():
             self.penalized_improvement[(group_id, policy_id)] = self.penalized_gap[(group_id, policy_id)] / self.penalized_information_relaxation_cost[(group_id)].mean / 0.01
         for group_id, stats in self.gap_to_information_relaxation.items():
             self.improvement[group_id] = self.gap_to_information_relaxation[group_id] / self.policy_costs[(group_id, policy_id)].mean / 0.01
-        '''
+        
     def load(self, data):
         policy_id = data['policy_id']
         group_id = data['group_id']
@@ -149,9 +149,9 @@ class SimulateEvaluationResult:
                 self.waiting_time_target_ptc_by_day[policy_id][day] += total_scheduled_patients_ptc_by_day[day]
 
     def generate_table(self):
-        opc_20 = 'acbffa87277103d172340d09fb3d6714'
-        opc_50 = 'b0b4f1c19b307d6a79f44e80a39b44cf'
-        opc_80 = 'b25851a57c0a8ed02e9956116cf3c659'
+        opc_20 = 'd9b05dbc43a20cbb3bdcb288a172b634'
+        opc_50 = '8d8f27dc138e77346d4d15c71219a2cf'
+        opc_80 = 'e2899a935c322cd59ea015f835bb9498'
         table = f"""
         Hindsight & & & & & & \\\\ 
         \quad Policy cost & \({self.policy_costs[(opc_20, 'approx_hindsight')].confidence_interval()}\) & & \({self.policy_costs[(opc_50, 'approx_hindsight')].confidence_interval()}\) & &\({self.policy_costs[(opc_80, 'approx_hindsight')].confidence_interval()}\) & \\\\
@@ -200,9 +200,9 @@ class SimulateEvaluationResult:
             print(line)
 
 if __name__ == "__main__":
-    directory_path = os.path.join('.', 'experiments', 'results', "case_study")
+    directory_path = os.path.join('.', 'experiments', 'results', "waiting_penalty_impact")
     file_pattern = '[0-9]*.jsonl'
-    ser = SimulateEvaluationResult(directory_path, file_pattern, is_reuse=False)
+    ser = SimulateEvaluationResult(directory_path, file_pattern, is_reuse=True)
     print("Policy Costs")
     pprint(ser.policy_costs)
     print("Zero Penalized Gap")
@@ -228,7 +228,7 @@ if __name__ == "__main__":
     print('waiting_time_target_ptc_by_day')
     pprint(ser.waiting_time_target_ptc_by_day)
 
-    ser.format_table()
+    ser.generate_table()
 
     # ser.generate_table()
     # print(ser.one_time_cost_by_policy)
