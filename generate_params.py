@@ -358,15 +358,15 @@ def generate_train_env(test_envs, experiment_name, number_replication, dat_file,
 
 
 if __name__ == '__main__':
-    test_envs, experiment_name = generate_waiting_penalty_params(dat_file='table_waiting_penalty.dat')
-    # test_envs, experiment_name = generate_high_priority_arrival_rate(dat_file='table_high_priority_arrival_rate.dat')
+    # test_envs, experiment_name = generate_waiting_penalty_params(dat_file='table_waiting_penalty.dat')
+    test_envs, experiment_name = generate_high_priority_arrival_rate(dat_file='table_high_priority_arrival_rate.dat')
     # test_envs, experiment_name = generate_inital_state_variation(dat_file='initial_state_variation_impact.dat')
     # test_envs, experiment_name = generate_steady_state_distribution_variation(dat_file='steady_state_distribution_variation_impact.dat')
     # test_envs, experiment_name = generate_case_study_params(dat_file='case_study.dat')
     results = generate_test_paths_and_init_state(
         test_envs=test_envs,
         experiment_name=experiment_name, 
-        test_sample_path_num=2,
+        test_sample_path_num=5000,
         warm_up_periods=100,
         num_periods=None,
         dat_file='table.dat',
@@ -374,15 +374,6 @@ if __name__ == '__main__':
         is_require_alp_coefficients=True,
         is_require_penalty_coefficients=True,
     )
-    # test_envs, experiment_name = generate_inital_state_variation(dat_file='initial_state_variation_impact.dat')
-    # results = generate_train_env(
-    #     test_envs=test_envs,
-    #     experiment_name=experiment_name,
-    #     number_replication=5000,
-    #     dat_file='table.dat',
-    #     num_groups=998,  # divide into N groups
-    # )
-
 
 
 
