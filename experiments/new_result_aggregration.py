@@ -60,6 +60,14 @@ class SimulateEvaluationResult:
         self.penalized_gap = defaultdict(RunningStats)
         self.zero_penalized_improvement = defaultdict(RunningStats)
         self.penalized_improvement = defaultdict(RunningStats)
+
+        # Discountred total cost gap after warmup period (if the information relaxation includes the discount factor, then we should use discounted gap.)
+        self.after_warmup_policy_costs = defaultdict(RunningStats)
+        # Waiting time target violation
+        
+        # Average ovetime utilization per day
+        # Average postponement per day
+
         
         self.gap_to_information_relaxation = defaultdict(RunningStats)
         self.improvement = defaultdict(RunningStats)
@@ -71,6 +79,7 @@ class SimulateEvaluationResult:
         
         self.one_time_cost_by_policy = dd_dd_rs_factory()
         self.number_of_periods = None
+        self.information_relaxation_id = None
 
         pickle_file = os.path.join(self.directory_path, 'simulate_evaluation_result', 'scenario_results.pickle')
         # Make sure the parent directories exist
@@ -84,6 +93,7 @@ class SimulateEvaluationResult:
             self.penalized_information_relaxation_cost = data['penalized_information_relaxation_cost']
             self.gap_to_information_relaxation = data['gap_to_information_relaxation']
             self.one_time_cost_by_policy = data['one_time_cost_by_policy']
+            self.after_warmup_policy_costs = data['after_warmup_policy_costs']
             self.waiting_time_target_ptc_by_day = data['waiting_time_target_ptc_by_day']
             self.waiting_time_target_ptc_by_day_type = data['waiting_time_target_ptc_by_day_type']
         else:
@@ -104,11 +114,11 @@ class SimulateEvaluationResult:
                     'penalized_information_relaxation_cost': self.penalized_information_relaxation_cost,
                     'gap_to_information_relaxation': self.gap_to_information_relaxation,
                     'one_time_cost_by_policy': self.one_time_cost_by_policy,
+                    'after_warmup_policy_costs': self.after_warmup_policy_costs,
                     'waiting_time_target_ptc_by_day': self.waiting_time_target_ptc_by_day,
                     'waiting_time_target_ptc_by_day_type': self.waiting_time_target_ptc_by_day_type,
                     }
                 pickle.dump(res, f)
-        
         for (group_id, policy_id), stats in self.zero_penalized_gap.items():
             self.zero_penalized_improvement[(group_id, policy_id)] = self.zero_penalized_gap[(group_id, policy_id)] / self.penalized_information_relaxation_cost[(group_id)].mean / 0.01
         for (group_id, policy_id), stats in self.penalized_gap.items():
@@ -120,7 +130,10 @@ class SimulateEvaluationResult:
         policy_id = data['policy_id']
         group_id = data['group_id']
         self.policy_costs[(group_id, policy_id)] += data['total_cost']
-        if policy_id == 'approx_hindsight':
+        # use the first loaded policy as the information relaxation benchmark
+        if self.information_relaxation_id is None:
+            self.information_relaxation_id = policy_id
+        if policy_id == self.information_relaxation_id:
             self.zero_penalized_information_relaxation_cost[group_id] += data['zero_information_relaxation_cost']
             self.penalized_information_relaxation_cost[group_id] += data['penalized_information_relaxation_cost']
             self.gap_to_information_relaxation[group_id] += data['penalized_information_relaxation_cost'] - data['zero_information_relaxation_cost']
@@ -132,6 +145,10 @@ class SimulateEvaluationResult:
             self.one_time_cost_by_policy[policy_id][t] += cost
         
         warm_up_periods = data["warm_up_periods"]
+        # becarful abount the warm-up period.
+        costs_after_warmup = data['costs'][warm_up_periods+1:] if len(data['costs']) > warm_up_periods else data['costs']
+
+        self.after_warmup_policy_costs[(group_id, policy_id)] += sum(cost * (0.99 ** t) for t, cost in enumerate(costs_after_warmup))
         
         scheduled_patients = np.array(data["scheduled_patients"])[warm_up_periods:].sum(axis=0) if len(data["scheduled_patients"]) > warm_up_periods else np.array(data["scheduled_patients"]).sum(axis=0)
         
@@ -200,23 +217,9 @@ class SimulateEvaluationResult:
             print(line)
 
 if __name__ == "__main__":
-    directory_path = os.path.join('.', 'experiments', 'results', "waiting_penalty_impact")
+    directory_path = os.path.join('.', 'experiments', 'results', "case_study_test")
     file_pattern = '[0-9]*.jsonl'
-    ser = SimulateEvaluationResult(directory_path, file_pattern, is_reuse=True)
-    print("Policy Costs")
-    pprint(ser.policy_costs)
-    print("Zero Penalized Gap")
-    pprint(ser.zero_penalized_gap)
-    print("Penalized Gap")
-    pprint(ser.penalized_gap)
-    print("Zero Penalized Improvement")
-    pprint(ser.zero_penalized_improvement)
-    print("Penalized Improvement")
-    pprint(ser.penalized_improvement)
-    print("Zero Penalized Information Relaxation Cost")
-    pprint(ser.zero_penalized_information_relaxation_cost)
-    print("Penalized Information Relaxation Cost")
-    pprint(ser.penalized_information_relaxation_cost)
+    ser = SimulateEvaluationResult(directory_path, file_pattern, is_reuse=False)
 
     print("Gap to Information Relaxation")
     pprint(ser.gap_to_information_relaxation)
@@ -229,6 +232,8 @@ if __name__ == "__main__":
     pprint(ser.waiting_time_target_ptc_by_day)
 
     ser.generate_table()
+    print('self.after_warmup_policy_costs')
+    print(ser.after_warmup_policy_costs)
 
     # ser.generate_table()
     # print(ser.one_time_cost_by_policy)

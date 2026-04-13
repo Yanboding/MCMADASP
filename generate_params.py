@@ -363,6 +363,7 @@ if __name__ == '__main__':
     # test_envs, experiment_name = generate_inital_state_variation(dat_file='initial_state_variation_impact.dat')
     # test_envs, experiment_name = generate_steady_state_distribution_variation(dat_file='steady_state_distribution_variation_impact.dat')
     # test_envs, experiment_name = generate_case_study_params(dat_file='case_study.dat')
+    # num periods should include the inital state. For example, if warm_up_periods is 100 and num_periods is 110, then the sample path will include 1 initial state + 99 warm up periods + 10 test periods.
     results = generate_test_paths_and_init_state(
         test_envs=test_envs,
         experiment_name=experiment_name, 
