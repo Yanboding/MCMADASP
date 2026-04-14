@@ -303,14 +303,14 @@ def acquire_grb_env(kwargs=None, verbose=False, wait=15):
                 raise  # some other licence error
 
 def flatten(vars):
-    list = []
-    for item in vars:
-        list.extend(item.reshape(-1))
-    return np.array(list)
+    return gp.hstack([item.reshape(-1) for item in vars])
 
 def set_link_rhs(linking_constraints, rhs_values):
     for i, constr in enumerate(linking_constraints):
-        constr.setAttr("RHS", float(rhs_values[i]))
+        val = rhs_values[i]
+        if hasattr(val, 'getValue'):
+            val = val.getValue()
+        constr.setAttr("RHS", float(val))
 
 def safe_execute(debug_mode):
     def decorator(func):

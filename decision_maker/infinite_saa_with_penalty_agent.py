@@ -240,7 +240,6 @@ class InfinitePenalizedSAAAgent(InfiniteRTAgent):
                                                     imm_cost=imm_cost,
                                                     theta_vars=theta_vars,
                                                     action_vars=flatten_action_vars)
-        
         obj, info = benders_solver.solve(init_solution=None,
                                         tol=tol,
                                         max_iter=max_iterations,
@@ -432,7 +431,7 @@ if __name__ == "__main__":
                              [0, 0]]), np.array([1, 0, 0]))
     coefficients = [9.281778046800301, 18.406982109217235, 211.7776403012647, 1.8317253609339224, 17.076982109219387, 211.1143069679426, 454.97928707153835, 432.75496421837806, 390.1621061706687, 396.04000000002765, 391.2989818770426, 395.9409999999887, -190.9698684057874, 0.0, 1.9440832013001023e-12, 0.32999999999992724, 0.0]
     generating_function = LinearPenaltyFunction(env=env, coefficients=coefficients)
-    agent = InfinitePenalizedSAAAgent(env=env, discount_factor=env.discount_factor, sample_path_number=8, generating_function=generating_function, is_myopic=False)
+    agent = InfinitePenalizedSAAAgent(env=env, discount_factor=env.discount_factor, sample_path_number=2, generating_function=generating_function, is_myopic=False)
     # env.reset_random_seeds()
     # print('Test state:', test_state)
     # obj, action, info = agent.solve(test_state, action=None, parallel=True, verbose=False)
@@ -443,15 +442,15 @@ if __name__ == "__main__":
     # print('Objective from direct solve with trained coefficients:', direct_obj)
     # print('Action from direct solve with trained coefficients:', action)
     # print("gap between direct and Benders decomposition solve:", (direct_obj - obj)/direct_obj * 100)
-    #coefficients, obj, info = agent.train(verbose=True)
+    # coefficients, obj, info = agent.train(verbose=True)
     #print("Trained coefficients:", coefficients)
-    env.reset_random_seeds()  # Reset random seeds before training again to ensure the same sample paths
-    start = time.time()
-    obj, direct_coefficients, info = agent.benders_decomposition_train(coefficient_bound=GRB.INFINITY, parallel=True, init_state=test_state, verbose=False)
-    end = time.time()
-    print(f"Benders decomposition training time: {end - start} seconds")
-    print('Obejctive from Benders decomposition training:', obj) # 46799.67030716401
-    print('Coefficients from Benders decomposition training:', direct_coefficients)
+    # env.reset_random_seeds()  # Reset random seeds before training again to ensure the same sample paths
+    # start = time.time()
+    # obj, direct_coefficients, info = agent.benders_decomposition_train(coefficient_bound=GRB.INFINITY, parallel=True, init_state=test_state, verbose=False)
+    # end = time.time()
+    # print(f"Benders decomposition training time: {end - start} seconds")
+    # print('Obejctive from Benders decomposition training:', obj) # 46799.67030716401
+    # print('Coefficients from Benders decomposition training:', direct_coefficients)
     # env.reset_random_seeds()  # Reset random seeds before training again to ensure the same sample paths
     # start = time.time()
     # obj, reformulate_coefficients, info = agent.reformulate_train(coefficient_bound=GRB.INFINITY, verbose=False)
@@ -479,9 +478,9 @@ if __name__ == "__main__":
     # valid_actions = env.valid_actions(test_state)
     # print("Test state:", test_state)
     # print('Valid actions for test state:', valid_actions)
-    # obj, action, info = agent.solve(test_state, verbose=True)
-    # print('Objective from reformulated solve:', obj)
-    # print('Action from reformulated solve:', action)
+    obj, action, info = agent.solve(test_state, t=1, verbose=True)
+    print('Objective from reformulated solve:', obj)
+    print('Action from reformulated solve:', action)
     # obj, action, info = agent.benders_decomposition_solve(test_state, action=None, parallel=False, verbose=False)
     # print('Objective from Benders decomposition solve with trained coefficients:', obj)
     # print('Action from Benders decomposition solve with trained coefficients:', action)

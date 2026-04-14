@@ -112,6 +112,7 @@ def generate_high_priority_arrival_rate(dat_file):
                         'env_args': env_args,
                       }
         env_uid = get_uid(env_args)
+        print(env_uid)
         lines_to_write.append(f"{i} python run.py --params '" + json.dumps(save_params) + "'\n")
         test_params[env_uid] = copy.deepcopy(env_args)
     with open(dat_file, 'w') as f:
@@ -279,7 +280,7 @@ def generate_test_paths_and_init_state(test_envs, experiment_name, test_sample_p
         })+ "'\n")
         obj_alp_train, alp_coefficients = train_alp_coefficients(env_args=env_args, experiment_name=experiment_name) if is_require_alp_coefficients else (None, None)
         if is_require_penalty_coefficients:
-            obj, direct_coefficients, info = train_penalty_coefficients(env_args=env_args, experiment_name=experiment_name, sample_path_number=10)
+            obj, direct_coefficients, info = train_penalty_coefficients(env_args=env_args, experiment_name=experiment_name, sample_path_number=256)
         else:
             direct_coefficients = [0] * (env.planning_horizon * 2 + env.num_types + env.booking_window_size * env.num_types + env.planning_horizon)
         max_length = 0
@@ -358,22 +359,22 @@ def generate_train_env(test_envs, experiment_name, number_replication, dat_file,
 
 if __name__ == '__main__':
     # test_envs, experiment_name = generate_waiting_penalty_params(dat_file='table_waiting_penalty.dat')
-    # test_envs, experiment_name = generate_high_priority_arrival_rate(dat_file='table_high_priority_arrival_rate.dat')
+    test_envs, experiment_name = generate_high_priority_arrival_rate(dat_file='table_high_priority_arrival_rate.dat')
     # test_envs, experiment_name = generate_inital_state_variation(dat_file='initial_state_variation_impact.dat')
     # test_envs, experiment_name = generate_steady_state_distribution_variation(dat_file='steady_state_distribution_variation_impact.dat')
     # test_envs, experiment_name = generate_case_study_params(dat_file='case_study.dat')
     # num periods should include the inital state. For example, if warm_up_periods is 100 and num_periods is 110, then the sample path will include 1 initial state + 99 warm up periods + 10 test periods.
-    test_envs, experiment_name = generate_case_study_params(dat_file='case_study.dat')
+    # test_envs, experiment_name = generate_case_study_params(dat_file='case_study.dat')
     results = generate_test_paths_and_init_state(
         test_envs=test_envs,
         experiment_name=experiment_name, 
-        test_sample_path_num=1000,
-        warm_up_periods=750,
-        num_periods=1499,
+        test_sample_path_num=5000,
+        warm_up_periods=100,
+        num_periods=None,
         dat_file='table.dat',
         num_groups=998,  # divide into N groups
         is_require_alp_coefficients=True,
-        is_require_penalty_coefficients=False,
+        is_require_penalty_coefficients=True,
     )
 
 

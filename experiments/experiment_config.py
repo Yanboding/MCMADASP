@@ -158,7 +158,7 @@ class ExperimentConfig:
     
     @classmethod
     def from_toy_case(cls):
-        booking_window_size = 3
+        booking_window_size = 15
         treatment_patterns = ["1 * 3", 
                               "1 * 2"]
         arrival_rates = [1, 2]

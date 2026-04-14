@@ -60,10 +60,11 @@ class SimulateEvaluationResult:
         'overtime_utilization'
     )
 
-    def __init__(self,directory_path, file_pattern, env_info, is_reuse=False):
+    def __init__(self,directory_path, file_pattern, env_info, group_ids, is_reuse=False):
         self.directory_path = directory_path
         self.file_pattern = file_pattern
         self.env_info = env_info
+        self.group_ids = group_ids
         self.is_reuse = is_reuse
         # Using named functions instead of lambdas
         self.scenario_results = dd_dd_dd_float_factory()
@@ -190,9 +191,9 @@ class SimulateEvaluationResult:
             
 
     def generate_table(self):
-        opc_20 = 'd9b05dbc43a20cbb3bdcb288a172b634'
-        opc_50 = '8d8f27dc138e77346d4d15c71219a2cf'
-        opc_80 = 'e2899a935c322cd59ea015f835bb9498'
+        opc_20 = self.group_ids[0]
+        opc_50 = self.group_ids[1]
+        opc_80 = self.group_ids[2]
         table = f"""
         Hindsight & & & & & & \\\\ 
         \quad Policy cost & \({self.policy_costs[(opc_20, 'approx_hindsight')].confidence_interval()}\) & & \({self.policy_costs[(opc_50, 'approx_hindsight')].confidence_interval()}\) & &\({self.policy_costs[(opc_80, 'approx_hindsight')].confidence_interval()}\) & \\\\
@@ -249,13 +250,14 @@ class SimulateEvaluationResult:
         return table
 
 if __name__ == "__main__":
-    directory_path = os.path.join('.', 'experiments', 'results', "case_study")
+    directory_path = os.path.join('.', 'experiments', 'results', "high_priority_arrival_rate_impact")
     file_pattern = '[0-9]*.jsonl'
     env_info = {
-        'waiting_time_targets': [1]*3 + [10]*3 + [5]*8 + [10]*4,
-        'overtime_capacity': 15,
+        'waiting_time_targets': [1]*2,
+        'overtime_capacity': 5,
     }
-    ser = SimulateEvaluationResult(directory_path, file_pattern, env_info, is_reuse=False)
+    group_ids = ['5f0e901ef4a1826593ccd273ee39e147', '6dc54e52dcec4a656bac6edfd35f686e', '7bc0a7c0506828fbe820cff1d9d99fb1']
+    ser = SimulateEvaluationResult(directory_path, file_pattern, env_info, group_ids = group_ids, is_reuse=True)
 
     # print("Gap to Information Relaxation")
     # pprint(ser.gap_to_information_relaxation)
@@ -267,16 +269,16 @@ if __name__ == "__main__":
     # print('waiting_time_target_ptc_by_day')
     # pprint(ser.waiting_time_target_ptc_by_day)
 
-    # ser.generate_table()
+    ser.generate_table()
     # print('self.after_warmup_policy_costs')
     # print(ser.after_warmup_policy_costs)
 
-    pprint(ser.waiting_time_target_ptc_by_type_day)
+    # pprint(ser.waiting_time_target_ptc_by_type_day)
 
-    ser.format_table()
-    pprint(ser.overtime_utilization)
-    pprint(ser.waiting_time_violation)
-    print(ser.summary_table())
+    # ser.format_table()
+    # pprint(ser.overtime_utilization)
+    # pprint(ser.waiting_time_violation)
+    # print(ser.summary_table())
     # print(ser.one_time_cost_by_policy)
     # approximate_value_plot_from_running_stats_dict(running_stats_dict=ser.one_time_cost_by_policy,
     #                                                x_vals=None,

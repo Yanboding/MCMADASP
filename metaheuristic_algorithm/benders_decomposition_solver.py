@@ -4,7 +4,7 @@ import time
 import numpy as np
 from gurobipy import GRB
 
-from utils import solve_and_handle_errors, get_solution_value, set_link_rhs
+from utils import solve_and_handle_errors, set_link_rhs
 from concurrent.futures import ThreadPoolExecutor
 
 
@@ -276,7 +276,7 @@ class BendersDecompositionSolver:
                         raise RuntimeError("Master model optimal solution not found")
                     print(f"Iteration {iteration}, master solved in {time.time() - start} seconds")
                     self._report_memory_usage(iteration)
-                    action = get_solution_value(self.action_vars).astype(float)
+                    action = self.action_vars.X
                     if core_point is None:
                         core_point = copy.deepcopy(action)
                 
@@ -317,13 +317,13 @@ class BendersDecompositionSolver:
 
                     if not is_feasible:
                         all_feasible = False
-                        cut_expr = v + np.dot(duals, self.action_vars - action)
+                        cut_expr = v + duals @ (self.action_vars - action)
                         feasibility_cuts.append(cut_expr >= 0)
                         # Note: We continue the loop to collect all possible feasibility cuts
                         # rather than breaking, which helps the Master converge faster.
                     else:
                         cost_to_go_estimation += v
-                        cut_rhs = v + np.dot(duals, self.action_vars - action)
+                        cut_rhs = v + duals @ (self.action_vars - action)
                         if self.master_model.ModelSense == GRB.MINIMIZE:
                             optimality_cuts.append(self.theta_vars[scenario_id] >= cut_rhs)
                         else:

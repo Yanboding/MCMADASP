@@ -833,36 +833,36 @@ def evaluate_policy_costs_with_information_relaxation(uid, experiment_name, init
     penalized_lowerbound_instance = InfinitePenalizedSAAAgent(env, discount_factor=env.discount_factor, **penalized_lowerbound_args)
 
     policy_specs = [
-        # {
-        #     'policy_id': 'approx_hindsight',
-        #     'agent_name': 'approx_hindsight',
-        #     'agent_args': {
-        #         'sample_path_number': 256,
-        #         'current_decision_var_type': 'integer',
-        #         'future_decision_var_type': 'continuous',
-        #         'is_myopic': False,
-        #         'penalty_ratio': 0,
-        #         'is_quasi_MC': True,
-        #         'max_periods': max_periods,
-        #         'geom_p': true_geom_p,
-        #         'grb_env': grb_env,
-        #     },
-        # },
-        # {
-        #     'policy_id': 'approx_penalized_hindsight',
-        #     'agent_name': 'approx_penalized_hindsight',
-        #     'agent_args': {
-        #         'sample_path_number': 256,
-        #         'current_decision_var_type': 'integer',
-        #         'future_decision_var_type': 'continuous',
-        #         'is_myopic': False,
-        #         'penalty_ratio': 1,
-        #         'is_quasi_MC': True,
-        #         'max_periods': max_periods,
-        #         'geom_p': true_geom_p,
-        #         'grb_env': grb_env,
-        #     },
-        # },
+        {
+            'policy_id': 'approx_hindsight',
+            'agent_name': 'approx_hindsight',
+            'agent_args': {
+                'sample_path_number': 256,
+                'current_decision_var_type': 'integer',
+                'future_decision_var_type': 'continuous',
+                'is_myopic': False,
+                'penalty_ratio': 0,
+                'is_quasi_MC': True,
+                'max_periods': max_periods,
+                'geom_p': true_geom_p,
+                'grb_env': grb_env,
+            },
+        },
+        {
+            'policy_id': 'approx_penalized_hindsight',
+            'agent_name': 'approx_penalized_hindsight',
+            'agent_args': {
+                'sample_path_number': 256,
+                'current_decision_var_type': 'integer',
+                'future_decision_var_type': 'continuous',
+                'is_myopic': False,
+                'penalty_ratio': 1,
+                'is_quasi_MC': True,
+                'max_periods': max_periods,
+                'geom_p': true_geom_p,
+                'grb_env': grb_env,
+            },
+        },
         {
             'policy_id': 'myopic',
             'agent_name': 'myopic',
@@ -1075,11 +1075,11 @@ if __name__ == '__main__':
     # evaluate_information_relaxation_cost(**params, generating_function=generating_function, job_id=args.job_id)
     #calculate_penalized_lowerbound_with_same_initial_state(**params, lowerbound_args=lowerbound_args, generating_function=generating_function, job_id=args.job_id)
     # calculate_information_relexation_costs(**params, train_sample_path_num=30,test_sample_path_num=8, job_id=args.job_id)
-    train_penalty_coefficients(**params, job_id=args.job_id)
-    # grb_env = acquire_grb_env({"Threads": 0}, verbose=False, wait=15)
-    # failed_jobs = []
-    # for param in params:
-    #     # pprint(param['env_args'])
-    #     # coefficient_training_test(**param, grb_env=grb_env, job_id=args.job_id)
-    #     # coefficient_out_of_sample_test(**param, grb_env=grb_env, job_id=args.job_id)
-    #     evaluate_policy_costs_with_information_relaxation(**param, grb_env=grb_env, job_id=args.job_id)
+    # train_penalty_coefficients(**params, job_id=args.job_id)
+    grb_env = acquire_grb_env({"Threads": 0}, verbose=False, wait=15)
+    failed_jobs = []
+    for param in params:
+        # pprint(param['env_args'])
+        # coefficient_training_test(**param, grb_env=grb_env, job_id=args.job_id)
+        # coefficient_out_of_sample_test(**param, grb_env=grb_env, job_id=args.job_id)
+        evaluate_policy_costs_with_information_relaxation(**param, grb_env=grb_env, job_id=args.job_id)
