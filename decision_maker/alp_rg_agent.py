@@ -34,7 +34,7 @@ class ALPRowGenerationAgent(InfiniteRTAgent):
 
     def get_approx_value_fn(self, state, W_0, U, V, W):
         regular_bookings, overtimes, waitlist = state
-        return W_0 + np.dot(U, regular_bookings) + np.dot(V, overtimes) + np.dot(W, waitlist)
+        return W_0 + U @ regular_bookings + V @ overtimes + W @ waitlist
 
     def get_candidate(self, state_var, action_var):
         regular_booking_vars, overtime_vars, waitlist_vars = state_var

@@ -274,7 +274,7 @@ def generate_test_paths_and_init_state(test_envs, experiment_name, test_sample_p
         print(f"Processing env_uid: {env_uid}")
         obj_alp_train, alp_coefficients = train_alp_coefficients(env_args=env_args, experiment_name=experiment_name) if is_require_alp_coefficients else (None, None)
         if is_require_penalty_coefficients:
-            obj, direct_coefficients, info = train_penalty_coefficients(env_args=env_args, experiment_name=experiment_name, sample_path_number=5)
+            obj, direct_coefficients, info = train_penalty_coefficients(env_args=env_args, experiment_name=experiment_name, sample_path_number=10)
         else:
             direct_coefficients = [0] * (env.planning_horizon * 2 + env.num_types + env.booking_window_size * env.num_types + env.planning_horizon)
         max_length = 0
@@ -364,11 +364,11 @@ if __name__ == '__main__':
         experiment_name=experiment_name, 
         test_sample_path_num=1000,
         warm_up_periods=750,
-        num_periods=1500,
+        num_periods=1499,
         dat_file='table.dat',
         num_groups=998,  # divide into N groups
         is_require_alp_coefficients=True,
-        is_require_penalty_coefficients=True,
+        is_require_penalty_coefficients=False,
     )
 
 

@@ -832,36 +832,36 @@ def evaluate_policy_costs_with_information_relaxation(uid, experiment_name, init
     penalized_lowerbound_instance = InfinitePenalizedSAAAgent(env, discount_factor=env.discount_factor, **penalized_lowerbound_args)
 
     policy_specs = [
-        {
-            'policy_id': 'approx_hindsight',
-            'agent_name': 'approx_hindsight',
-            'agent_args': {
-                'sample_path_number': 256,
-                'current_decision_var_type': 'integer',
-                'future_decision_var_type': 'continuous',
-                'is_myopic': False,
-                'penalty_ratio': 0,
-                'is_quasi_MC': True,
-                'max_periods': max_periods,
-                'geom_p': true_geom_p,
-                'grb_env': grb_env,
-            },
-        },
-        {
-            'policy_id': 'approx_penalized_hindsight',
-            'agent_name': 'approx_penalized_hindsight',
-            'agent_args': {
-                'sample_path_number': 256,
-                'current_decision_var_type': 'integer',
-                'future_decision_var_type': 'continuous',
-                'is_myopic': False,
-                'penalty_ratio': 1,
-                'is_quasi_MC': True,
-                'max_periods': max_periods,
-                'geom_p': true_geom_p,
-                'grb_env': grb_env,
-            },
-        },
+        # {
+        #     'policy_id': 'approx_hindsight',
+        #     'agent_name': 'approx_hindsight',
+        #     'agent_args': {
+        #         'sample_path_number': 256,
+        #         'current_decision_var_type': 'integer',
+        #         'future_decision_var_type': 'continuous',
+        #         'is_myopic': False,
+        #         'penalty_ratio': 0,
+        #         'is_quasi_MC': True,
+        #         'max_periods': max_periods,
+        #         'geom_p': true_geom_p,
+        #         'grb_env': grb_env,
+        #     },
+        # },
+        # {
+        #     'policy_id': 'approx_penalized_hindsight',
+        #     'agent_name': 'approx_penalized_hindsight',
+        #     'agent_args': {
+        #         'sample_path_number': 256,
+        #         'current_decision_var_type': 'integer',
+        #         'future_decision_var_type': 'continuous',
+        #         'is_myopic': False,
+        #         'penalty_ratio': 1,
+        #         'is_quasi_MC': True,
+        #         'max_periods': max_periods,
+        #         'geom_p': true_geom_p,
+        #         'grb_env': grb_env,
+        #     },
+        # },
         {
             'policy_id': 'myopic',
             'agent_name': 'myopic',
@@ -894,8 +894,12 @@ def evaluate_policy_costs_with_information_relaxation(uid, experiment_name, init
             generating_function=generating_function,
         )
         warmup_sate = tuple(np.array(item) for item in policy_result.get('warmup_state', init_state))
+        start = time.time()
         zero_information_relaxation_cost, _, _ = zero_lowerbound_instance.direct_solve(warmup_sate, t=warm_up_periods+1)
+        print(f"Zero information relaxation cost computed in {time.time() - start:.1f} seconds: {zero_information_relaxation_cost}")
+        start = time.time()
         penalized_information_relaxation_cost, _, _ = penalized_lowerbound_instance.direct_solve(warmup_sate, t=warm_up_periods+1)
+        print(f"Penalized information relaxation cost computed in {time.time() - start:.1f} seconds: {penalized_information_relaxation_cost}")
         policy_result.update({
             'uid': uid,
             'group_id': group_id,

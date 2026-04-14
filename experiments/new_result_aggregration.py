@@ -57,6 +57,7 @@ class SimulateEvaluationResult:
         'waiting_time_target_ptc_by_day',
         'waiting_time_target_ptc_by_type_day',
         'waiting_time_violation',
+        'overtime_utilization'
     )
 
     def __init__(self,directory_path, file_pattern, env_info, is_reuse=False):
@@ -153,7 +154,7 @@ class SimulateEvaluationResult:
         
         warm_up_periods = data["warm_up_periods"]
         # becarful abount the warm-up period.
-        costs_after_warmup = data['costs'][warm_up_periods+1:] if len(data['costs']) > warm_up_periods else data['costs']
+        costs_after_warmup = data['costs'][warm_up_periods:] if len(data['costs']) > warm_up_periods else data['costs']
 
         self.after_warmup_policy_costs[(group_id, policy_id)] += sum(cost * (0.99 ** t) for t, cost in enumerate(costs_after_warmup))
         
@@ -240,20 +241,21 @@ class SimulateEvaluationResult:
             print(line)
     
     def summary_table(self):
-        group_id = '6d568a1e9b411edbcdcf517b867f223d'
+        group_id = 'f4e3ac161730cb1a133fc82f962b8c4f'
         table = f"""
+        Myopic & ${self.after_warmup_policy_costs[(group_id, 'myopic')].confidence_interval()}$ & ${self.waiting_time_violation[(group_id, 'myopic')].confidence_interval()}$ & ${self.overtime_utilization[(group_id, 'myopic')].confidence_interval()}$ \\\\
         ALP & ${self.after_warmup_policy_costs[(group_id, 'row_gen_alp')].confidence_interval()}$ & ${self.waiting_time_violation[(group_id, 'row_gen_alp')].confidence_interval()}$ & ${self.overtime_utilization[(group_id, 'row_gen_alp')].confidence_interval()}$ \\\\
         """
         return table
 
 if __name__ == "__main__":
-    directory_path = os.path.join('.', 'experiments', 'results', "case_study_backup")
+    directory_path = os.path.join('.', 'experiments', 'results', "case_study")
     file_pattern = '[0-9]*.jsonl'
     env_info = {
         'waiting_time_targets': [1]*3 + [10]*3 + [5]*8 + [10]*4,
         'overtime_capacity': 15,
     }
-    ser = SimulateEvaluationResult(directory_path, file_pattern, env_info, is_reuse=True)
+    ser = SimulateEvaluationResult(directory_path, file_pattern, env_info, is_reuse=False)
 
     # print("Gap to Information Relaxation")
     # pprint(ser.gap_to_information_relaxation)

@@ -323,11 +323,11 @@ class InfinitePenalizedSAAAgent(InfiniteRTAgent):
                             overtime_decision_coeff_vars)
         coefficient_linking_constraints = self.build_coefficient_linking_constraints(sub_model, coefficient_vars)
         state = self.env.generate_initial_state() if init_state is None else init_state
-        state_var = self.get_state_var_fast(sub_model)
+        state_var = self.get_state_var(sub_model)
         state_linking_constraints = self.build_state_linking_constraints(sub_model, state_var)
         flatten_state = flatten(state)
         set_link_rhs(state_linking_constraints, flatten_state)
-        action_var = self.get_action_var_fast(model=sub_model, advance_scheduling_type=self.future_decision_var_type)
+        action_var = self.get_action_var(model=sub_model, advance_scheduling_type=self.future_decision_var_type)
         # action_var = self.get_action_var(model=sub_model, advance_scheduling_type=self.future_decision_var_type)
         self.add_action_space_constraints(model=sub_model, state_var=state_var, action_var=action_var)
         # Initialize scenario state and action like in direct solution
@@ -339,12 +339,12 @@ class InfinitePenalizedSAAAgent(InfiniteRTAgent):
             penalty = self.generating_function.calculate_penalty(state_var, action_var, new_arrival, is_var=True, coefficients=coefficient_vars)
             cost += penalty
             trajectory.append((state_var, action_var, new_arrival))
-            state_var = self.get_next_state_fast(model=sub_model,
+            state_var = self.get_next_state(model=sub_model,
                                             state=state_var,
                                             action=action_var,
                                             new_arrival=new_arrival)
             # action_var = self.get_action_var(model=sub_model, advance_scheduling_type=self.future_decision_var_type)
-            action_var = self.get_action_var_fast(model=sub_model, advance_scheduling_type=self.future_decision_var_type)
+            action_var = self.get_action_var(model=sub_model, advance_scheduling_type=self.future_decision_var_type)
             self.add_action_space_constraints(model=sub_model, state_var=state_var, action_var=action_var)
             cost += self.env.cost_fn(state_var, action_var, is_var=True)
         sub_model.setObjective(cost, GRB.MINIMIZE)
@@ -375,8 +375,8 @@ class InfinitePenalizedSAAAgent(InfiniteRTAgent):
                                                     imm_cost=None,
                                                     theta_vars=theta_vars,
                                                     action_vars=coefficient_vars)
-        #init_solution = [0] * len(coefficient_vars)
-        init_solution = None
+        init_solution = [0] * len(coefficient_vars)
+        #init_solution = None
         upper_bound, info = benders_solver.solve(init_solution=init_solution,max_iter=1500, parallel=parallel, verbose=verbose)
         coefficients = [var.X for var in coefficient_vars]
         return upper_bound, coefficients, info
@@ -432,7 +432,7 @@ if __name__ == "__main__":
                              [0, 0]]), np.array([1, 0, 0]))
     coefficients = [9.281778046800301, 18.406982109217235, 211.7776403012647, 1.8317253609339224, 17.076982109219387, 211.1143069679426, 454.97928707153835, 432.75496421837806, 390.1621061706687, 396.04000000002765, 391.2989818770426, 395.9409999999887, -190.9698684057874, 0.0, 1.9440832013001023e-12, 0.32999999999992724, 0.0]
     generating_function = LinearPenaltyFunction(env=env, coefficients=coefficients)
-    agent = InfinitePenalizedSAAAgent(env=env, discount_factor=env.discount_factor, sample_path_number=256, generating_function=generating_function, is_myopic=False)
+    agent = InfinitePenalizedSAAAgent(env=env, discount_factor=env.discount_factor, sample_path_number=8, generating_function=generating_function, is_myopic=False)
     # env.reset_random_seeds()
     # print('Test state:', test_state)
     # obj, action, info = agent.solve(test_state, action=None, parallel=True, verbose=False)
