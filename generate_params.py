@@ -272,6 +272,11 @@ def generate_test_paths_and_init_state(test_envs, experiment_name, test_sample_p
     for env_uid, env_args in test_envs.items():
         env = get_config_by_type('infinite_custom', args=env_args).env
         print(f"Processing env_uid: {env_uid}")
+        print(f"1 python run.py --params '" + json.dumps({
+            'env_args': env_args,
+            'experiment_name': experiment_name,
+            'sample_path_number': 256,
+        })+ "'\n")
         obj_alp_train, alp_coefficients = train_alp_coefficients(env_args=env_args, experiment_name=experiment_name) if is_require_alp_coefficients else (None, None)
         if is_require_penalty_coefficients:
             obj, direct_coefficients, info = train_penalty_coefficients(env_args=env_args, experiment_name=experiment_name, sample_path_number=10)
