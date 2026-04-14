@@ -311,6 +311,7 @@ def flatten(vars):
 def set_link_rhs(linking_constraints, rhs_values):
     for i, constr in enumerate(linking_constraints):
         constr.setAttr("RHS", float(rhs_values[i]))
+
 def safe_execute(debug_mode):
     def decorator(func):
         def wrapper(*args, **kwargs):

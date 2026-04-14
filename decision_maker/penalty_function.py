@@ -28,7 +28,7 @@ class LinearPenaltyFunction:
             theta_u, theta_v, theta_w, theta_x, theta_y = coefficients
         else:
             theta_u, theta_v, theta_w, theta_x, theta_y = self.theta_u, self.theta_v, self.theta_w, self.theta_x, self.theta_y
-        linear_approx = np.sum(theta_u * post_action_regular_bookings) + np.sum(theta_v * post_action_overtimes) + np.sum(theta_w * post_action_waitlist) + np.sum(theta_x * advance_scheduling_decision) + np.sum(theta_y * overtime_decision)
+        linear_approx = theta_u @ post_action_regular_bookings + theta_v @ post_action_overtimes + theta_w @ post_action_waitlist + theta_x.reshape(-1) @ advance_scheduling_decision.reshape(-1) + theta_y @ overtime_decision
         penalty_value = total_arrival_difference * linear_approx
         return penalty_value
     
@@ -39,7 +39,7 @@ class LinearPenaltyFunction:
         gradient = np.concatenate([total_arrival_difference * post_action_regular_bookings,
                                    total_arrival_difference * post_action_overtimes,
                                    total_arrival_difference * post_action_waitlist,
-                                   total_arrival_difference * advance_scheduling_decision.flatten(),
+                                   total_arrival_difference * advance_scheduling_decision.reshape(-1),
                                    total_arrival_difference * overtime_decision])
         return gradient
 

@@ -284,14 +284,15 @@ class InfinitePenalizedSAAAgent(InfiniteRTAgent):
         master_model.setParam("MultiObjPre", 0)
         master_model.setParam("FeasibilityTol", 1e-9)
         master_model.setParam("OptimalityTol", 1e-9)
-        theta_vars = np.array(
-            [master_model.addVar(vtype=GRB.CONTINUOUS, lb=-GRB.INFINITY, ub=1e10, name=f"eta_{omega}") for omega in range(len(self.delta))])
+        # theta_vars = np.array(
+        #     [master_model.addVar(vtype=GRB.CONTINUOUS, lb=-GRB.INFINITY, ub=1e10, name=f"eta_{omega}") for omega in range(len(self.delta))])
+        theta_vars = master_model.addMVar(shape=self.sample_path_number, vtype=GRB.CONTINUOUS, lb=-GRB.INFINITY, ub=1e10, name="theta")
         z = theta_vars.sum() / self.sample_path_number
-        post_action_regular_bookings_coeff_vars = np.array([master_model.addVar(vtype=GRB.CONTINUOUS, lb=-coefficient_bound, ub=coefficient_bound, name=f"theta^u_{j}") for j in range(self.env.planning_horizon)])
-        post_action_overtimes_coeff_vars = np.array([master_model.addVar(vtype=GRB.CONTINUOUS, lb=-coefficient_bound, ub=coefficient_bound, name=f"theta^v_{j}") for j in range(self.env.planning_horizon)])
-        post_action_waitlist_coeff_vars = np.array([master_model.addVar(vtype=GRB.CONTINUOUS, lb=-coefficient_bound, ub=coefficient_bound, name=f"theta^w_{i}") for i in range(self.env.num_types)])
-        advance_scheduling_decision_coeff_vars = np.array([[master_model.addVar(vtype=GRB.CONTINUOUS, lb=-coefficient_bound, ub=coefficient_bound, name=f"theta^x_{n}_{i}")  for i in range(self.env.num_types)] for n in range(self.env.booking_window_size)])
-        overtime_decision_coeff_vars = np.array([master_model.addVar(vtype=GRB.CONTINUOUS, lb=-coefficient_bound, ub=coefficient_bound, name=f"theta^y_{j}") for j in range(self.env.planning_horizon)])
+        post_action_regular_bookings_coeff_vars = master_model.addMVar(shape=self.env.planning_horizon, vtype=GRB.CONTINUOUS, lb=-coefficient_bound, ub=coefficient_bound, name="theta^u")
+        post_action_overtimes_coeff_vars = master_model.addMVar(shape=self.env.planning_horizon, vtype=GRB.CONTINUOUS, lb=-coefficient_bound, ub=coefficient_bound, name="theta^v")
+        post_action_waitlist_coeff_vars = master_model.addMVar(shape=self.env.num_types, vtype=GRB.CONTINUOUS, lb=-coefficient_bound, ub=coefficient_bound, name="theta^w")
+        advance_scheduling_decision_coeff_vars = master_model.addMVar(shape=(self.env.booking_window_size, self.env.num_types), vtype=GRB.CONTINUOUS, lb=-coefficient_bound, ub=coefficient_bound, name="theta^x")
+        overtime_decision_coeff_vars = master_model.addMVar(shape=self.env.planning_horizon, vtype=GRB.CONTINUOUS, lb=-coefficient_bound, ub=coefficient_bound, name="theta^y")
         coefficient_vars = (post_action_regular_bookings_coeff_vars.tolist() +
                             post_action_overtimes_coeff_vars.tolist() +
                             post_action_waitlist_coeff_vars.tolist() +
@@ -310,11 +311,11 @@ class InfinitePenalizedSAAAgent(InfiniteRTAgent):
         sub_model.setParam("MultiObjPre", 0)
         sub_model.setParam("FeasibilityTol", 1e-9)
         sub_model.setParam("OptimalityTol", 1e-9)
-        post_action_regular_bookings_coeff_vars = np.array([sub_model.addVar(vtype=GRB.CONTINUOUS, lb=-GRB.INFINITY, ub=GRB.INFINITY, name=f"theta^u_{j}") for j in range(self.env.planning_horizon)])
-        post_action_overtimes_coeff_vars = np.array([sub_model.addVar(vtype=GRB.CONTINUOUS, lb=-GRB.INFINITY, ub=GRB.INFINITY, name=f"theta^v_{j}") for j in range(self.env.planning_horizon)])
-        post_action_waitlist_coeff_vars = np.array([sub_model.addVar(vtype=GRB.CONTINUOUS, lb=-GRB.INFINITY, ub=GRB.INFINITY, name=f"theta^w_{i}") for i in range(self.env.num_types)])
-        advance_scheduling_decision_coeff_vars = np.array([[sub_model.addVar(vtype=GRB.CONTINUOUS, lb=-GRB.INFINITY, ub=GRB.INFINITY, name=f"theta^x_{n}_{i}")  for i in range(self.env.num_types)] for n in range(self.env.booking_window_size)])
-        overtime_decision_coeff_vars = np.array([sub_model.addVar(vtype=GRB.CONTINUOUS, lb=-GRB.INFINITY, ub=GRB.INFINITY, name=f"theta^y_{j}") for j in range(self.env.planning_horizon)])
+        post_action_regular_bookings_coeff_vars = sub_model.addMVar(shape=self.env.planning_horizon, vtype=GRB.CONTINUOUS, lb=-GRB.INFINITY, ub=GRB.INFINITY, name="theta^u")
+        post_action_overtimes_coeff_vars = sub_model.addMVar(shape=self.env.planning_horizon, vtype=GRB.CONTINUOUS, lb=-GRB.INFINITY, ub=GRB.INFINITY, name="theta^v")
+        post_action_waitlist_coeff_vars = sub_model.addMVar(shape=self.env.num_types, vtype=GRB.CONTINUOUS, lb=-GRB.INFINITY, ub=GRB.INFINITY, name="theta^w")
+        advance_scheduling_decision_coeff_vars = sub_model.addMVar(shape=(self.env.booking_window_size, self.env.num_types), vtype=GRB.CONTINUOUS, lb=-GRB.INFINITY, ub=GRB.INFINITY, name="theta^x")
+        overtime_decision_coeff_vars = sub_model.addMVar(shape=self.env.planning_horizon, vtype=GRB.CONTINUOUS, lb=-GRB.INFINITY, ub=GRB.INFINITY, name="theta^y")
         coefficient_vars = (post_action_regular_bookings_coeff_vars,
                             post_action_overtimes_coeff_vars, 
                             post_action_waitlist_coeff_vars, 
@@ -322,11 +323,11 @@ class InfinitePenalizedSAAAgent(InfiniteRTAgent):
                             overtime_decision_coeff_vars)
         coefficient_linking_constraints = self.build_coefficient_linking_constraints(sub_model, coefficient_vars)
         state = self.env.generate_initial_state() if init_state is None else init_state
-        state_var = self.get_state_var(sub_model)
+        state_var = self.get_state_var_fast(sub_model)
         state_linking_constraints = self.build_state_linking_constraints(sub_model, state_var)
         flatten_state = flatten(state)
         set_link_rhs(state_linking_constraints, flatten_state)
-        action_var = self.get_action_var(model=sub_model, advance_scheduling_type=self.future_decision_var_type)
+        action_var = self.get_action_var_fast(model=sub_model, advance_scheduling_type=self.future_decision_var_type)
         # action_var = self.get_action_var(model=sub_model, advance_scheduling_type=self.future_decision_var_type)
         self.add_action_space_constraints(model=sub_model, state_var=state_var, action_var=action_var)
         # Initialize scenario state and action like in direct solution
@@ -338,12 +339,12 @@ class InfinitePenalizedSAAAgent(InfiniteRTAgent):
             penalty = self.generating_function.calculate_penalty(state_var, action_var, new_arrival, is_var=True, coefficients=coefficient_vars)
             cost += penalty
             trajectory.append((state_var, action_var, new_arrival))
-            state_var = self.get_next_state(model=sub_model,
+            state_var = self.get_next_state_fast(model=sub_model,
                                             state=state_var,
                                             action=action_var,
                                             new_arrival=new_arrival)
             # action_var = self.get_action_var(model=sub_model, advance_scheduling_type=self.future_decision_var_type)
-            action_var = self.get_action_var(model=sub_model, advance_scheduling_type=self.future_decision_var_type)
+            action_var = self.get_action_var_fast(model=sub_model, advance_scheduling_type=self.future_decision_var_type)
             self.add_action_space_constraints(model=sub_model, state_var=state_var, action_var=action_var)
             cost += self.env.cost_fn(state_var, action_var, is_var=True)
         sub_model.setObjective(cost, GRB.MINIMIZE)
@@ -464,13 +465,13 @@ if __name__ == "__main__":
     # direct_coefficients = [9.268191043987258, 18.399990576954398, 211.77769372497636, 1.779482715174383, 17.06978530519917, 211.11833006741278, 454.88242227211236, 432.7775535054471, 390.28763575751765, 396.03190327939177, 391.3760703787603, 395.9341759642607, -190.85357865534522, 0.0, -0.0003694891595442083, 0.3287273151188725, 0.0] 
     # FULL MILP
     # direct_coefficients = [9.147308288146675, 19.002800405200663, 205.95900694128812, 3.1162106277479382, 14.888631287719091, 203.99516141290258, 497.61674182911685, 469.0295179497762, 389.4843489749785, 381.84105713537247, 383.43078908601046, 384.1750962073562, -181.40992640734066, 0.0, 0.5656574831678151, 3.221326122856308, 0.0]
-    env.reset_random_seeds()
-    penalized_obj, coefficients, info = agent.sample_mean_penalized_lowerbound(coefficients=direct_coefficients, init_state=test_state, verbose=False)
-    print('Objective from sample mean penalized lower bound evaluation using original problem coefficients:', penalized_obj)
-    env.reset_random_seeds()
-    zero_penalized_obj, coefficients, info = agent.sample_mean_penalized_lowerbound(coefficients=direct_coefficients, ratio=0,init_state=test_state, verbose=False)
-    print('Objective from sample mean zero penalized lower bound evaluation using original problem coefficients:', zero_penalized_obj)
-    print('Difference between penalized and zero-penalized objectives:', (penalized_obj - zero_penalized_obj)/zero_penalized_obj * 100)  
+    # env.reset_random_seeds()
+    # penalized_obj, coefficients, info = agent.sample_mean_penalized_lowerbound(coefficients=direct_coefficients, init_state=test_state, verbose=False)
+    # print('Objective from sample mean penalized lower bound evaluation using original problem coefficients:', penalized_obj)
+    # env.reset_random_seeds()
+    # zero_penalized_obj, coefficients, info = agent.sample_mean_penalized_lowerbound(coefficients=direct_coefficients, ratio=0,init_state=test_state, verbose=False)
+    # print('Objective from sample mean zero penalized lower bound evaluation using original problem coefficients:', zero_penalized_obj)
+    # print('Difference between penalized and zero-penalized objectives:', (penalized_obj - zero_penalized_obj)/zero_penalized_obj * 100)  
     # env.reset_random_seeds()
     # obj, coefficients, info = agent.sample_mean_penalized_lowerbound(coefficients=[0]*len(direct_coefficients), verbose=False)
     # print('Objective from sample mean zero penalized lower bound evaluation:', obj)

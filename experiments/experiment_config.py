@@ -223,28 +223,31 @@ class ExperimentConfig:
                          0.29, 0.15, 0.04][:class_num]
         total_arrival_rate = sum(arrival_rates)
         booking_window_size = 25
-        initial_state = ([0]*booking_window_size, [0]*booking_window_size, np.round(arrival_rates).astype(int).tolist())
+        patterns = ['1 * 2 + 4 * 1',
+                    '1 * 2',
+                    '1 * 2 + 3 * 1',
+                    '1 * 2 + 15 * 1',
+                    '1 * 2 + 15*1 + 1*2 + 3*1',
+                    '1 * 3 + 15 * 2',
+                    '1 * 2',
+                    '1 * 2 + 4 * 1',
+                    '1 * 2 + 9 * 1',
+                    '1 * 2 + 3 * 1',
+                    '1 * 2 + 14 * 1',
+                    '1 * 1',
+                    '1 * 2 + 19 * 1',
+                    '1 * 3 + 34 * 2',
+                    '1 * 2 + 32 * 1',
+                    '1 * 2 + 36 * 1',
+                    '1 * 2 + 21 * 1 + 1 * 2 + 14 * 1',
+                    '1 * 2 + 32 * 1'][:class_num]
+        treatment_pattern = str2treatment_patterns(patterns)
+        planning_horizon = booking_window_size + treatment_pattern.shape[0] - 1
+        initial_state = ([0]*planning_horizon, [0]*planning_horizon, np.round(arrival_rates).astype(int).tolist())
         env_args = {
             "booking_window_size": booking_window_size,
             'arrival_rates': arrival_rates,
-            'patterns': ['1 * 2 + 4 * 1',
-                         '1 * 2',
-                         '1 * 2 + 3 * 1',
-                         '1 * 2 + 15 * 1',
-                         '1 * 2 + 15*1 + 1*2 + 3*1',
-                         '1 * 3 + 15 * 2',
-                         '1 * 2',
-                         '1 * 2 + 4 * 1',
-                         '1 * 2 + 9 * 1',
-                         '1 * 2 + 3 * 1',
-                         '1 * 2 + 14 * 1',
-                         '1 * 1',
-                         '1 * 2 + 19 * 1',
-                         '1 * 3 + 34 * 2',
-                         '1 * 2 + 32 * 1',
-                         '1 * 2 + 36 * 1',
-                         '1 * 2 + 21 * 1 + 1 * 2 + 14 * 1',
-                         '1 * 2 + 32 * 1'][:class_num],
+            'patterns': patterns,
             'holding_cost_by_day_by_type': holding_cost[:, :class_num].tolist(),
             'overtime_cost_by_day': 100,
             "postponing_cost": 2000,

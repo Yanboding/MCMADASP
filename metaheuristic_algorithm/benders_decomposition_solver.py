@@ -223,6 +223,31 @@ class BendersDecompositionSolver:
             alpha = 1.0 / (k + 1.0)  # diminishing step
         return (1.0 - alpha) * core + alpha * xk
 
+    @staticmethod
+    def _get_model_memory_usage(model):
+        return {
+            'mem_used_gb': float(model.getAttr(GRB.Attr.MemUsed)),
+            'max_mem_used_gb': float(model.getAttr(GRB.Attr.MaxMemUsed)),
+        }
+
+    def _report_memory_usage(self, iteration, active_workers=None):
+        master_memory = self._get_model_memory_usage(self.master_model)
+        print(
+            f"Iteration {iteration}, master memory used: {master_memory['mem_used_gb']:.4f} GB "
+            f"(peak {master_memory['max_mem_used_gb']:.4f} GB)"
+        )
+        if active_workers is None:
+            return master_memory, None
+
+        subproblem_memories = [self._get_model_memory_usage(worker.model) for worker in active_workers]
+        total_mem_used = sum(memory['mem_used_gb'] for memory in subproblem_memories)
+        total_peak_mem_used = sum(memory['max_mem_used_gb'] for memory in subproblem_memories)
+        print(
+            f"Iteration {iteration}, subproblem memory used: {total_mem_used:.4f} GB "
+            f"(peak {total_peak_mem_used:.4f} GB across {len(subproblem_memories)} workers)"
+        )
+        return master_memory, subproblem_memories
+
     def solve(self, 
               init_solution=None,
               tol=1e-6,
@@ -250,6 +275,7 @@ class BendersDecompositionSolver:
                     if not solve_and_handle_errors(self.master_model, verbose=verbose):
                         raise RuntimeError("Master model optimal solution not found")
                     print(f"Iteration {iteration}, master solved in {time.time() - start} seconds")
+                    self._report_memory_usage(iteration)
                     action = get_solution_value(self.action_vars).astype(float)
                     if core_point is None:
                         core_point = copy.deepcopy(action)
@@ -262,7 +288,7 @@ class BendersDecompositionSolver:
                 # Ask all workers to solve for this action
                 # futures = [ex.submit(w.solve, action_t, verbose) for w in workers]
                 start_sub = time.time()
-                active_workers = self.workers[:len(self.theta_vars)]
+                active_workers = self.workers[:self.theta_vars.shape[0]]  # Only use as many workers as we have theta variables (scenarios)
                 # Execute subproblems
                 if parallel:
                     if use_pareto_cuts:
@@ -279,6 +305,7 @@ class BendersDecompositionSolver:
                         else:
                             results.append(w.solve(action, verbose))
                 print(f"Iteration {iteration}, subproblems solved in {time.time() - start_sub:.2f}s")
+                self._report_memory_usage(iteration, active_workers)
                 
                 feasibility_cuts = []
                 optimality_cuts = []
@@ -311,7 +338,7 @@ class BendersDecompositionSolver:
                     print(f"Iteration {iteration}, adding {len(optimality_cuts)} optimality cuts")
                     # All scenarios feasible: add optimality cuts and continue
                     self.master_model.addConstrs((optimality_cuts[i] for i in range(len(optimality_cuts))), name=f"opt_cut_{iteration}_")
-                    cost_to_go_estimation = cost_to_go_estimation / len(self.theta_vars)
+                    cost_to_go_estimation = cost_to_go_estimation / self.theta_vars.shape[0]  # Average cost-to-go across scenarios for reporting
                     first_stage_cost = self.imm_cost.getValue() if hasattr(self.imm_cost, 'getValue') else float(self.imm_cost or 0.0)
                     if self.master_model.ModelSense == GRB.MINIMIZE:
                         upper_bound = first_stage_cost + cost_to_go_estimation
