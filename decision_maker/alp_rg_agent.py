@@ -39,11 +39,13 @@ class ALPRowGenerationAgent(InfiniteRTAgent):
     def get_candidate(self, state_var, action_var):
         regular_booking_vars, overtime_vars, waitlist_vars = state_var
         advance_scheduling_decision_vars, overtime_decision_vars = action_var
-        regular_bookings = get_solution_value(regular_booking_vars).astype(float)
-        overtime = get_solution_value(overtime_vars).astype(float)
-        waitlist = get_solution_value(waitlist_vars).astype(int)
-        advance_scheduling_decision = get_solution_value(advance_scheduling_decision_vars).astype(int)
-        overtime_decision = get_solution_value(overtime_decision_vars).astype(float)
+        
+        regular_bookings = regular_booking_vars.X
+        overtime = overtime_vars.X
+        waitlist = waitlist_vars.X
+        advance_scheduling_decision = np.round(advance_scheduling_decision_vars.X).astype(int)
+        overtime_decision = overtime_decision_vars.X
+
         return ((regular_bookings, overtime, waitlist), (advance_scheduling_decision, overtime_decision))
 
     def generate_all_candidates(self):

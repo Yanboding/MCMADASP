@@ -275,7 +275,7 @@ def generate_test_paths_and_init_state(test_envs, experiment_name, test_sample_p
         print(f"1 python run.py --params '" + json.dumps({
             'env_args': env_args,
             'experiment_name': experiment_name,
-            'sample_path_number': 256,
+            'sample_path_number': 25,
         })+ "'\n")
         obj_alp_train, alp_coefficients = train_alp_coefficients(env_args=env_args, experiment_name=experiment_name) if is_require_alp_coefficients else (None, None)
         if is_require_penalty_coefficients:

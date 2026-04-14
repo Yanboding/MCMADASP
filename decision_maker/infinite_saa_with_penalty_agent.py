@@ -375,8 +375,8 @@ class InfinitePenalizedSAAAgent(InfiniteRTAgent):
                                                     imm_cost=None,
                                                     theta_vars=theta_vars,
                                                     action_vars=coefficient_vars)
-        init_solution = [0] * len(coefficient_vars)
-        #init_solution = None
+        # init_solution = [0] * len(coefficient_vars)
+        init_solution = None
         upper_bound, info = benders_solver.solve(init_solution=init_solution,max_iter=1500, parallel=parallel, verbose=verbose)
         coefficients = [var.X for var in coefficient_vars]
         return upper_bound, coefficients, info
