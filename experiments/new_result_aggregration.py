@@ -165,9 +165,14 @@ class SimulateEvaluationResult:
 
         cum_scheduled_patients = scheduled_patients.cumsum(axis=0)
         total_scheduled_patients_by_type = scheduled_patients.sum(axis=0)
-        scheduled_patients_ptc_by_day = cum_scheduled_patients/total_scheduled_patients_by_type * 100
+        scheduled_patients_ptc_by_day = np.divide(
+                                                cum_scheduled_patients * 100,
+                                                total_scheduled_patients_by_type,
+                                                out=np.zeros_like(cum_scheduled_patients, dtype=float),
+                                                where=total_scheduled_patients_by_type != 0
+                                            )
         cum_total_scheduled_patients_by_day = scheduled_patients.sum(axis=1).cumsum(axis=0)
-        total_scheduled_patients_ptc_by_day = cum_total_scheduled_patients_by_day/total_scheduled_patients * 100
+        total_scheduled_patients_ptc_by_day = cum_total_scheduled_patients_by_day/total_scheduled_patients * 100 if total_scheduled_patients > 0 else np.zeros_like(cum_total_scheduled_patients_by_day)
 
         for day in range(len(scheduled_patients)):
             for treatment_type in range(len(scheduled_patients[day])):
@@ -256,20 +261,23 @@ if __name__ == "__main__":
         'waiting_time_targets': [1]*2,
         'overtime_capacity': 5,
     }
-    group_ids = ['5f0e901ef4a1826593ccd273ee39e147', '6dc54e52dcec4a656bac6edfd35f686e', '7bc0a7c0506828fbe820cff1d9d99fb1']
-    ser = SimulateEvaluationResult(directory_path, file_pattern, env_info, group_ids = group_ids, is_reuse=True)
+    group_ids = ['73d11360affe39305e7716cf5c42ac04', '841708e72300000ddfd948daf08d6805', 'a3202d39ed34711b47ecebb72aabad43']
+    a = np.array([[1, 0], [3, 0], [5, 0]])
+    b = np.array([5,0])
+    print(np.divide(a, b, out=np.zeros_like(a, dtype=float), where=b != 0))
+    ser = SimulateEvaluationResult(directory_path, file_pattern, env_info, group_ids = group_ids, is_reuse=False)
 
     # print("Gap to Information Relaxation")
     # pprint(ser.gap_to_information_relaxation)
     # print("Improvement")
     # pprint(ser.improvement)
 
-    # print('waiting_time_target_ptc_by_day_type')
-    # pprint(ser.waiting_time_target_ptc_by_day_type)
+    print('waiting_time_target_ptc_by_day_type')
+    pprint(ser.waiting_time_target_ptc_by_type_day)
     # print('waiting_time_target_ptc_by_day')
     # pprint(ser.waiting_time_target_ptc_by_day)
 
-    ser.generate_table()
+    # ser.generate_table()
     # print('self.after_warmup_policy_costs')
     # print(ser.after_warmup_policy_costs)
 
@@ -291,4 +299,5 @@ if __name__ == "__main__":
     #                                                save_file='one_time_cost_by_policy.svg',
     #                                                is_show_text=False,
     #                                                is_set_x_color=True)
+    print(geom.ppf(0.985, 0.01))
         
