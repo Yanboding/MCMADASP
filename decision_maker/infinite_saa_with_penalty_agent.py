@@ -292,11 +292,16 @@ class InfinitePenalizedSAAAgent(InfiniteRTAgent):
         post_action_waitlist_coeff_vars = master_model.addMVar(shape=self.env.num_types, vtype=GRB.CONTINUOUS, lb=-coefficient_bound, ub=coefficient_bound, name="theta^w")
         advance_scheduling_decision_coeff_vars = master_model.addMVar(shape=(self.env.booking_window_size, self.env.num_types), vtype=GRB.CONTINUOUS, lb=-coefficient_bound, ub=coefficient_bound, name="theta^x")
         overtime_decision_coeff_vars = master_model.addMVar(shape=self.env.planning_horizon, vtype=GRB.CONTINUOUS, lb=-coefficient_bound, ub=coefficient_bound, name="theta^y")
-        coefficient_vars = (post_action_regular_bookings_coeff_vars.tolist() +
-                            post_action_overtimes_coeff_vars.tolist() +
-                            post_action_waitlist_coeff_vars.tolist() +
-                            advance_scheduling_decision_coeff_vars.reshape(-1).tolist() +
-                            overtime_decision_coeff_vars.tolist())
+        # Single flat MVar view over all coefficient blocks. Keeps named sub-MVars
+        # for readability in the LP while exposing an MVar to downstream code
+        # (enables `coefficient_vars.X` and `duals @ coefficient_vars`).
+        coefficient_vars = gp.hstack([
+            post_action_regular_bookings_coeff_vars,
+            post_action_overtimes_coeff_vars,
+            post_action_waitlist_coeff_vars,
+            advance_scheduling_decision_coeff_vars.reshape(-1),
+            overtime_decision_coeff_vars,
+        ])
         master_model.setObjective(z, GRB.MAXIMIZE)
         return master_model, coefficient_vars, theta_vars
 
@@ -377,7 +382,7 @@ class InfinitePenalizedSAAAgent(InfiniteRTAgent):
         # init_solution = [0] * len(coefficient_vars)
         init_solution = None
         upper_bound, info = benders_solver.solve(init_solution=init_solution,max_iter=1500, parallel=parallel, verbose=verbose)
-        coefficients = [var.X for var in coefficient_vars]
+        coefficients = np.asarray(coefficient_vars.X).tolist()
         return upper_bound, coefficients, info
     
     def sample_mean_penalized_lowerbound(self, coefficients, ratio=1, init_state = None, verbose=False):

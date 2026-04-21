@@ -158,19 +158,22 @@ class ExperimentConfig:
     
     @classmethod
     def from_toy_case(cls):
-        booking_window_size = 15
+        booking_window_size = 7
         treatment_patterns = ["1 * 3", 
                               "1 * 2"]
         arrival_rates = [1, 2]
-        l = [[(0, 1, 0), (1, 5, 100), (5, 100, 150)],
-             [(0, 1, 0), (1, 10, 20), (10, 100, 150)]]
-        # treatment_patterns = ["1 * 2"]
-        # arrival_rates = [3]
-        # l = [[(0, 1, 10), (1, 5, 100), (5, 100, 150)]]
-        
+        l = [[(0, 1, 0), (1, booking_window_size, 100)],
+             [(0, 1, 0), (1, booking_window_size, 10)]]
+        regular_capacity = 5
+        overtime_capacity = 5
         holding_cost = [wait_time(l[i]) for i in range(len(treatment_patterns))]
         holding_cost = np.array(holding_cost).T
-        initial_state = ([0]*booking_window_size, [0]*booking_window_size, arrival_rates.copy())
+        treatment_pattern = str2treatment_patterns(treatment_patterns)
+        planning_horizon = booking_window_size + treatment_pattern.shape[0] - 1
+        regular_bookings = [regular_capacity]*planning_horizon
+        regular_bookings[-1] = 0
+        overtime_bookings = [0]*planning_horizon
+        initial_state = (regular_bookings, overtime_bookings, arrival_rates.copy())
         env_args = {
             "booking_window_size": booking_window_size,
             "arrival_rates": arrival_rates,
@@ -179,8 +182,8 @@ class ExperimentConfig:
             "overtime_cost_by_day": 100,
             "postponing_cost": 2000,
             "duration": 1,
-            "regular_capacity": 5,
-            "overtime_capacity": 5,
+            "regular_capacity": regular_capacity,
+            "overtime_capacity": overtime_capacity,
             "discount_factor": 0.99,
             "reset_params": {
                 "init_state": initial_state,
@@ -369,7 +372,7 @@ def get_config_by_type(case_type, args=None):
     return config
 
 if __name__ == '__main__':
-    config = get_config_by_type('ejor')
+    config = get_config_by_type('toy')
     print(config.args['reset_params'])
     
 

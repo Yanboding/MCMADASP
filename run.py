@@ -968,7 +968,7 @@ def coefficient_training_test(uid, experiment_name, env_args, group_id, grb_env,
     with open(output_file, 'a') as f:
         f.write(json.dumps(result) + '\n')
 
-def coefficient_out_of_sample_test(uid, experiment_name, env_args, penalty_coefficients, init_state, sample_path, warm_up_periods, group_id, grb_env, job_id, alp_coefficients):
+def coefficient_out_of_sample_test(uid, experiment_name, mutate_val, env_args, penalty_coefficients, init_state, sample_path, warm_up_periods, group_id, grb_env, job_id, alp_coefficients):
     '''
     This function tests the out-of-sample performance of the trained coefficients by evaluating the penalized lower bound and zero-penalty lower bound on same initial state but different sample path that were not seen during training.
     '''
@@ -978,32 +978,33 @@ def coefficient_out_of_sample_test(uid, experiment_name, env_args, penalty_coeff
     generating_function = LinearPenaltyFunction(env=env, coefficients=penalty_coefficients)
     zero_penalized_args = {
         'current_decision_var_type': 'integer',
-        'future_decision_var_type': 'integer',
+        'future_decision_var_type': 'continuous',
         'is_myopic': False,
         'is_include_discount_factor': False,
-        'sample_path': sample_path,
+        'sample_path': sample_path[warm_up_periods:],
         'generating_function': generating_function,
         'penalty_ratio': 0,
         'grb_env': grb_env,
     }
     penalized_args = {
         'current_decision_var_type': 'integer',
-        'future_decision_var_type': 'integer',
+        'future_decision_var_type': 'continuous',
         'is_myopic': False,
         'is_include_discount_factor': False,
-        'sample_path': sample_path,
+        'sample_path': sample_path[warm_up_periods:],
         'generating_function': generating_function,
         'penalty_ratio': 1,
         'grb_env': grb_env,
     }
     zero_penalized_agent = InfinitePenalizedSAAAgent(env=env, discount_factor=env.discount_factor, **zero_penalized_args)
     penalized_agent = InfinitePenalizedSAAAgent(env=env, discount_factor=env.discount_factor, **penalized_args)
-    zero_penalized_information_relaxation_cost, _, _ = zero_penalized_agent.direct_solve(test_state)
-    penalized_information_relaxation_cost, _, _ = penalized_agent.direct_solve(test_state)
+    zero_penalized_information_relaxation_cost, _, _ = zero_penalized_agent.direct_solve(test_state, t=1)
+    penalized_information_relaxation_cost, _, _ = penalized_agent.direct_solve(test_state, t=1)
     result = {
             'uid': uid,
             'group_id': group_id,
             'experiment_name': experiment_name,
+            'mutate_val': mutate_val,
             'penalized_lower_bound_objective': penalized_information_relaxation_cost,
             'zero_penalized_lower_bound_objective': zero_penalized_information_relaxation_cost,
             'gap_between_penalized_and_zero': penalized_information_relaxation_cost - zero_penalized_information_relaxation_cost,
@@ -1081,5 +1082,5 @@ if __name__ == '__main__':
     for param in params:
         # pprint(param['env_args'])
         # coefficient_training_test(**param, grb_env=grb_env, job_id=args.job_id)
-        # coefficient_out_of_sample_test(**param, grb_env=grb_env, job_id=args.job_id)
-        evaluate_policy_costs_with_information_relaxation(**param, grb_env=grb_env, job_id=args.job_id)
+        coefficient_out_of_sample_test(**param, grb_env=grb_env, job_id=args.job_id)
+        # evaluate_policy_costs_with_information_relaxation(**param, grb_env=grb_env, job_id=args.job_id)

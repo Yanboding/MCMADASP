@@ -2,13 +2,15 @@ import json
 import math
 import random
 import pickle
+from dataclasses import dataclass, field
 from pprint import pprint
+from typing import Callable, List, Optional, Sequence
 
 import pandas as pd
 import numpy as np
 from scipy.stats import geom
 from experiments import get_config_by_type
-from utils import iter_to_tuple, iter_to_list, get_uid, read_lines_with_pattern, RunningStats, encode, decode, wait_time, acquire_grb_env
+from utils import iter_to_tuple, iter_to_list, get_uid, read_lines_with_pattern, RunningStats, encode, decode, wait_time, acquire_grb_env, str2treatment_patterns
 from pathlib import Path
 import hashlib
 import glob
@@ -67,125 +69,178 @@ def _split_list_into_groups(results, num_groups, dat_file=None):
         print(f"Saved {len(lines_to_write)} group commands to {dat_file}")
     return lines_to_write
 
-def generate_waiting_penalty_params(dat_file):
-    # This function can be implemented to generate parameters for testing the impact of different waiting penalties on the performance of the agents.
-    experiment_name = 'waiting_penalty_impact'
-    config_type = 'toy'
-    env_args = get_config_by_type(config_type).args
-    l = [[[(0, 1, 0), (1, 3, 100)],
-         [(0, 1, 0), (1, 3, 10)]],
-        [[(0, 1, 0), (1, 3, 100)],
-         [(0, 1, 0), (1, 3, 50)]],
-        [[(0, 1, 0), (1, 3, 100)],
-         [(0, 1, 0), (1, 3, 90)]]][:]
-    lines_to_write = []
+def _holding_cost_from_schedule(schedule):
+    """Convert a per-type list of (start, end, cost) segments to the
+    `holding_cost_by_day_by_type` matrix expected by env_args."""
+    return np.array([wait_time(s) for s in schedule]).T.tolist()
+
+
+# ---------------------------------------------------------------------------
+# Experiment specification
+# ---------------------------------------------------------------------------
+# Each experiment sweeps a parameter over `val_args`. For every value in
+# `val_args`, the corresponding mutator is called with `(env_args, val)` and
+# mutates `env_args` in place. A mutator MUST be a module-level function
+# (no nested closures) so experiments remain easy to find, test, and extend.
+#
+# To add a new experiment:
+#   1. Write a `_mutate_<name>(env_args, val)` function at module level.
+#   2. Add an `ExperimentSpec(...)` entry to `EXPERIMENT_SPECS` below.
+#   3. (Optional) expose a thin `generate_<name>(dat_file)` wrapper if you
+#      want the old calling style.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ExperimentSpec:
+    name: str
+    config_type: str
+    val_args: Sequence
+    mutate: Optional[Callable] = None  # signature: (env_args, val) -> None
+
+    @property
+    def is_single_variant(self) -> bool:
+        return len(self.val_args) == 1 and self.val_args[0] is None
+
+
+def build_variation_test_env(spec: ExperimentSpec):
+    """Materialize the experiment's variants to a `.dat` file.
+
+    Returns (test_params, experiment_name). `test_params` is keyed by
+    `env_uid` for single-variant experiments, else by `(env_uid, experiment_name, val)`.
+    """
+    base_env_args = get_config_by_type(spec.config_type).args
     test_params = {}
-    for i, waiting_penalty in enumerate(l, start=1):
-        holding_cost = [wait_time(waiting_penalty[i]) for i in range(len(waiting_penalty))]
-        holding_cost = np.array(holding_cost).T
-        env_args['holding_cost_by_day_by_type'] = holding_cost.tolist()
-        save_params = {
-                        'experiment_name': experiment_name,
-                        'env_args': env_args,
-                      }
+    for i, val in enumerate(spec.val_args, start=1):
+        env_args = copy.deepcopy(base_env_args)
+        if spec.mutate is not None:
+            spec.mutate(env_args, val)
         env_uid = get_uid(env_args)
-        lines_to_write.append(f"{i} python run.py --params '" + json.dumps(save_params) + "'\n")
-        test_params[env_uid] = copy.deepcopy(env_args)
-    with open(dat_file, 'w') as f:
-        f.writelines(lines_to_write)
-    return test_params, experiment_name
+        key = env_uid if spec.is_single_variant else (env_uid, spec.name, val)
+        test_params[key] = env_args
+    return test_params
 
-def generate_high_priority_arrival_rate(dat_file):
-    # This function can be implemented to generate parameters for testing the impact of different high priority arrival rates on the performance of the agents.
-    experiment_name = 'high_priority_arrival_rate_impact'
-    config_type = 'toy'
-    env_args = get_config_by_type(config_type).args
-    arrival_rates = [[0.6, 2.4],
-                     [1.5, 1.5],
-                     [2.4, 0.6]]
-    lines_to_write = []
-    test_params = {}
-    for i, arrival_rate in enumerate(arrival_rates, start=1):
-        env_args['arrival_rates'] = arrival_rate
-        save_params = {
-                        'experiment_name': experiment_name,
-                        'env_args': env_args,
-                      }
-        env_uid = get_uid(env_args)
-        print(env_uid)
-        lines_to_write.append(f"{i} python run.py --params '" + json.dumps(save_params) + "'\n")
-        test_params[env_uid] = copy.deepcopy(env_args)
-    with open(dat_file, 'w') as f:
-        f.writelines(lines_to_write)
-    return test_params, experiment_name
 
-def generate_inital_state_variation(dat_file):
-    # This function can be implemented to generate parameters for testing the impact of different initial states on the performance of the agents.
-    experiment_name = 'initial_state_variation_impact'
-    config_type = 'toy'
-    env_args = get_config_by_type(config_type).args
-    initial_states = [([2, 2, 0], [0, 0, 0], [1, 2]),
-                      ([5, 5, 0], [0, 0, 0], [1, 2]),
-                      ([5, 5, 0], [3, 3, 0], [1, 2]),][:]
-    lines_to_write = []
-    test_params = {}
-    for i, initial_state in enumerate(initial_states, start=1):
-        reset_params = {
-            "init_state": initial_state,
-        }
-        env_args['reset_params'] = reset_params
-        save_params = {
-                        'experiment_name': experiment_name,
-                        'env_args': env_args,
-                      }
-        env_uid = get_uid(env_args)
-        lines_to_write.append(f"{i} python run.py --params '" + json.dumps(save_params) + "'\n")
-        test_params[env_uid] = copy.deepcopy(env_args)
-    with open(dat_file, 'w') as f:
-        f.writelines(lines_to_write)
-    return test_params, experiment_name
+# ---------------------------------------------------------------------------
+# Module-level mutators (one per experiment that needs parameter sweeping).
+# Keep these small and self-contained: everything they need should be
+# derivable from `env_args` and `val`.
+# ---------------------------------------------------------------------------
 
-def generate_steady_state_distribution_variation(dat_file):
-    # This function can be implemented to generate parameters for testing the impact of different steady state distributions on the performance of the agents.
-    experiment_name = 'steady_state_distribution_variation_impact'
-    config_type = 'toy'
-    env_args = get_config_by_type(config_type).args
-    initial_state = ([0, 0, 0], [0, 0, 0], [1, 2])
-    reset_params = {
-            "init_state": initial_state,
-        }
-    env_args['reset_params'] = reset_params
-    lines_to_write = []
-    test_params = {}
-    save_params = {
-                    'experiment_name': experiment_name,
-                    'env_args': env_args,
-                    }
-    env_uid = get_uid(env_args)
-    lines_to_write.append(f"{1} python run.py --params '" + json.dumps(save_params) + "'\n")
-    test_params[env_uid] = copy.deepcopy(env_args)
-    with open(dat_file, 'w') as f:
-        f.writelines(lines_to_write)
-    return test_params, experiment_name
+def _mutate_initial_state_congestion(env_args, occupancy_level):
+    total_capacity = env_args['regular_capacity'] + env_args['overtime_capacity']
+    treatment_pattern = str2treatment_patterns(env_args['patterns'])
+    planning_horizon = env_args['booking_window_size'] + treatment_pattern.shape[0] - 1
+    required_slots = total_capacity * occupancy_level
+    regular_booking = min(required_slots, env_args['regular_capacity'])
+    overtime_booking = required_slots - regular_booking
+    regular_bookings = [regular_booking] * planning_horizon
+    regular_bookings[-1] = 0
+    overtime_bookings = [overtime_booking] * planning_horizon
+    overtime_bookings[-1] = 0
+    env_args['reset_params'] = {
+        'init_state': (regular_bookings, overtime_bookings, env_args['arrival_rates']),
+    }
 
-def generate_case_study_params(dat_file):
-    # This function can be implemented to generate parameters for testing the performance of the agents on a case study environment. The parameters can include different environment configurations, initial states, and sample paths.
-    experiment_name = 'case_study'
-    config_type = 'ejor'
-    config = get_config_by_type(config_type)
-    env_args = config.args
-    lines_to_write = []
-    test_params = {}
-    save_params = {
-                    'experiment_name': experiment_name,
-                    'env_args': env_args,
-                    }
-    env_uid = get_uid(env_args)
-    lines_to_write.append(f"{1} python run.py --params '" + json.dumps(save_params) + "'\n")
-    test_params[env_uid] = copy.deepcopy(env_args)
-    with open(dat_file, 'w') as f:
-        f.writelines(lines_to_write)
-    return test_params, experiment_name
+
+def _mutate_high_priority_propotion(env_args, propotion):
+    total = sum(env_args['arrival_rates'])
+    env_args['arrival_rates'] = [total * propotion, total * (1 - propotion)]
+
+
+def _mutate_low_priority_waiting_time_target(env_args, waiting_time_target):
+    bw = env_args['booking_window_size']
+    schedule = [
+        [(0, 1, 0), (1, bw, 100)],
+        [(0, waiting_time_target, 0), (waiting_time_target, bw, 10)],
+    ]
+    env_args['holding_cost_by_day_by_type'] = _holding_cost_from_schedule(schedule)
+
+
+def _mutate_high_priority_waiting_time_penalty(env_args, waiting_penalty):
+    bw = env_args['booking_window_size']
+    schedule = [
+        [(0, 1, 0), (1, bw, waiting_penalty)],
+        [(0, 1, 0), (1, bw, 10)],
+    ]
+    env_args['holding_cost_by_day_by_type'] = _holding_cost_from_schedule(schedule)
+
+def _mutate_total_arrival_rate(env_args, total_arrival_rate):
+    arrival_rates = np.array(env_args['arrival_rates'])
+    env_args['arrival_rates'] = (arrival_rates / sum(arrival_rates) * total_arrival_rate).tolist()
+
+def _mutate_type_1_treatment_pattern(env_args, pattern):
+    env_args['patterns'][0] = pattern
+    treatment_pattern = str2treatment_patterns(env_args['patterns'])
+    booking_window_size = env_args['booking_window_size']
+    regular_capacity = env_args['regular_capacity']
+    arrival_rates = env_args['arrival_rates']
+    planning_horizon = booking_window_size + treatment_pattern.shape[0] - 1
+    regular_bookings = [regular_capacity]*planning_horizon
+    regular_bookings[-1] = 0
+    overtime_bookings = [0]*planning_horizon
+    initial_state = (regular_bookings, overtime_bookings, arrival_rates.copy())
+    env_args['reset_params'] = {'init_state': initial_state}
+
+def _mutate_overtime_cost(env_args, overtime_cost):
+    env_args['overtime_cost_by_day'] = overtime_cost
+
+# ---------------------------------------------------------------------------
+# Registry of all experiments. Add new experiments here.
+# ---------------------------------------------------------------------------
+
+EXPERIMENT_SPECS = {
+    spec.name: spec for spec in [
+        ExperimentSpec(
+            name='initial_state_congestion',
+            config_type='toy',
+            val_args=[0., 0.5, 1.],
+            mutate=_mutate_initial_state_congestion,
+        ),
+        ExperimentSpec(
+            name='high_priority_propotion',
+            config_type='toy',
+            val_args=[0.1, 0.5, 0.9],
+            mutate=_mutate_high_priority_propotion,
+        ),
+        ExperimentSpec(
+            name='low_priority_waiting_time_target',
+            config_type='toy',
+            val_args=[1, 3, 5],
+            mutate=_mutate_low_priority_waiting_time_target,
+        ),
+        ExperimentSpec(
+            name='high_priority_waiting_time_penalty',
+            config_type='toy',
+            val_args=[10, 100, 200],
+            mutate=_mutate_high_priority_waiting_time_penalty,
+        ),
+        ExperimentSpec(
+            name='total_arrival_rate',
+            config_type='toy',
+            val_args=[24/7, 30/7, 36/7],
+            mutate=_mutate_total_arrival_rate,
+        ),
+        ExperimentSpec(
+            name='type_1_treatment_pattern',
+            config_type='toy',
+            val_args=['1 * 3', '1 * 2 + 1 * 1', '3 * 1'],
+            mutate=_mutate_type_1_treatment_pattern,
+        ),
+        ExperimentSpec(
+            name='overtime_cost',
+            config_type='toy',
+            val_args=[10, 100, 200],
+            mutate=_mutate_overtime_cost,
+        ),
+    ]
+}
+
+
+def generate_experiment(experiment_name: str):
+    """Preferred entry point: look up a spec by name and build its dat file."""
+    return build_variation_test_env(EXPERIMENT_SPECS[experiment_name])
+
 
 
 def train_penalty_coefficients(env_args, experiment_name, sample_path_number):
@@ -251,33 +306,28 @@ def train_alp_coefficients(env_args, experiment_name):
     config_for_train = get_config_by_type('infinite_custom', args=env_args)
     env = config_for_train.env
     alp_agent = ALPRowGenerationAgent(env=env, discount_factor=env.discount_factor)
-    obj, oefficients = alp_agent.train(debug=False, verbose=False)
+    obj, coefficients = alp_agent.train(debug=False, verbose=False)
     _save_training_result(
         experiment_name=experiment_name,
         file_name='alp_train.jsonl',
         env_args=env_args,
         agent_name='row_gen_alp',
         obj_val=obj,
-        coefficients=oefficients,
+        coefficients=coefficients,
         info={},
     )
-    return obj, oefficients
+    return obj, coefficients
 
 
-def generate_test_paths_and_init_state(test_envs, experiment_name, test_sample_path_num, warm_up_periods=0, num_periods=None, dat_file=None, num_groups=None, is_require_alp_coefficients=True, is_require_penalty_coefficients=True):
+def generate_test_paths_and_init_state(test_envs, test_sample_path_num, warm_up_periods=0, num_periods=None, dat_file=None, num_groups=None, is_require_alp_coefficients=True, is_require_penalty_coefficients=True):
     '''
     Inital state is considered as period 1. sample path will start from period 2.
     '''
     results = []
     
-    for env_uid, env_args in test_envs.items():
+    for (env_uid, experiment_name, mutate_val), env_args in test_envs.items():
         env = get_config_by_type('infinite_custom', args=env_args).env
-        print(f"Processing env_uid: {env_uid}")
-        print(f"1 python run.py --params '" + json.dumps({
-            'env_args': env_args,
-            'experiment_name': experiment_name,
-            'sample_path_number': 25,
-        })+ "'\n")
+        print(f"Processing env_uid: {env_uid}, experiment_name: {experiment_name}, mutate_val: {mutate_val}")
         obj_alp_train, alp_coefficients = train_alp_coefficients(env_args=env_args, experiment_name=experiment_name) if is_require_alp_coefficients else (None, None)
         if is_require_penalty_coefficients:
             obj, direct_coefficients, info = train_penalty_coefficients(env_args=env_args, experiment_name=experiment_name, sample_path_number=256)
@@ -313,6 +363,7 @@ def generate_test_paths_and_init_state(test_envs, experiment_name, test_sample_p
             save_params = {
                 'uid': uid,
                 "experiment_name": experiment_name,
+                "mutate_val": mutate_val,
                 **params,
                 "penalty_coefficients": direct_coefficients,
                 "alp_coefficients": alp_coefficients,
@@ -337,39 +388,16 @@ def generate_test_paths_and_init_state(test_envs, experiment_name, test_sample_p
 
     return results
 
-def generate_train_env(test_envs, experiment_name, number_replication, dat_file, num_groups=None):
-    # This function can be implemented to generate parameters for training the agents. The parameters can include different environment configurations, initial states, and sample paths.
-    results = []
-    for env_uid, env_args in test_envs.items():
-        for i in range(number_replication):
-            save_env_args = copy.deepcopy(env_args)
-            save_env_args['env_random_seed'] = env_args.get('env_random_seed', 0) + i
-            save_env_args['arrival_random_seed'] = env_args.get('arrival_random_seed', 1) + i
-            save_env_args['stop_time_random_seed'] = env_args.get('stop_time_random_seed', 42) + i
-            save_params = {
-                'uid': get_uid(save_env_args),
-                'experiment_name': experiment_name,
-                'env_args': save_env_args,
-                'group_id': env_uid,
-            }
-            results.append(save_params)
-    _split_list_into_groups(results, num_groups=num_groups, dat_file=dat_file)
-    return results
-
 
 if __name__ == '__main__':
-    # test_envs, experiment_name = generate_waiting_penalty_params(dat_file='table_waiting_penalty.dat')
-    test_envs, experiment_name = generate_high_priority_arrival_rate(dat_file='table_high_priority_arrival_rate.dat')
-    # test_envs, experiment_name = generate_inital_state_variation(dat_file='initial_state_variation_impact.dat')
-    # test_envs, experiment_name = generate_steady_state_distribution_variation(dat_file='steady_state_distribution_variation_impact.dat')
-    # test_envs, experiment_name = generate_case_study_params(dat_file='case_study.dat')
-    # num periods should include the inital state. For example, if warm_up_periods is 100 and num_periods is 110, then the sample path will include 1 initial state + 99 warm up periods + 10 test periods.
-    # test_envs, experiment_name = generate_case_study_params(dat_file='case_study.dat')
+    test_envs = {}
+    experiments = list(EXPERIMENT_SPECS.keys())
+    for experiment_name in experiments:
+        test_envs.update(build_variation_test_env(EXPERIMENT_SPECS[experiment_name]))
     results = generate_test_paths_and_init_state(
         test_envs=test_envs,
-        experiment_name=experiment_name, 
-        test_sample_path_num=5000,
-        warm_up_periods=100,
+        test_sample_path_num=2000,
+        warm_up_periods=0,
         num_periods=None,
         dat_file='table.dat',
         num_groups=998,  # divide into N groups
