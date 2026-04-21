@@ -185,6 +185,9 @@ def _mutate_type_1_treatment_pattern(env_args, pattern):
 def _mutate_overtime_cost(env_args, overtime_cost):
     env_args['overtime_cost_by_day'] = overtime_cost
 
+def _mutate_discount_factor(env_args, discount_factor):
+    env_args['discount_factor'] = discount_factor
+
 # ---------------------------------------------------------------------------
 # Registry of all experiments. Add new experiments here.
 # ---------------------------------------------------------------------------
@@ -233,6 +236,12 @@ EXPERIMENT_SPECS = {
             val_args=[10, 100, 200],
             mutate=_mutate_overtime_cost,
         ),
+        ExperimentSpec(
+            name='case_study_discount_factor',
+            config_type='ejor',
+            val_args=[0.95, 0.96, 0.97, 0.98],
+            mutate=_mutate_discount_factor,
+        )
     ]
 }
 
@@ -388,21 +397,49 @@ def generate_test_paths_and_init_state(test_envs, test_sample_path_num, warm_up_
 
     return results
 
+def generate_train_env(test_envs, dat_file=None):
+    # This function can be implemented to generate parameters for training the agents. The parameters can include different environment configurations, initial states, and sample paths.
+    results = []
+    for (env_uid, experiment_name, mutate_val), env_args in test_envs.items():
+        # Write to dat file if specified
+        save_params = {
+                "experiment_name": experiment_name,
+                "mutate_val": mutate_val,
+                "sample_path_number": 256,
+                'env_args': env_args,
+            }
+        results.append(save_params)
+    if dat_file:
+        lines_to_write = []
+        for line_index, result in enumerate(results, start=1):
+            lines_to_write.append(
+                f"{line_index} python run.py --params '" + json.dumps(result) + "'\n"
+            )
+        with open(dat_file, 'w') as f:
+            f.writelines(lines_to_write)
+        print(f"Saved {len(lines_to_write)} group commands to {dat_file}")
+    return results
+
 
 if __name__ == '__main__':
-    test_envs = {}
-    experiments = list(EXPERIMENT_SPECS.keys())
-    for experiment_name in experiments:
-        test_envs.update(build_variation_test_env(EXPERIMENT_SPECS[experiment_name]))
-    results = generate_test_paths_and_init_state(
+    # test_envs = {}
+    # experiments = list(EXPERIMENT_SPECS.keys())
+    # for experiment_name in experiments:
+    #     test_envs.update(build_variation_test_env(EXPERIMENT_SPECS[experiment_name]))
+    # results = generate_test_paths_and_init_state(
+    #     test_envs=test_envs,
+    #     test_sample_path_num=2000,
+    #     warm_up_periods=0,
+    #     num_periods=None,
+    #     dat_file='table.dat',
+    #     num_groups=998,  # divide into N groups
+    #     is_require_alp_coefficients=True,
+    #     is_require_penalty_coefficients=True,
+    # )
+    test_envs = build_variation_test_env(EXPERIMENT_SPECS['case_study_discount_factor'])
+    results = generate_train_env(
         test_envs=test_envs,
-        test_sample_path_num=2000,
-        warm_up_periods=0,
-        num_periods=None,
-        dat_file='table.dat',
-        num_groups=998,  # divide into N groups
-        is_require_alp_coefficients=True,
-        is_require_penalty_coefficients=True,
+        dat_file='table.dat'
     )
 
 

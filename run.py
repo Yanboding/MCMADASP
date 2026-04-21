@@ -1016,7 +1016,7 @@ def coefficient_out_of_sample_test(uid, experiment_name, mutate_val, env_args, p
         f.write(json.dumps(result) + '\n')
 
 
-def train_penalty_coefficients(env_args, experiment_name, sample_path_number, job_id=None):
+def train_penalty_coefficients(env_args, experiment_name, sample_path_number, mutate_val, job_id=None):
     '''
     This function can be implemented to train the coefficients for the penalty function used in the hindsight approximation with penalty agent. The training can be done using a simple grid search or a more sophisticated optimization algorithm.
     '''
@@ -1033,18 +1033,13 @@ def train_penalty_coefficients(env_args, experiment_name, sample_path_number, jo
     init_state = None
     print(f"Training penalty coefficients for env_uid {get_uid(env_args)} with init_state: {init_state} and sample_path_number: {sample_path_number}")
     env.reset_random_seeds()  # Reset random seeds before training again to ensure the same sample paths
-    obj, direct_coefficients, info = agent.benders_decomposition_train(coefficient_bound=GRB.INFINITY, init_state = init_state, parallel=True, verbose=False)
+    obj, direct_coefficients, info = agent.benders_decomposition_train(coefficient_bound=GRB.INFINITY, init_state = init_state, parallel=False, verbose=False)
     print('Obejctive from Benders decomposition training:', obj) # Full MILP:39050.05571672409 # LP: 21524.097118570513
     print('Coefficients from Benders decomposition training:', direct_coefficients)
-
-    # direct_coefficients = [4.5050629088130085, 19.007403595529222, 210.52084330182836, 0.6690122556727325, 17.81240359552962, 210.1258433018285, 469.6670526138236, 469.667052613824, 383.49566005697466, 395.9814464036324, 383.1616355414874, 395.8926130702999, 9.70567848715938e-13, 0.0, -0.015222222219714846, 0.19500000000251028, 0.0]
-    # direct_coefficients = direct_coefficients = [5.799735521230385, 20.437279922776042, 209.3610285715884, 1.1901698841543076, 18.11727992276178, 208.3710285715395, 444.697203860891, 444.69720386089654, 377.872261776431, 390.7855706566974, 377.61857065670546, 390.68657065670726, -7.140954494389007e-13, 0.0, -0.3300000000072032, -5.093170329928398e-11, 0.0]
-    # env.reset_random_seeds()
-    # obj, coefficients, info = agent.sample_mean_penalized_lowerbound(coefficients=direct_coefficients, ratio=0, verbose=False)
-    # print('Objective from sample mean penalized lower bound evaluation using original problem coefficients:', obj) # Full MILP:39049.9991672409 # LP: 39036.989105384375 # Zero penalized: 35918.338281242075
+    mutate_val_str = str(mutate_val).replace('.', '_')
     _save_training_result(
         experiment_name=experiment_name,
-        file_name='penalty_train.jsonl',
+        file_name=f'penalty_train_discount_{mutate_val_str}.jsonl',
         env_args=env_args,
         agent_name='hindsight_approx_with_penalty',
         obj_val=obj,
@@ -1076,11 +1071,11 @@ if __name__ == '__main__':
     # evaluate_information_relaxation_cost(**params, generating_function=generating_function, job_id=args.job_id)
     #calculate_penalized_lowerbound_with_same_initial_state(**params, lowerbound_args=lowerbound_args, generating_function=generating_function, job_id=args.job_id)
     # calculate_information_relexation_costs(**params, train_sample_path_num=30,test_sample_path_num=8, job_id=args.job_id)
-    # train_penalty_coefficients(**params, job_id=args.job_id)
-    grb_env = acquire_grb_env({"Threads": 0}, verbose=False, wait=15)
-    failed_jobs = []
-    for param in params:
+    train_penalty_coefficients(**params, job_id=args.job_id)
+    # grb_env = acquire_grb_env({"Threads": 0}, verbose=False, wait=15)
+    # failed_jobs = []
+    # for param in params:
         # pprint(param['env_args'])
         # coefficient_training_test(**param, grb_env=grb_env, job_id=args.job_id)
-        coefficient_out_of_sample_test(**param, grb_env=grb_env, job_id=args.job_id)
+        # coefficient_out_of_sample_test(**param, grb_env=grb_env, job_id=args.job_id)
         # evaluate_policy_costs_with_information_relaxation(**param, grb_env=grb_env, job_id=args.job_id)

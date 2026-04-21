@@ -285,7 +285,7 @@ class InfinitePenalizedSAAAgent(InfiniteRTAgent):
         master_model.setParam("OptimalityTol", 1e-9)
         # theta_vars = np.array(
         #     [master_model.addVar(vtype=GRB.CONTINUOUS, lb=-GRB.INFINITY, ub=1e10, name=f"eta_{omega}") for omega in range(len(self.delta))])
-        theta_vars = master_model.addMVar(shape=self.sample_path_number, vtype=GRB.CONTINUOUS, lb=-GRB.INFINITY, ub=1e10, name="theta")
+        theta_vars = master_model.addMVar(shape=self.sample_path_number, vtype=GRB.CONTINUOUS, lb=-GRB.INFINITY, ub=1e5, name="theta")
         z = theta_vars.sum() / self.sample_path_number
         post_action_regular_bookings_coeff_vars = master_model.addMVar(shape=self.env.planning_horizon, vtype=GRB.CONTINUOUS, lb=-coefficient_bound, ub=coefficient_bound, name="theta^u")
         post_action_overtimes_coeff_vars = master_model.addMVar(shape=self.env.planning_horizon, vtype=GRB.CONTINUOUS, lb=-coefficient_bound, ub=coefficient_bound, name="theta^v")
@@ -379,8 +379,8 @@ class InfinitePenalizedSAAAgent(InfiniteRTAgent):
                                                     imm_cost=None,
                                                     theta_vars=theta_vars,
                                                     action_vars=coefficient_vars)
-        # init_solution = [0] * len(coefficient_vars)
-        init_solution = None
+        init_solution = [0] * coefficient_vars.shape[0]
+        #init_solution = None
         upper_bound, info = benders_solver.solve(init_solution=init_solution,max_iter=1500, parallel=parallel, verbose=verbose)
         coefficients = np.asarray(coefficient_vars.X).tolist()
         return upper_bound, coefficients, info
