@@ -70,7 +70,23 @@ class SubproblemWorker:
                  objective_builder_fn=None, cut_gradient_fn=None):
         # Build the model and linking constraints inside THIS env.
         self.model = model
-        self.link_rows = link_rows
+        # Normalize link_rows to a flat list of scalar Constr objects so that
+        # per-element attributes like .index/.Pi/.FarkasDual/.RHS work uniformly.
+        # The input may be an MConstr, a plain list of Constr, or a mixed list
+        # containing MConstr elements (e.g. from addConstr on MVar scalars).
+        def _flatten_constrs(obj):
+            if obj is None:
+                return []
+            if hasattr(obj, "tolist"):  # MConstr or numpy array
+                return _flatten_constrs(obj.tolist())
+            if isinstance(obj, (list, tuple)):
+                out = []
+                for x in obj:
+                    out.extend(_flatten_constrs(x))
+                return out
+            return [obj]  # scalar Constr
+        self.link_rows = _flatten_constrs(link_rows)
+        self._link_indices = [c.index for c in self.link_rows]
         self.state_linking_constraints = state_linking_constraints
         self.subproblem_id = subproblem_id
         self.verbose = verbose
@@ -83,9 +99,8 @@ class SubproblemWorker:
         model.Params.OutputFlag = 1 if verbose else 0
 
     def _get_link_rows_in_derived_model(self, derived_model):
-        current_indices = [c.index for c in self.link_rows]
         rows_in_model = derived_model.getConstrs()
-        return [rows_in_model[i] for i in current_indices]
+        return [rows_in_model[i] for i in self._link_indices]
 
     def _get_feasibility_ray_for_link_rows(self, action_values, verbose: bool = False):
         """Standard Farkas Dual logic for infeasible LPs or LP-relaxations."""
