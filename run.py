@@ -1033,7 +1033,7 @@ def train_penalty_coefficients(env_args, experiment_name, sample_path_number, mu
     init_state = None
     print(f"Training penalty coefficients for env_uid {get_uid(env_args)} with init_state: {init_state} and sample_path_number: {sample_path_number}")
     env.reset_random_seeds()  # Reset random seeds before training again to ensure the same sample paths
-    obj, direct_coefficients, info = agent.benders_decomposition_train(coefficient_bound=GRB.INFINITY, init_state = init_state, parallel=False, verbose=False)
+    obj, direct_coefficients, info = agent.benders_decomposition_train(coefficient_bound=GRB.INFINITY, init_state = init_state, parallel=True, verbose=False)
     print('Obejctive from Benders decomposition training:', obj) # Full MILP:39050.05571672409 # LP: 21524.097118570513
     print('Coefficients from Benders decomposition training:', direct_coefficients)
     mutate_val_str = str(mutate_val).replace('.', '_')

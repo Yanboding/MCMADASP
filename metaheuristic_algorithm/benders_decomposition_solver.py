@@ -301,6 +301,7 @@ class BendersDecompositionSolver:
                         upper_bound = self.master_model.ObjVal
 
                 # Ask all workers to solve for this action
+                print(f"Iteration {iteration}, action from master: {action.tolist()}")
                 # futures = [ex.submit(w.solve, action_t, verbose) for w in workers]
                 start_sub = time.time()
                 active_workers = self.workers[:self.theta_vars.shape[0]]  # Only use as many workers as we have theta variables (scenarios)
