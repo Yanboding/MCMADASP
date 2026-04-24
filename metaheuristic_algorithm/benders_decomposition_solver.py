@@ -255,8 +255,8 @@ class BendersDecompositionSolver:
             return master_memory, None
 
         subproblem_memories = [self._get_model_memory_usage(worker.model) for worker in active_workers]
-        total_mem_used = sum(memory['mem_used_gb'] for memory in subproblem_memories)
-        total_peak_mem_used = sum(memory['max_mem_used_gb'] for memory in subproblem_memories)
+        total_mem_used = sum(memory['mem_used_gb'] for memory in subproblem_memories)/len(subproblem_memories)
+        total_peak_mem_used = max(memory['max_mem_used_gb'] for memory in subproblem_memories)
         print(
             f"Iteration {iteration}, subproblem memory used: {total_mem_used:.4f} GB "
             f"(peak {total_peak_mem_used:.4f} GB across {len(subproblem_memories)} workers)"
@@ -265,6 +265,7 @@ class BendersDecompositionSolver:
 
     def solve(self, 
               init_solution=None,
+              is_hard_bound=False,
               tol=1e-6,
               max_iter=150,
               use_pareto_cuts=False,
@@ -360,6 +361,24 @@ class BendersDecompositionSolver:
                         upper_bound = first_stage_cost + cost_to_go_estimation
                     else:
                         lower_bound = first_stage_cost + cost_to_go_estimation
+
+                    # If an init_solution was supplied, its evaluated cost is a
+                    # valid bound on the master's optimum. Add it once as a hard
+                    # constraint to prune the master's search space.
+                    if init_solution is not None and iteration == 1 and is_hard_bound:
+                        master_obj_expr = self.master_model.getObjective()
+                        if self.master_model.ModelSense == GRB.MINIMIZE:
+                            self.master_model.addConstr(
+                                master_obj_expr <= upper_bound,
+                                name="init_solution_upper_bound",
+                            )
+                            print(f"Added hard master upper bound from init_solution: {upper_bound}")
+                        else:
+                            self.master_model.addConstr(
+                                master_obj_expr >= lower_bound,
+                                name="init_solution_lower_bound",
+                            )
+                            print(f"Added hard master lower bound from init_solution: {lower_bound}")
 
                     # update core point AFTER you have a valid x_k from the master
                     core_point = self.update_core_point(core_point, action, iteration, alpha=core_alpha)
