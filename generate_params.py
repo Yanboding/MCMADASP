@@ -238,7 +238,7 @@ EXPERIMENT_SPECS = {
         ),
         ExperimentSpec(
             name='case_study_discount_factor',
-            config_type='ejor',
+            config_type='toy',
             val_args=[0.95, 0.96, 0.97, 0.98],
             mutate=_mutate_discount_factor,
         )
