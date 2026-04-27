@@ -7,13 +7,15 @@ import re
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pprint import pprint
 
-from generate_params import _save_training_result
+from generate_params import _save_training_result, _load_cached_training_result
 import numpy as np
 import pandas as pd
 from gurobipy import GRB
 from scipy.stats import geom
 
 from experiments.experiment_config import get_config_by_type
+from importance_sampling import build_proposal
+from importance_sampling.proposals import GeometricLengthProposal,FixedLengthProposal
 from utils import iter_to_tuple, get_uid, safe_open, RunningStats, encode, decode, get_solution_value, acquire_grb_env, read_lines_with_pattern
 from decision_maker import InfiniteSAAAgent, InfinitePenalizedSAAAgent, MyopicAgent, ALPRowGenerationAgent, LinearPenaltyFunction
 from policy_evaluator import PolicyEvaluator
@@ -675,6 +677,8 @@ def calculate_policy_costs(uid, experiment_name, policy_id, agent_name, agent_ar
 
     cached_result = load_pickle_if_exists(result_file)
     if cached_result is not None:
+        if os.path.exists(checkpoint_file):
+            os.remove(checkpoint_file)
         return cached_result
 
     sample_path = np.array(sample_path)
@@ -686,10 +690,15 @@ def calculate_policy_costs(uid, experiment_name, policy_id, agent_name, agent_ar
     serializable_agent_args = {k: _to_jsonable(v) for k, v in runtime_agent_args.items() if k != 'grb_env'}
 
     if agent_name in {"approx_hindsight", "approx_penalized_hindsight"}:
+        generating_function = LinearPenaltyFunction(env=env, coefficients=runtime_agent_args['penalty_coefficients'])
+        runtime_agent_args.pop('penalty_coefficients')
+        runtime_agent_args['generating_function'] = generating_function
+        runtime_agent_args['sample_path_length_proposal'] = build_proposal(
+            runtime_agent_args['sample_path_length_proposal']
+        )
         agent_instance = InfinitePenalizedSAAAgent(
             env,
             discount_factor=env.discount_factor,
-            generating_function=local_generating_function,
             **runtime_agent_args
         )
     elif agent_name == "myopic":
@@ -788,9 +797,12 @@ def calculate_policy_costs(uid, experiment_name, policy_id, agent_name, agent_ar
     with open(result_file, 'wb') as f:
         pickle.dump(result, f)
 
+    if os.path.exists(checkpoint_file):
+        os.remove(checkpoint_file)
+
     return result
 
-def evaluate_policy_costs_with_information_relaxation(uid, experiment_name, init_state, sample_path, warm_up_periods, env_args, penalty_coefficients, alp_coefficients, group_id, grb_env, job_id):
+def evaluate_policy_costs_with_information_relaxation(uid, experiment_name, mutate_val, init_state, sample_path, warm_up_periods, env_args, policy_specs, penalty_coefficients, group_id, grb_env, job_id):
     '''
     This function evaluates the costs of different policies and their gaps to the information relaxation lower bounds.
     '''
@@ -832,56 +844,9 @@ def evaluate_policy_costs_with_information_relaxation(uid, experiment_name, init
     zero_lowerbound_instance = InfinitePenalizedSAAAgent(env, discount_factor=env.discount_factor, **zero_lowerbound_args)
     penalized_lowerbound_instance = InfinitePenalizedSAAAgent(env, discount_factor=env.discount_factor, **penalized_lowerbound_args)
 
-    policy_specs = [
-        {
-            'policy_id': 'approx_hindsight',
-            'agent_name': 'approx_hindsight',
-            'agent_args': {
-                'sample_path_number': 256,
-                'current_decision_var_type': 'integer',
-                'future_decision_var_type': 'continuous',
-                'is_myopic': False,
-                'penalty_ratio': 0,
-                'is_quasi_MC': True,
-                'max_periods': max_periods,
-                'geom_p': true_geom_p,
-                'grb_env': grb_env,
-            },
-        },
-        {
-            'policy_id': 'approx_penalized_hindsight',
-            'agent_name': 'approx_penalized_hindsight',
-            'agent_args': {
-                'sample_path_number': 256,
-                'current_decision_var_type': 'integer',
-                'future_decision_var_type': 'continuous',
-                'is_myopic': False,
-                'penalty_ratio': 1,
-                'is_quasi_MC': True,
-                'max_periods': max_periods,
-                'geom_p': true_geom_p,
-                'grb_env': grb_env,
-            },
-        },
-        {
-            'policy_id': 'myopic',
-            'agent_name': 'myopic',
-            'agent_args': {
-                'grb_env': grb_env,
-            },
-        },
-        {
-            'policy_id': 'row_gen_alp',
-            'agent_name': 'row_gen_alp',
-            'agent_args': {
-                'coefficients': alp_coefficients,
-                'grb_env': grb_env,
-            },
-        },
-    ]
-
     summary_rows = []
     for policy_spec in policy_specs:
+        pprint(policy_spec)
         policy_result = calculate_policy_costs(
             uid=uid,
             experiment_name=experiment_name,
@@ -905,6 +870,7 @@ def evaluate_policy_costs_with_information_relaxation(uid, experiment_name, init
             'uid': uid,
             'group_id': group_id,
             'experiment_name': experiment_name,
+            'mutate_val': mutate_val,
             'warm_up_periods': warm_up_periods,
             'zero_information_relaxation_cost': float(zero_information_relaxation_cost),
             'penalized_information_relaxation_cost': float(penalized_information_relaxation_cost),
@@ -1016,39 +982,58 @@ def coefficient_out_of_sample_test(uid, experiment_name, mutate_val, env_args, p
         f.write(json.dumps(result) + '\n')
 
 
-def train_penalty_coefficients(env_args, experiment_name, sample_path_number, mutate_val, job_id=None):
+def train_penalty_coefficients(env_args, experiment_name, sample_path_number, mutate_val, agent_args=None, job_id=None):
     '''
-    This function can be implemented to train the coefficients for the penalty function used in the hindsight approximation with penalty agent. The training can be done using a simple grid search or a more sophisticated optimization algorithm.
+    Train coefficients for the penalty function used in the hindsight
+    approximation with penalty agent. ``agent_args`` may include a
+    JSON-serializable ``sample_path_length_proposal`` spec dict.
     '''
+    agent_args = dict(agent_args or {})
+    mutate_val_str = str(mutate_val).replace('.', '_')
+    out_file = f'penalty_train_discount_{mutate_val_str}.jsonl'
+
+    cached = _load_cached_training_result(experiment_name, out_file, env_args, agent_args=agent_args)
+    if cached is not None:
+        cached_result = cached.get('result', {})
+        cached_obj = cached_result.get('obj_val')
+        cached_coefficients = cached_result.get('args', {}).get('coefficients', None)
+        cached_info = cached_result.get('info', {})
+        print(f"Use cached penalty coefficients for uid={cached.get('uid')}")
+        return cached_obj, cached_coefficients, cached_info
 
     config_for_train = get_config_by_type('infinite_custom', args=env_args)
     env = config_for_train.env
     generating_function = LinearPenaltyFunction(env=env)
-    agent = InfinitePenalizedSAAAgent(env=env, discount_factor=env.discount_factor, 
-                                      sample_path_number=sample_path_number, 
-                                      current_decision_var_type='continuous', 
+    materialized_agent_args = dict(agent_args)
+    if 'sample_path_length_proposal' in materialized_agent_args:
+        materialized_agent_args['sample_path_length_proposal'] = build_proposal(
+            materialized_agent_args['sample_path_length_proposal']
+        )
+    agent = InfinitePenalizedSAAAgent(env=env, discount_factor=env.discount_factor,
+                                      sample_path_number=sample_path_number,
+                                      current_decision_var_type='continuous',
                                       future_decision_var_type='continuous',
-                                      generating_function=generating_function, 
-                                      is_myopic=False)
+                                      generating_function=generating_function,
+                                      is_myopic=False,
+                                      **materialized_agent_args)
     init_state = None
-    print(f"Training penalty coefficients for env_uid {get_uid(env_args)} with init_state: {init_state} and sample_path_number: {sample_path_number}")
+    print(f"Training penalty coefficients for env_uid {get_uid(env_args)} with init_state: {init_state}, sample_path_number: {sample_path_number}, agent_args: {agent_args}")
     env.reset_random_seeds()  # Reset random seeds before training again to ensure the same sample paths
     obj, direct_coefficients, info = agent.benders_decomposition_train(coefficient_bound=GRB.INFINITY, init_state = init_state, parallel=True, verbose=False)
     print('Obejctive from Benders decomposition training:', obj) # Full MILP:39050.05571672409 # LP: 21524.097118570513
     print('Coefficients from Benders decomposition training:', direct_coefficients)
-    mutate_val_str = str(mutate_val).replace('.', '_')
     _save_training_result(
         experiment_name=experiment_name,
-        file_name=f'penalty_train_discount_{mutate_val_str}.jsonl',
+        file_name=out_file,
         env_args=env_args,
         agent_name='hindsight_approx_with_penalty',
         obj_val=obj,
         coefficients=direct_coefficients,
         info=info,
+        agent_args=agent_args,
     )
 
     return obj, direct_coefficients, info
-
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Example of using argparse to pass in a list of lists.")
     parser.add_argument('--params', help='Input JSON-encoded list of lists', type=str)
@@ -1071,11 +1056,11 @@ if __name__ == '__main__':
     # evaluate_information_relaxation_cost(**params, generating_function=generating_function, job_id=args.job_id)
     #calculate_penalized_lowerbound_with_same_initial_state(**params, lowerbound_args=lowerbound_args, generating_function=generating_function, job_id=args.job_id)
     # calculate_information_relexation_costs(**params, train_sample_path_num=30,test_sample_path_num=8, job_id=args.job_id)
-    train_penalty_coefficients(**params, job_id=args.job_id)
-    # grb_env = acquire_grb_env({"Threads": 0}, verbose=False, wait=15)
-    # failed_jobs = []
-    # for param in params:
-        # pprint(param['env_args'])
+    # train_penalty_coefficients(**params, job_id=args.job_id)
+    grb_env = acquire_grb_env({"Threads": 0}, verbose=False, wait=15)
+    failed_jobs = []
+    for param in params:
+        pprint(param['env_args'])
         # coefficient_training_test(**param, grb_env=grb_env, job_id=args.job_id)
         # coefficient_out_of_sample_test(**param, grb_env=grb_env, job_id=args.job_id)
-        # evaluate_policy_costs_with_information_relaxation(**param, grb_env=grb_env, job_id=args.job_id)
+        evaluate_policy_costs_with_information_relaxation(**param, grb_env=grb_env, job_id=args.job_id)

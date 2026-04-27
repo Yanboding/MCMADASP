@@ -286,25 +286,38 @@ class MultiClassPoissonArrivalGenerator:
 if __name__ == "__main__":
     # Parameters
      # Parameters
-    mean_rate = 5.0
-    max_arr = 10
-    probs = [0.5, 0.3, 0.2] # 3 types
+    # mean_rate = 5.0
+    # max_arr = 10
+    # probs = [0.5, 0.3, 0.2] # 3 types
 
 
-    # Initialize with QMC enabled
-    generator_qmc = MultiClassPoissonArrivalGenerator(
-        mean_arrival_rate=mean_rate,
-        maximum_arrival=max_arr,
-        type_probs=probs,
-        random_seed=42,
-        is_precompute_state=False,
-        use_qmc=True,
-        max_periods=int(geom.ppf(0.9999, p=0.01)), # to ensure that the probability of generating more than max_periods arrivals is very small
-        geom_p=0.01
-    )
+    # # Initialize with QMC enabled
+    # generator_qmc = MultiClassPoissonArrivalGenerator(
+    #     mean_arrival_rate=mean_rate,
+    #     maximum_arrival=max_arr,
+    #     type_probs=probs,
+    #     random_seed=42,
+    #     is_precompute_state=False,
+    #     use_qmc=True,
+    #     max_periods=int(geom.ppf(0.9999, p=0.01)), # to ensure that the probability of generating more than max_periods arrivals is very small
+    #     geom_p=0.01
+    # )
 
-    delta = generator_qmc.rvs(size=1024)
-    average_length = np.mean([len(path) for path in delta])
-    print(f"Average path length (QMC): {average_length:.2f}")
-    average_arrivals_per_period = np.mean([np.sum(path, axis=0) for path in delta], axis=0)
-    print(f"Average arrivals per type (QMC): {average_arrivals_per_period}")
+    # delta = generator_qmc.rvs(size=1024)
+    # average_length = np.mean([len(path) for path in delta])
+    # print(f"Average path length (QMC): {average_length:.2f}")
+    # average_arrivals_per_period = np.mean([np.sum(path, axis=0) for path in delta], axis=0)
+    # print(f"Average arrivals per type (QMC): {average_arrivals_per_period}")
+    discount_factor = 0.98
+    geom_p = 1 - discount_factor
+    print(geom.std(geom_p), geom.mean(geom_p))
+    discount_factor_2 = 0.99
+    geom_p_2 = 1 - discount_factor_2
+    q1 = geom.cdf(100, geom_p_2)
+    q2 = geom.cdf(200, geom_p_2)
+    q3 = geom.cdf(400, geom_p_2)
+    print(q1, q2, q3)
+    print(geom.std(geom_p_2), geom.mean(geom_p_2))
+    print(geom.ppf(q1, geom_p_2))
+    print(geom.ppf(q2, geom_p_2))
+    print(geom.ppf(q3, geom_p_2))

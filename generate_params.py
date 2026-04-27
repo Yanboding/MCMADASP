@@ -10,6 +10,7 @@ import pandas as pd
 import numpy as np
 from scipy.stats import geom
 from experiments import get_config_by_type
+from importance_sampling import build_proposal
 from utils import iter_to_tuple, iter_to_list, get_uid, read_lines_with_pattern, RunningStats, encode, decode, wait_time, acquire_grb_env, str2treatment_patterns
 from pathlib import Path
 import hashlib
@@ -22,31 +23,42 @@ from gurobipy import GRB
 from decision_maker import InfinitePenalizedSAAAgent, LinearPenaltyFunction, ALPRowGenerationAgent
 
 
-def _load_cached_training_result(experiment_name, file_name, env_args):
+def _training_uid(env_args, agent_args=None):
+    """Cache uid that includes agent_args (e.g. proposal spec) when present.
+
+    When agent_args is None or empty, falls back to the env-only uid for
+    backward compatibility with previously cached records.
+    """
+    if not agent_args:
+        return get_uid(env_args)
+    return get_uid({'env_args': env_args, 'agent_args': agent_args})
+
+
+def _load_cached_training_result(experiment_name, file_name, env_args, agent_args=None):
     file_path = os.path.join('experiments', 'results', experiment_name, file_name)
     if not os.path.exists(file_path):
         return None
-    env_uid = get_uid(env_args)
+    target_uid = _training_uid(env_args, agent_args)
     cached_record = None
     with open(file_path, 'r') as f:
         for line in f:
             if not line.strip():
                 continue
             record = json.loads(line)
-            if record.get('uid') == env_uid:
+            if record.get('uid') == target_uid:
                 cached_record = record
     return cached_record
 
 
-def _save_training_result(experiment_name, file_name, env_args, agent_name, obj_val, coefficients, info=None):
+def _save_training_result(experiment_name, file_name, env_args, agent_name, obj_val, coefficients, info=None, agent_args=None):
     file_path = os.path.join('experiments', 'results', experiment_name, file_name)
     os.makedirs(os.path.dirname(file_path), exist_ok=True)
     record = {
-        'uid': get_uid(env_args),
+        'uid': _training_uid(env_args, agent_args),
         'result': {
             'agent_name': agent_name,
             'obj_val': obj_val,
-            'args': {'coefficients': coefficients},
+            'args': {'coefficients': coefficients, 'agent_args': agent_args or {}},
             'info': info or {},
         },
     }
@@ -97,6 +109,7 @@ class ExperimentSpec:
     config_type: str
     val_args: Sequence
     mutate: Optional[Callable] = None  # signature: (env_args, val) -> None
+    agent_mutate: Optional[Callable] = None  # signature: (agent_args, val) -> None
 
     @property
     def is_single_variant(self) -> bool:
@@ -104,20 +117,41 @@ class ExperimentSpec:
 
 
 def build_variation_test_env(spec: ExperimentSpec):
-    """Materialize the experiment's variants to a `.dat` file.
+    """Materialize the experiment's variants.
 
-    Returns (test_params, experiment_name). `test_params` is keyed by
-    `env_uid` for single-variant experiments, else by `(env_uid, experiment_name, val)`.
+    Returns a dict keyed by `env_uid` for single-variant experiments, else by
+    `(env_uid, experiment_name, val)`. Each value is a dict with two keys:
+    ``env_args`` (env-level configuration) and ``agent_args`` (agent-level
+    keyword arguments, e.g. proposal specs).
     """
     base_env_args = get_config_by_type(spec.config_type).args
     test_params = {}
     for i, val in enumerate(spec.val_args, start=1):
         env_args = copy.deepcopy(base_env_args)
+        discount_factor = env_args['discount_factor']
+        true_geom_p = round(1 - discount_factor, 2)
+        max_periods = int(geom.ppf(0.9999, true_geom_p))
+        agent_args = {
+            'policy_id': 'approx_penalized_hindsight',
+            'agent_name': 'approx_penalized_hindsight',
+            'agent_args': {
+                'sample_path_number': 256,
+                'current_decision_var_type': 'integer',
+                'future_decision_var_type': 'continuous',
+                'is_myopic': False,
+                'penalty_ratio': 1,
+                'is_quasi_MC': True,
+                'max_periods': max_periods,
+                'geom_p': true_geom_p,
+            },
+        }
         if spec.mutate is not None:
             spec.mutate(env_args, val)
+        if spec.agent_mutate is not None:
+            spec.agent_mutate(agent_args, val)
         env_uid = get_uid(env_args)
         key = env_uid if spec.is_single_variant else (env_uid, spec.name, val)
-        test_params[key] = env_args
+        test_params[key] = {'env_args': env_args, 'agent_args': agent_args}
     return test_params
 
 
@@ -188,6 +222,33 @@ def _mutate_overtime_cost(env_args, overtime_cost):
 def _mutate_discount_factor(env_args, discount_factor):
     env_args['discount_factor'] = discount_factor
 
+def _mutate_discount_factor_for_sample_path_length_proposal(agent_args, discount_factor):
+    discount_factor_str = str(discount_factor).replace('.', '_')
+    agent_args.update({
+            'policy_id': 'approx_penalized_hindsight_geometric_' + discount_factor_str,
+            'agent_name': 'approx_penalized_hindsight',
+        })
+    agent_args['agent_args'].update({
+                'sample_path_length_proposal': {
+                    'type': 'geometric',
+                    'discount_factor_proposal': discount_factor,
+                }
+            })
+
+def _mutate_fixed_length_for_sample_path_length_proposal(agent_args, max_length):
+    agent_args.update(
+            {
+                'policy_id': 'approx_penalized_hindsight_truncated_horizon_' + str(max_length),
+                'agent_name': 'approx_penalized_hindsight',
+            }
+    )
+    agent_args['agent_args'].update({
+                    'sample_path_length_proposal': {
+                        'type': 'fixed',
+                        'max_length': max_length-1,
+                    }
+                })
+
 # ---------------------------------------------------------------------------
 # Registry of all experiments. Add new experiments here.
 # ---------------------------------------------------------------------------
@@ -241,10 +302,21 @@ EXPERIMENT_SPECS = {
             config_type='toy',
             val_args=[0.95, 0.96, 0.97, 0.98],
             mutate=_mutate_discount_factor,
-        )
+        ),
+        ExperimentSpec(
+            name='sample_path_length_proposal_geometric',
+            config_type='toy',
+            val_args=[0.95, 0.96, 0.98, 0.99],
+            agent_mutate=_mutate_discount_factor_for_sample_path_length_proposal,
+        ),
+        ExperimentSpec(
+            name='sample_path_length_proposal_fixed',
+            config_type='toy',
+            val_args=[100, 200, 400],
+            agent_mutate=_mutate_fixed_length_for_sample_path_length_proposal,
+        ),
     ]
 }
-
 
 def generate_experiment(experiment_name: str):
     """Preferred entry point: look up a spec by name and build its dat file."""
@@ -252,42 +324,44 @@ def generate_experiment(experiment_name: str):
 
 
 
-def train_penalty_coefficients(env_args, experiment_name, sample_path_number):
+def train_penalty_coefficients(env_args, experiment_name, agent_args=None):
     '''
-    This function can be implemented to train the coefficients for the penalty function used in the hindsight approximation with penalty agent. The training can be done using a simple grid search or a more sophisticated optimization algorithm.
+    Train coefficients for the penalty function used in the hindsight
+    approximation with penalty agent. ``agent_args`` may include a
+    JSON-serializable ``sample_path_length_proposal`` spec dict that is
+    materialized into a SamplePathLengthProposal before constructing the agent.
     '''
-    cached = _load_cached_training_result(experiment_name, 'penalty_train.jsonl', env_args)
+    agent_args = dict(agent_args or {})
+    cached = _load_cached_training_result(experiment_name, 'penalty_train.jsonl', env_args, agent_args=agent_args)
     if cached is not None:
         cached_result = cached.get('result', {})
         cached_obj = cached_result.get('obj_val')
         cached_coefficients = cached_result.get('args', {}).get('coefficients', None)
         cached_info = cached_result.get('info', {})
-        print(f"Use cached penalty coefficients for env_uid={cached.get('uid')}")
+        print(f"Use cached penalty coefficients for uid={cached.get('uid')}")
         return cached_obj, cached_coefficients, cached_info
 
     config_for_train = get_config_by_type('infinite_custom', args=env_args)
     env = config_for_train.env
     generating_function = LinearPenaltyFunction(env=env)
-    agent = InfinitePenalizedSAAAgent(env=env, discount_factor=env.discount_factor, 
-                                      sample_path_number=sample_path_number, 
-                                      current_decision_var_type='continuous', 
-                                      future_decision_var_type='continuous',
-                                      generating_function=generating_function, 
-                                      is_myopic=False)
+    inner = dict(agent_args.get('agent_args', {}))
+    inner['generating_function'] = generating_function
+    if 'sample_path_length_proposal' in inner:
+        inner['sample_path_length_proposal'] = build_proposal(
+            inner['sample_path_length_proposal']
+        )
+    pprint(inner)
+    agent = InfinitePenalizedSAAAgent(env=env, discount_factor=env.discount_factor,
+                                      **inner)
     init_state = None if 'init_state' not in env_args.get('reset_params', {}) else env_args['reset_params']['init_state']
-    print(f"Training penalty coefficients for env_uid {get_uid(env_args)} with init_state: {init_state} and sample_path_number: {sample_path_number}")
+    sample_path_number = agent_args['agent_args']['sample_path_number']
+    print(f"Training penalty coefficients for env_uid {get_uid(env_args)} with init_state: {init_state}, sample_path_number: {sample_path_number}, agent_args: {agent_args}")
     if init_state is not None:
         init_state = tuple(np.array(item) for item in init_state)
     env.reset_random_seeds()  # Reset random seeds before training again to ensure the same sample paths
-    obj, direct_coefficients, info = agent.benders_decomposition_train(coefficient_bound=GRB.INFINITY, init_state = init_state, parallel=True, verbose=False)
-    print('Obejctive from Benders decomposition training:', obj) # Full MILP:39050.05571672409 # LP: 21524.097118570513
+    obj, direct_coefficients, info = agent.benders_decomposition_train(coefficient_bound=GRB.INFINITY, init_state=init_state, parallel=True, verbose=False)
+    print('Obejctive from Benders decomposition training:', obj)
     print('Coefficients from Benders decomposition training:', direct_coefficients)
-
-    # direct_coefficients = [4.5050629088130085, 19.007403595529222, 210.52084330182836, 0.6690122556727325, 17.81240359552962, 210.1258433018285, 469.6670526138236, 469.667052613824, 383.49566005697466, 395.9814464036324, 383.1616355414874, 395.8926130702999, 9.70567848715938e-13, 0.0, -0.015222222219714846, 0.19500000000251028, 0.0]
-    # direct_coefficients = direct_coefficients = [5.799735521230385, 20.437279922776042, 209.3610285715884, 1.1901698841543076, 18.11727992276178, 208.3710285715395, 444.697203860891, 444.69720386089654, 377.872261776431, 390.7855706566974, 377.61857065670546, 390.68657065670726, -7.140954494389007e-13, 0.0, -0.3300000000072032, -5.093170329928398e-11, 0.0]
-    # env.reset_random_seeds()
-    # obj, coefficients, info = agent.sample_mean_penalized_lowerbound(coefficients=direct_coefficients, ratio=0, verbose=False)
-    # print('Objective from sample mean penalized lower bound evaluation using original problem coefficients:', obj) # Full MILP:39049.9991672409 # LP: 39036.989105384375 # Zero penalized: 35918.338281242075
     _save_training_result(
         experiment_name=experiment_name,
         file_name='penalty_train.jsonl',
@@ -296,6 +370,7 @@ def train_penalty_coefficients(env_args, experiment_name, sample_path_number):
         obj_val=obj,
         coefficients=direct_coefficients,
         info=info,
+        agent_args=agent_args,
     )
 
     return obj, direct_coefficients, info
@@ -328,20 +403,61 @@ def train_alp_coefficients(env_args, experiment_name):
     return obj, coefficients
 
 
-def generate_test_paths_and_init_state(test_envs, test_sample_path_num, warm_up_periods=0, num_periods=None, dat_file=None, num_groups=None, is_require_alp_coefficients=True, is_require_penalty_coefficients=True):
+def generate_test_paths_and_init_state(test_envs, test_sample_path_num, warm_up_periods=0, num_periods=None, dat_file=None, num_groups=None, is_require_penalty_coefficients=True, policy_ids=[]):
     '''
     Inital state is considered as period 1. sample path will start from period 2.
+
+    ``policy_ids`` is an optional iterable of policy_ids registered in
+    ``POLICY_SPECS``. The resolved policy spec dicts are embedded in every
+    saved params record under the ``policies`` key so the runner knows which
+    policies to evaluate against the corresponding sample path.
     '''
     results = []
-    
-    for (env_uid, experiment_name, mutate_val), env_args in test_envs.items():
+    for (env_uid, experiment_name, mutate_val), variant in test_envs.items():
+        env_args = variant['env_args']
         env = get_config_by_type('infinite_custom', args=env_args).env
         print(f"Processing env_uid: {env_uid}, experiment_name: {experiment_name}, mutate_val: {mutate_val}")
-        obj_alp_train, alp_coefficients = train_alp_coefficients(env_args=env_args, experiment_name=experiment_name) if is_require_alp_coefficients else (None, None)
-        if is_require_penalty_coefficients:
-            obj, direct_coefficients, info = train_penalty_coefficients(env_args=env_args, experiment_name=experiment_name, sample_path_number=256)
-        else:
-            direct_coefficients = [0] * (env.planning_horizon * 2 + env.num_types + env.booking_window_size * env.num_types + env.planning_horizon)
+        policies = []
+        if 'row_gen_alp' in policy_ids:
+            obj_alp_train, alp_coefficients = train_alp_coefficients(env_args=env_args, experiment_name=experiment_name)
+            policies.append({
+                'policy_id': 'row_gen_alp',
+                'agent_name': 'row_gen_alp',
+                'agent_args': {
+                    'coefficients': alp_coefficients,
+                },
+            })
+        if 'myopic' in policy_ids:
+            policies.append({
+                'policy_id': 'myopic',
+                'agent_name': 'myopic',
+                'agent_args': {
+                },
+            })
+        if 'approx_hindsight' in policy_ids:
+            policies.append({
+                'policy_id': 'approx_hindsight',
+                'agent_name': 'approx_hindsight',
+                'agent_args': {
+                    'sample_path_number': 256,
+                    'current_decision_var_type': 'integer',
+                    'future_decision_var_type': 'continuous',
+                    'is_myopic': False,
+                    'penalty_ratio': 0,
+                    'is_quasi_MC': True,
+                },
+            })
+        if 'approx_penalized_hindsight' in policy_ids:
+            agent_args = variant['agent_args']
+            if is_require_penalty_coefficients:
+                obj, direct_coefficients, info = train_penalty_coefficients(env_args=env_args, agent_args=agent_args, experiment_name=experiment_name)
+            else:
+                direct_coefficients = [0] * (env.planning_horizon * 2 + env.num_types + env.booking_window_size * env.num_types + env.planning_horizon)
+            agent_args['agent_args']['penalty_coefficients'] = direct_coefficients
+            policies.append(agent_args)
+        # Inject the freshly trained coefficients into the matching policy specs
+        # for this variant so each saved record carries everything the runner
+        # needs to instantiate its agents.
         max_length = 0
         sample_gen_args = copy.deepcopy(env_args)
         sample_gen_args["env_random_seed"] = env_args.get("env_random_seed", 0) + 1000 # make sure the random seed for sample path generation is different from the random seed for training ALP
@@ -375,8 +491,8 @@ def generate_test_paths_and_init_state(test_envs, test_sample_path_num, warm_up_
                 "mutate_val": mutate_val,
                 **params,
                 "penalty_coefficients": direct_coefficients,
-                "alp_coefficients": alp_coefficients,
                 "group_id": env_uid,
+                "policy_specs": policies,
             }
             results.append(save_params)
         print("max sample path length:", max_length)
@@ -400,13 +516,15 @@ def generate_test_paths_and_init_state(test_envs, test_sample_path_num, warm_up_
 def generate_train_env(test_envs, dat_file=None):
     # This function can be implemented to generate parameters for training the agents. The parameters can include different environment configurations, initial states, and sample paths.
     results = []
-    for (env_uid, experiment_name, mutate_val), env_args in test_envs.items():
-        # Write to dat file if specified
+    for (env_uid, experiment_name, mutate_val), variant in test_envs.items():
+        env_args = variant['env_args']
+        agent_args = variant.get('agent_args', {})
         save_params = {
                 "experiment_name": experiment_name,
                 "mutate_val": mutate_val,
                 "sample_path_number": 256,
                 'env_args': env_args,
+                'agent_args': agent_args,
             }
         results.append(save_params)
     if dat_file:
@@ -426,21 +544,23 @@ if __name__ == '__main__':
     # experiments = list(EXPERIMENT_SPECS.keys())
     # for experiment_name in experiments:
     #     test_envs.update(build_variation_test_env(EXPERIMENT_SPECS[experiment_name]))
-    # results = generate_test_paths_and_init_state(
-    #     test_envs=test_envs,
-    #     test_sample_path_num=2000,
-    #     warm_up_periods=0,
-    #     num_periods=None,
-    #     dat_file='table.dat',
-    #     num_groups=998,  # divide into N groups
-    #     is_require_alp_coefficients=True,
-    #     is_require_penalty_coefficients=True,
-    # )
-    test_envs = build_variation_test_env(EXPERIMENT_SPECS['case_study_discount_factor'])
-    results = generate_train_env(
+    test_envs = build_variation_test_env(EXPERIMENT_SPECS['sample_path_length_proposal_fixed'])
+    test_envs = build_variation_test_env(EXPERIMENT_SPECS['sample_path_length_proposal_geometric'])
+    results = generate_test_paths_and_init_state(
         test_envs=test_envs,
-        dat_file='table.dat'
+        test_sample_path_num=5000,
+        warm_up_periods=100,
+        num_periods=None,
+        dat_file='sample_path_length_proposal_fixed.dat',
+        num_groups=998,  # divide into N groups
+        is_require_penalty_coefficients=True,
+        policy_ids=['row_gen_alp', 'approx_penalized_hindsight'],
     )
+    # test_envs = build_variation_test_env(EXPERIMENT_SPECS['case_study_discount_factor'])
+    # results = generate_train_env(
+    #     test_envs=test_envs,
+    #     dat_file='table.dat'
+    # )
 
 
 

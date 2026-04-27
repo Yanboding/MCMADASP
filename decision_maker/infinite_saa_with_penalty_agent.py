@@ -7,6 +7,7 @@ from gurobipy import GRB
 
 from decision_maker import InfiniteRTAgent,LinearPenaltyFunction
 from importance_sampling import GeometricLengthProposal
+from importance_sampling.proposals import FixedLengthProposal
 from metaheuristic_algorithm import SubproblemWorker, BendersDecompositionSolver
 from utils import solve_and_handle_errors, encode, flatten, set_link_rhs, get_solution_value, acquire_grb_env
 
@@ -81,11 +82,10 @@ class InfinitePenalizedSAAAgent(InfiniteRTAgent):
         proposal = self.sample_path_length_proposal
         if proposal is None:
             raise ValueError("sample_path_length_proposal is required for proposal-based sampling.")
-        lengths = proposal.sample_lengths(
-            rng=self.arrival_generator.rng,
+        self.delta, lengths = proposal.sample_arrival_paths(
+            arrival_generator=self.arrival_generator,
             size=self.sample_path_number,
         )
-        self.delta = self._generate_arrival_paths_with_lengths(lengths)
         self.period_likelihood_ratios = proposal.period_likelihood_ratios(
             target_discount_factor=self.discount_factor,
             lengths=lengths,
@@ -479,25 +479,25 @@ if __name__ == "__main__":
     import matplotlib.pyplot as plt
     config = get_config_by_type('toy')
     env = config.env
-    test_state = (np.array([5, 5, 0]), np.array([0, 0, 0]), np.array([1, 2]))
+    test_state = (np.array([5, 5, 0, 0,0,0,0]), np.array([0, 0, 0,0,0,0,0]), np.array([1, 2]))
     test_state = None
     test_action = (np.array([[4, 0],
                              [1, 2],
                              [0, 0]]), np.array([1, 0, 0]))
-    # coefficients = [9.281778046800301, 18.406982109217235, 211.7776403012647, 1.8317253609339224, 17.076982109219387, 211.1143069679426, 454.97928707153835, 432.75496421837806, 390.1621061706687, 396.04000000002765, 391.2989818770426, 395.9409999999887, -190.9698684057874, 0.0, 1.9440832013001023e-12, 0.32999999999992724, 0.0]
-    generating_function = LinearPenaltyFunction(env=env)
+    coefficients = [14.540626814834765, 1.5511495238658377, 1.5511495238648707, 1.551149523864899, 1.551149523864559, 1.5511495238653465, 185.41538392612895, 0.1332428878923876, 1.5511495238647601, 1.5511495238651525, 1.55114952386422, 1.551149523863338, 1.5511495238645174, 0.0, 668.562058338164, 457.8833101006897, 419.77572288855816, 367.72846880452494, 419.77572288858147, 367.72846880452687, 391.72572288863086, 367.7284688045264, 419.7757228885221, 367.7284688045268, 461.01343038856766, 367.72846880452346, 309.24753093863814, 367.7284688045271, -48.91385863630643, 0.0, 1.030851306838617e-12, 1.884686541056799e-12, -6.483213120266603e-13, 1.0746273204422448e-12, 1.3735518387560715e-12, -2.8810101527981236e-12, 185.4153839261268]
+    generating_function = LinearPenaltyFunction(env=env, coefficients=coefficients)
     agent = InfinitePenalizedSAAAgent(env=env, 
                                       discount_factor=env.discount_factor, 
-                                      sample_path_number=8, 
+                                      sample_path_number=1, 
                                       generating_function=generating_function,
                                       is_myopic=False,
-                                      sample_path_length_proposal=GeometricLengthProposal(discount_factor_proposal=0.95),
+                                      sample_path_length_proposal=FixedLengthProposal(max_length=99),
                                       verbose=True)
-    # env.reset_random_seeds()
-    # print('Test state:', test_state)
-    # obj, action, info = agent.solve(test_state, action=None, parallel=True, verbose=False)
-    # print('Objective from Benders decomposition solve with trained coefficients:', obj)
-    # print('Action from Benders decomposition solve with trained coefficients:', action)
+    env.reset_random_seeds()
+    print('Test state:', test_state)
+    obj, action, info = agent.solve(test_state, t=1, action=None, parallel=True, verbose=False)
+    print('Objective from Benders decomposition solve with trained coefficients:', obj)
+    print('Action from Benders decomposition solve with trained coefficients:', action)
 
     # direct_obj, action, info = agent.direct_solve(test_state, action=None, verbose=False)
     # print('Objective from direct solve with trained coefficients:', direct_obj)
@@ -506,10 +506,10 @@ if __name__ == "__main__":
     # coefficients, obj, info = agent.train(verbose=True)
     #print("Trained coefficients:", coefficients)
     # env.reset_random_seeds()  # Reset random seeds before training again to ensure the same sample paths
-    start = time.time()
-    obj, direct_coefficients, info = agent.benders_decomposition_train(coefficient_bound=GRB.INFINITY, parallel=True, init_state=test_state, verbose=False)
-    end = time.time()
-    print(f"Benders decomposition training time: {end - start} seconds") # 27564.059161307774
+    # start = time.time()
+    # obj, direct_coefficients, info = agent.benders_decomposition_train(coefficient_bound=GRB.INFINITY, parallel=True, init_state=test_state, verbose=False)
+    # end = time.time()
+    # print(f"Benders decomposition training time: {end - start} seconds") # 27564.059161307774
     # print('Obejctive from Benders decomposition training:', obj) # 46799.67030716401
     # print('Coefficients from Benders decomposition training:', direct_coefficients)
     # env.reset_random_seeds()  # Reset random seeds before training again to ensure the same sample paths
@@ -543,3 +543,4 @@ if __name__ == "__main__":
     # print('Objective from Benders decomposition solve with trained coefficients:', obj)
     # print('Action from Benders decomposition solve with trained coefficients:', action)
     # 0.95 discount factor, penalty coefficient:
+

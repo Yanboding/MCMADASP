@@ -35,8 +35,23 @@ class SamplePathLengthProposal(ABC):
     """
 
     @abstractmethod
-    def sample_lengths(self, rng, size):
-        """Return positive integer sample-path lengths."""
+    def sample_lengths(self, arrival_generator, size):
+        """Return positive integer sample-path lengths.
+
+        ``arrival_generator`` is the environment's arrival generator; proposals
+        should draw their randomness from ``arrival_generator.rng`` so that all
+        sampling shares the same RNG state.
+        """
+
+    def sample_arrival_paths(self, arrival_generator, size):
+        """Return ``size`` per-period arrival paths drawn under this proposal.
+
+        Lengths are sampled via ``sample_lengths`` and the per-period arrival
+        vectors are produced by ``arrival_generator.rvs``. Returns a list of
+        arrays with shape ``(length_i, num_types)``.
+        """
+        lengths = self.sample_lengths(arrival_generator=arrival_generator, size=size)
+        return [arrival_generator.rvs(size=int(length)) for length in lengths], lengths
 
     @abstractmethod
     def survival_probability(self, periods):
@@ -52,7 +67,7 @@ class SamplePathLengthProposal(ABC):
                 raise ValueError(
                     "Proposal survival probability must be positive on every sampled period."
                 )
-            target_survival = target_discount_factor ** (periods - 1)
+            target_survival = target_discount_factor ** periods
             period_weights.append(target_survival / proposal_survival)
         return period_weights
 
@@ -70,8 +85,8 @@ class GeometricLengthProposal(SamplePathLengthProposal):
     def __post_init__(self):
         _validate_discount_factor(self.discount_factor_proposal, 'discount_factor_proposal')
 
-    def sample_lengths(self, rng, size):
-        return rng.geometric(p=1 - self.discount_factor_proposal, size=size)
+    def sample_lengths(self, arrival_generator, size):
+        return arrival_generator.rng.geometric(p=1 - self.discount_factor_proposal, size=size)
 
     def survival_probability(self, periods):
         periods = np.asarray(periods, dtype=int)
@@ -89,13 +104,13 @@ class TruncatedGeometricLengthProposal(SamplePathLengthProposal):
         _validate_discount_factor(self.discount_factor_proposal, 'discount_factor_proposal')
         object.__setattr__(self, 'max_length', _validate_max_length(self.max_length))
 
-    def sample_lengths(self, rng, size):
+    def sample_lengths(self, arrival_generator, size):
         if self.discount_factor_proposal == 0:
             return np.ones(size, dtype=int)
         support = np.arange(1, self.max_length + 1)
         probabilities = (1 - self.discount_factor_proposal) * self.discount_factor_proposal ** (support - 1)
         probabilities = probabilities / probabilities.sum()
-        return rng.choice(support, size=size, p=probabilities)
+        return arrival_generator.rng.choice(support, size=size, p=probabilities)
 
     def survival_probability(self, periods):
         periods = np.asarray(periods, dtype=int)
@@ -122,9 +137,43 @@ class FixedLengthProposal(SamplePathLengthProposal):
     def __post_init__(self):
         object.__setattr__(self, 'max_length', _validate_max_length(self.max_length))
 
-    def sample_lengths(self, rng, size):
+    def sample_lengths(self, arrival_generator, size):
         return np.full(size, self.max_length, dtype=int)
 
     def survival_probability(self, periods):
         periods = np.asarray(periods, dtype=int)
         return (periods <= self.max_length).astype(float)
+
+
+_PROPOSAL_REGISTRY = {
+    'geometric': GeometricLengthProposal,
+    'truncated_geometric': TruncatedGeometricLengthProposal,
+    'fixed': FixedLengthProposal,
+}
+
+
+def build_proposal(spec):
+    """Materialize a SamplePathLengthProposal from a JSON-serializable spec dict.
+
+    Accepts:
+      - None: returns None.
+      - SamplePathLengthProposal instance: returned unchanged.
+      - dict: must contain a 'type' key matching `_PROPOSAL_REGISTRY`; remaining
+        keys are forwarded as constructor kwargs.
+    """
+    if spec is None:
+        return None
+    if isinstance(spec, SamplePathLengthProposal):
+        return spec
+    if not isinstance(spec, dict):
+        raise TypeError(f"Unsupported proposal spec: {spec!r}")
+    spec = dict(spec)
+    proposal_type = spec.pop('type', None)
+    if proposal_type is None:
+        raise ValueError("Proposal spec dict must include a 'type' key.")
+    if proposal_type not in _PROPOSAL_REGISTRY:
+        raise ValueError(
+            f"Unknown proposal type {proposal_type!r}. "
+            f"Available: {sorted(_PROPOSAL_REGISTRY)}"
+        )
+    return _PROPOSAL_REGISTRY[proposal_type](**spec)

@@ -3,6 +3,7 @@ from importance_sampling.proposals import (
     GeometricLengthProposal,
     SamplePathLengthProposal,
     TruncatedGeometricLengthProposal,
+    build_proposal,
 )
 
 __all__ = [
@@ -10,4 +11,5 @@ __all__ = [
     'GeometricLengthProposal',
     'SamplePathLengthProposal',
     'TruncatedGeometricLengthProposal',
+    'build_proposal',
 ]
