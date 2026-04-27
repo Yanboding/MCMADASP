@@ -40,10 +40,29 @@ METAJOB_ID=${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID}
 # Executing the command (a line from table.dat)
 # It's allowed to use more than one shell command (separated by semi-columns) on a single line
 # eval "$COMM"
-eval "$COMM"  --job_id $METAJOB_ID
+
+TMP_PARAMS_FILE=""
+if [[ "$COMM" == *" --params '"* ]]; then
+  PREFIX="${COMM%% --params \'*}"
+  REST="${COMM#* --params \'}"
+  PARAMS_PAYLOAD="${REST%%\'*}"
+  SUFFIX="${REST#"$PARAMS_PAYLOAD"}"
+  SUFFIX="${SUFFIX#\'}"
+
+  TMP_PARAMS_FILE=$(mktemp "${TMPDIR:-/tmp}/params_${METAJOB_ID}_${ID}_XXXXXX.json")
+  printf "%s" "$PARAMS_PAYLOAD" > "$TMP_PARAMS_FILE"
+
+  COMM="${PREFIX} --params_file \"${TMP_PARAMS_FILE}\"${SUFFIX}"
+fi
+
+eval "$COMM" --job_id "$METAJOB_ID"
 
 # Exit status of the code:
 STATUS=$?
+
+if [[ -n "$TMP_PARAMS_FILE" && -f "$TMP_PARAMS_FILE" ]]; then
+  rm -f "$TMP_PARAMS_FILE"
+fi
 
 # cd ..
 

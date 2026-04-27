@@ -121,6 +121,101 @@ def approximate_value_plot_from_running_stats_dict(running_stats_dict, x_vals, x
     # plt.show()
 
 
+def approximate_value_plot_from_running_stats(
+    running_stats_dict,
+    xlabel,
+    ylabel,
+    title,
+    save_file,
+    line_label=None,
+):
+    # ----- Prepare data -----
+    x_vals = sorted(running_stats_dict.keys())
+    means = np.array([running_stats_dict[x].mean for x in x_vals]).reshape(-1)
+    half_window = np.array([running_stats_dict[x].half_window(0.95) for x in x_vals]).reshape(-1)
+
+    # ----- Figure / axes -----
+    fig, ax = plt.subplots(figsize=(12, 6), dpi=150)
+    fig.patch.set_facecolor("white")
+    ax.set_facecolor("#fafafa")
+
+    line_color = "#2f6df6"
+
+    # ----- Main plot -----
+    ax.plot(
+        x_vals,
+        means,
+        marker="o",
+        markersize=10,
+        linewidth=3,
+        color=line_color,
+        label=line_label,
+        zorder=3,
+    )
+
+    ax.fill_between(
+        x_vals,
+        means - half_window,
+        means + half_window,
+        color=line_color,
+        alpha=0.18,
+        zorder=2,
+    )
+
+    # ----- Point annotations -----
+    y_range = max(means.max() - means.min(), 1e-8)
+    text_offset = 0.03 * y_range
+
+    for x, y in zip(x_vals, means):
+        ax.text(
+            x,
+            y + text_offset,
+            f"{y:.3f}",
+            ha="center",
+            va="bottom",
+            fontsize=16,
+            color="#222222",
+            bbox=dict(
+                boxstyle="round,pad=0.25",
+                facecolor="white",
+                edgecolor="none",
+                alpha=0.85,
+            ),
+            zorder=4,
+        )
+
+    # ----- Labels / title -----
+    ax.set_xlabel(xlabel, fontsize=20, labelpad=12)
+    ax.set_ylabel(ylabel, fontsize=20, labelpad=12)
+    ax.set_title(title, fontsize=24, weight="bold", pad=18)
+
+    # ----- Ticks -----
+    ax.set_xticks(x_vals)
+    ax.tick_params(axis="both", labelsize=18)
+
+    # ----- Grid / spines -----
+    ax.grid(axis="y", linestyle="--", alpha=0.3)
+    ax.grid(axis="x", visible=False)
+
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+
+    # ----- Limits / margins -----
+    lower = np.min(means - half_window)
+    upper = np.max(means + half_window)
+    pad = 0.08 * max(upper - lower, 1e-8)
+    ax.set_ylim(lower - pad, upper + 2 * pad)
+
+    # ----- Legend -----
+    if line_label is not None:
+        ax.legend(frameon=False, fontsize=18)
+
+    # ----- Save / show -----
+    fig.tight_layout()
+    fig.savefig(save_file, bbox_inches="tight", dpi=300)
+    plt.show()
+
+
 def approximate_value_plot_from_multid_running_stats(running_stats_dict, x_vals, xlabel, ylabel, plot_labels, title, save_file):
     fig, ax = plt.subplots(1, 1, figsize=(20, 10))
     for label, running_stats in running_stats_dict.items():

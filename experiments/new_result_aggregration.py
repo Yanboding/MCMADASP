@@ -11,6 +11,7 @@ from scipy.stats import geom
 
 from utils import RunningStats, load_pickle_if_exists
 from visualization import approximate_value_plot_from_running_stats_dict
+from visualization.line_plot import approximate_value_plot_from_running_stats
 
 # --- 1. Top-level Factory Functions (Required for Pickling) ---
 
@@ -37,6 +38,47 @@ def dd_dd_float_factory():
 def dd_dd_dd_float_factory():
     """Returns a 3-level nested defaultdict of floats (0.0)."""
     return defaultdict(dd_dd_float_factory)
+
+
+EXPERIMENT_PLOT_CONFIGS = [
+    {
+        'name': 'initial_state_congestion',
+        'scale': 100,
+        'xlabel': 'Initial State Congestion (%)',
+    },
+    {
+        'name': 'high_priority_proportion',
+        'scale': 100,
+        'xlabel': 'High Priority Proportion (%)',
+    },
+    {
+        'name': 'low_priority_waiting_time_target',
+        'scale': None,
+        'xlabel': 'Low Priority Waiting Time Target (Days)',
+    },
+    {
+        'name': 'high_priority_waiting_time_penalty',
+        'scale': None,
+        'xlabel': 'High Priority Waiting Time Penalty (Cost)',
+    },
+    {
+        'name': 'total_arrival_rate',
+        'scale': None,
+        'xlabel': 'Total Arrival Rate (Mean)',
+    },
+    {
+        'name': 'overtime_cost',
+        'scale': None,
+        'xlabel': 'Overtime Cost (Cost)',
+    },
+    {
+        'name': 'type_1_treatment_pattern',
+        'scale': None,
+        'xlabel': 'Type 1 Treatment Pattern (Pattern)',
+    },
+]
+
+IMPROVEMENT_YLABEL = "Lower Bound Improvement (%)"
 
 '''
 cumulateive costs: [1, 2, 3, 4, 5], [5, 4, 3, 2, 1]
@@ -106,13 +148,15 @@ class SimulateEvaluationResult:
         else:
             self._load_from_jsonl()
             self._save_cache(pickle_file)
-        for (group_id, policy_id), stats in self.zero_penalized_gap.items():
-            self.zero_penalized_improvement[(group_id, policy_id)] = self.zero_penalized_gap[(group_id, policy_id)] / self.penalized_information_relaxation_cost[(group_id)].mean / 0.01
-        for (group_id, policy_id), stats in self.penalized_gap.items():
-            self.penalized_improvement[(group_id, policy_id)] = self.penalized_gap[(group_id, policy_id)] / self.penalized_information_relaxation_cost[(group_id)].mean / 0.01
-        for group_id, stats in self.gap_to_information_relaxation.items():
-            self.improvement[group_id] = self.gap_to_information_relaxation[group_id] / self.policy_costs[(group_id, policy_id)].mean / 0.01
-
+        # for (group_id, policy_id), stats in self.zero_penalized_gap.items():
+        #     self.zero_penalized_improvement[(group_id, policy_id)] = self.zero_penalized_gap[(group_id, policy_id)] / self.penalized_information_relaxation_cost[(group_id)].mean / 0.01
+        # for (group_id, policy_id), stats in self.penalized_gap.items():
+        #     self.penalized_improvement[(group_id, policy_id)] = self.penalized_gap[(group_id, policy_id)] / self.penalized_information_relaxation_cost[(group_id)].mean / 0.01
+        # for group_id, stats in self.gap_to_information_relaxation.items():
+        #     self.improvement[group_id] = self.gap_to_information_relaxation[group_id] / self.policy_costs[(group_id, policy_id)].mean / 0.01
+        for (group_id, mutate_val), stats in self.zero_penalized_gap.items():
+            self.zero_penalized_improvement[(group_id, mutate_val)] = self.zero_penalized_gap[(group_id, mutate_val)] / self.zero_penalized_information_relaxation_cost[(group_id, mutate_val)].mean / 0.01
+    
     def _has_valid_cache(self, data):
         if data is None:
             return False
@@ -128,12 +172,20 @@ class SimulateEvaluationResult:
         for file_path in jsonl_files:
             with open(file_path, 'r') as f:
                 for line in f:
-                    self.load(json.loads(line))
+                    self.lowerbound_load(json.loads(line))
 
     def _save_cache(self, pickle_file):
         res = {key: getattr(self, key) for key in self._CACHE_KEYS}
         with open(pickle_file, 'wb') as f:
             pickle.dump(res, f)
+    
+    def lowerbound_load(self, data):
+        group_id = data['group_id']
+        mutate_val = data['mutate_val']
+        self.zero_penalized_information_relaxation_cost[(group_id, mutate_val)] += data['zero_penalized_lower_bound_objective']
+        self.penalized_information_relaxation_cost[(group_id, mutate_val)] += data['penalized_lower_bound_objective']
+        self.zero_penalized_gap[(group_id, mutate_val)] += data['gap_between_penalized_and_zero']
+
         
     def load(self, data):
         policy_id = data['policy_id']
@@ -253,27 +305,62 @@ class SimulateEvaluationResult:
         ALP & ${self.after_warmup_policy_costs[(group_id, 'row_gen_alp')].confidence_interval()}$ & ${self.waiting_time_violation[(group_id, 'row_gen_alp')].confidence_interval()}$ & ${self.overtime_utilization[(group_id, 'row_gen_alp')].confidence_interval()}$ \\\\
         """
         return table
+    
+    def plot_percentage_improvement(self, scale, xlabel, ylabel, file_name):
+        # Plot percentage improvement of myopic and ALP over the information relaxation benchmark
+        plot_stats = {
+            (mutate_val * scale if scale is not None else mutate_val): self.zero_penalized_improvement[(group_id, mutate_val)]
+            for (group_id, mutate_val) in self.zero_penalized_improvement.keys()
+        }
+        approximate_value_plot_from_running_stats(running_stats_dict=plot_stats,
+                                                  xlabel=xlabel,
+                                                  ylabel=ylabel,
+                                                title=None,
+                                                save_file=os.path.join(self.directory_path,
+                                                                        file_name))
+
+
+def run_improvement_plots(base_results_dir, file_pattern, env_info, group_ids, is_reuse=False):
+    for config in EXPERIMENT_PLOT_CONFIGS:
+        directory_path = os.path.join(base_results_dir, config['name'])
+        ser = SimulateEvaluationResult(
+            directory_path,
+            file_pattern,
+            env_info,
+            group_ids=group_ids,
+            is_reuse=is_reuse,
+        )
+        ser.plot_percentage_improvement(
+            scale=config['scale'],
+            xlabel=config['xlabel'],
+            ylabel=IMPROVEMENT_YLABEL,
+            file_name=f"{config['name']}_lower_bound_improvement.svg",
+        )
 
 if __name__ == "__main__":
-    directory_path = os.path.join('.', 'experiments', 'results', "high_priority_arrival_rate_impact")
+
+    base_results_dir = os.path.join('.', 'experiments', 'results')
     file_pattern = '[0-9]*.jsonl'
     env_info = {
         'waiting_time_targets': [1]*2,
         'overtime_capacity': 5,
     }
     group_ids = ['73d11360affe39305e7716cf5c42ac04', '841708e72300000ddfd948daf08d6805', 'a3202d39ed34711b47ecebb72aabad43']
-    a = np.array([[1, 0], [3, 0], [5, 0]])
-    b = np.array([5,0])
-    print(np.divide(a, b, out=np.zeros_like(a, dtype=float), where=b != 0))
-    ser = SimulateEvaluationResult(directory_path, file_pattern, env_info, group_ids = group_ids, is_reuse=False)
+    run_improvement_plots(
+        base_results_dir=base_results_dir,
+        file_pattern=file_pattern,
+        env_info=env_info,
+        group_ids=group_ids,
+        is_reuse=False,
+    )
 
     # print("Gap to Information Relaxation")
     # pprint(ser.gap_to_information_relaxation)
     # print("Improvement")
     # pprint(ser.improvement)
 
-    print('waiting_time_target_ptc_by_day_type')
-    pprint(ser.waiting_time_target_ptc_by_type_day)
+    # print('waiting_time_target_ptc_by_day_type')
+    # pprint(ser.waiting_time_target_ptc_by_type_day)
     # print('waiting_time_target_ptc_by_day')
     # pprint(ser.waiting_time_target_ptc_by_day)
 
@@ -281,7 +368,8 @@ if __name__ == "__main__":
     # print('self.after_warmup_policy_costs')
     # print(ser.after_warmup_policy_costs)
 
-    # pprint(ser.waiting_time_target_ptc_by_type_day)
+    # To inspect one experiment interactively, instantiate SimulateEvaluationResult
+    # with a specific directory and use the helper methods below.
 
     # ser.format_table()
     # pprint(ser.overtime_utilization)

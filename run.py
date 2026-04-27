@@ -1037,9 +1037,20 @@ def train_penalty_coefficients(env_args, experiment_name, sample_path_number, mu
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Example of using argparse to pass in a list of lists.")
     parser.add_argument('--params', help='Input JSON-encoded list of lists', type=str)
+    parser.add_argument('--params_file', help='Path to JSON file containing params payload', type=str)
     parser.add_argument('--job_id', help='Input METAJOB_ID', type=str)
     args = parser.parse_args()
-    params = json.loads(args.params)
+    if args.params_file:
+        with open(args.params_file, 'r') as f:
+            params = json.load(f)
+    elif args.params:
+        params = json.loads(args.params)
+    else:
+        raise ValueError('Either --params or --params_file must be provided.')
+
+    if isinstance(params, dict):
+        params = [params]
+
     # alp_train(**params, job_id=args.job_id)
     #experiment(**params, job_id=args.job_id)
     #value_function_experiment(**params, job_id=args.job_id)
@@ -1054,7 +1065,7 @@ if __name__ == '__main__':
     # coefficients = [14.30738636363273, 38.49280303029202, 231.5023863636273, 10.05284090909538, 33.61780303028979, 229.83988636362687, 723.9102095170437, 615.8835546874996, 381.4280007102528, 397.3400000000039, 381.42800071024215, 396.39000000000027, -199.97574928975777, 0.0, 1.5046787345508003e-12, -0.12499999999766413, 0.0]
     # generating_function = LinearPenaltyFunction(env, coefficients=coefficients)
     # evaluate_information_relaxation_cost(**params, generating_function=generating_function, job_id=args.job_id)
-    #calculate_penalized_lowerbound_with_same_initial_state(**params, lowerbound_args=lowerbound_args, generating_function=generating_function, job_id=args.job_id)
+    # calculate_penalized_lowerbound_with_same_initial_state(**params, lowerbound_args=lowerbound_args, generating_function=generating_function, job_id=args.job_id)
     # calculate_information_relexation_costs(**params, train_sample_path_num=30,test_sample_path_num=8, job_id=args.job_id)
     # train_penalty_coefficients(**params, job_id=args.job_id)
     grb_env = acquire_grb_env({"Threads": 0}, verbose=False, wait=15)

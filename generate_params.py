@@ -177,9 +177,9 @@ def _mutate_initial_state_congestion(env_args, occupancy_level):
     }
 
 
-def _mutate_high_priority_propotion(env_args, propotion):
+def _mutate_high_priority_proportion(env_args, proportion):
     total = sum(env_args['arrival_rates'])
-    env_args['arrival_rates'] = [total * propotion, total * (1 - propotion)]
+    env_args['arrival_rates'] = [total * proportion, total * (1 - proportion)]
 
 
 def _mutate_low_priority_waiting_time_target(env_args, waiting_time_target):
@@ -262,10 +262,10 @@ EXPERIMENT_SPECS = {
             mutate=_mutate_initial_state_congestion,
         ),
         ExperimentSpec(
-            name='high_priority_propotion',
+            name='high_priority_proportion',
             config_type='toy',
             val_args=[0.1, 0.5, 0.9],
-            mutate=_mutate_high_priority_propotion,
+            mutate=_mutate_high_priority_proportion,
         ),
         ExperimentSpec(
             name='low_priority_waiting_time_target',
@@ -460,9 +460,9 @@ def generate_test_paths_and_init_state(test_envs, test_sample_path_num, warm_up_
         # needs to instantiate its agents.
         max_length = 0
         sample_gen_args = copy.deepcopy(env_args)
-        sample_gen_args["env_random_seed"] = env_args.get("env_random_seed", 0) + 1000 # make sure the random seed for sample path generation is different from the random seed for training ALP
-        sample_gen_args['arrival_random_seed'] = env_args.get("arrival_random_seed", 42) + 1000 # Seed for sample path generation
-        sample_gen_args['stop_time_random_seed'] = env_args.get("stop_time_random_seed", 1) + 1000
+        sample_gen_args["env_random_seed"] = env_args.get("env_random_seed", 0) + 1001 # make sure the random seed for sample path generation is different from the random seed for training ALP
+        sample_gen_args['arrival_random_seed'] = env_args.get("arrival_random_seed", 42) + 1001 # Seed for sample path generation
+        sample_gen_args['stop_time_random_seed'] = env_args.get("stop_time_random_seed", 1) + 1001
         config_for_sample_path = get_config_by_type('infinite_custom', args=sample_gen_args)
         env_for_sample_path = config_for_sample_path.env
         average_sample_path_length = 0
@@ -544,14 +544,14 @@ if __name__ == '__main__':
     # experiments = list(EXPERIMENT_SPECS.keys())
     # for experiment_name in experiments:
     #     test_envs.update(build_variation_test_env(EXPERIMENT_SPECS[experiment_name]))
-    test_envs = build_variation_test_env(EXPERIMENT_SPECS['sample_path_length_proposal_fixed'])
+    # test_envs = build_variation_test_env(EXPERIMENT_SPECS['sample_path_length_proposal_fixed'])
     test_envs = build_variation_test_env(EXPERIMENT_SPECS['sample_path_length_proposal_geometric'])
     results = generate_test_paths_and_init_state(
         test_envs=test_envs,
         test_sample_path_num=5000,
         warm_up_periods=100,
         num_periods=None,
-        dat_file='sample_path_length_proposal_fixed.dat',
+        dat_file='table.dat',
         num_groups=998,  # divide into N groups
         is_require_penalty_coefficients=True,
         policy_ids=['row_gen_alp', 'approx_penalized_hindsight'],
@@ -559,6 +559,8 @@ if __name__ == '__main__':
     # test_envs = build_variation_test_env(EXPERIMENT_SPECS['case_study_discount_factor'])
     # results = generate_train_env(
     #     test_envs=test_envs,
+    #     dat_file='table.dat'
+    # )
     #     dat_file='table.dat'
     # )
 
