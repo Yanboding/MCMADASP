@@ -148,14 +148,14 @@ class SimulateEvaluationResult:
         else:
             self._load_from_jsonl()
             self._save_cache(pickle_file)
-        # for (group_id, policy_id), stats in self.zero_penalized_gap.items():
-        #     self.zero_penalized_improvement[(group_id, policy_id)] = self.zero_penalized_gap[(group_id, policy_id)] / self.penalized_information_relaxation_cost[(group_id)].mean / 0.01
-        # for (group_id, policy_id), stats in self.penalized_gap.items():
-        #     self.penalized_improvement[(group_id, policy_id)] = self.penalized_gap[(group_id, policy_id)] / self.penalized_information_relaxation_cost[(group_id)].mean / 0.01
-        # for group_id, stats in self.gap_to_information_relaxation.items():
-        #     self.improvement[group_id] = self.gap_to_information_relaxation[group_id] / self.policy_costs[(group_id, policy_id)].mean / 0.01
-        for (group_id, mutate_val), stats in self.zero_penalized_gap.items():
-            self.zero_penalized_improvement[(group_id, mutate_val)] = self.zero_penalized_gap[(group_id, mutate_val)] / self.zero_penalized_information_relaxation_cost[(group_id, mutate_val)].mean / 0.01
+        for (group_id, policy_id), stats in self.zero_penalized_gap.items():
+            self.zero_penalized_improvement[(group_id, policy_id)] = self.zero_penalized_gap[(group_id, policy_id)] / self.penalized_information_relaxation_cost[(group_id)].mean / 0.01
+        for (group_id, policy_id), stats in self.penalized_gap.items():
+            self.penalized_improvement[(group_id, policy_id)] = self.penalized_gap[(group_id, policy_id)] / self.penalized_information_relaxation_cost[(group_id)].mean / 0.01
+        for group_id, stats in self.gap_to_information_relaxation.items():
+            self.improvement[group_id] = self.gap_to_information_relaxation[group_id] / self.policy_costs[(group_id, policy_id)].mean / 0.01
+        # for (group_id, mutate_val), stats in self.zero_penalized_gap.items():
+        #     self.zero_penalized_improvement[(group_id, mutate_val)] = self.zero_penalized_gap[(group_id, mutate_val)] / self.zero_penalized_information_relaxation_cost[(group_id, mutate_val)].mean / 0.01
     
     def _has_valid_cache(self, data):
         if data is None:
@@ -172,7 +172,8 @@ class SimulateEvaluationResult:
         for file_path in jsonl_files:
             with open(file_path, 'r') as f:
                 for line in f:
-                    self.lowerbound_load(json.loads(line))
+                    # self.lowerbound_load(json.loads(line))
+                    self.load(json.loads(line))
 
     def _save_cache(self, pickle_file):
         res = {key: getattr(self, key) for key in self._CACHE_KEYS}
@@ -339,23 +340,31 @@ def run_improvement_plots(base_results_dir, file_pattern, env_info, group_ids, i
 
 if __name__ == "__main__":
 
-    base_results_dir = os.path.join('.', 'experiments', 'results')
+    base_results_dir = os.path.join('.', 'experiments', 'results', 'sample_path_length_proposal_geometric')
     file_pattern = '[0-9]*.jsonl'
     env_info = {
         'waiting_time_targets': [1]*2,
         'overtime_capacity': 5,
     }
-    group_ids = ['73d11360affe39305e7716cf5c42ac04', '841708e72300000ddfd948daf08d6805', 'a3202d39ed34711b47ecebb72aabad43']
-    run_improvement_plots(
-        base_results_dir=base_results_dir,
-        file_pattern=file_pattern,
-        env_info=env_info,
-        group_ids=group_ids,
-        is_reuse=False,
-    )
+    # group_ids = ['73d11360affe39305e7716cf5c42ac04', '841708e72300000ddfd948daf08d6805', 'a3202d39ed34711b47ecebb72aabad43']
+    # run_improvement_plots(
+    #     base_results_dir=base_results_dir,
+    #     file_pattern=file_pattern,
+    #     env_info=env_info,
+    #     group_ids=group_ids,
+    #     is_reuse=False,
+    # )
+    ser = SimulateEvaluationResult(
+            base_results_dir,
+            file_pattern,
+            env_info,
+            group_ids=['3ce2a2f68baf077097e28e1f33c60462'],
+            is_reuse=True,
+        )
 
-    # print("Gap to Information Relaxation")
-    # pprint(ser.gap_to_information_relaxation)
+
+    print("Gap to Information Relaxation")
+    pprint(ser.gap_to_information_relaxation)
     # print("Improvement")
     # pprint(ser.improvement)
 
@@ -365,8 +374,12 @@ if __name__ == "__main__":
     # pprint(ser.waiting_time_target_ptc_by_day)
 
     # ser.generate_table()
-    # print('self.after_warmup_policy_costs')
-    # print(ser.after_warmup_policy_costs)
+    print('self.after_warmup_policy_costs')
+    print(ser.after_warmup_policy_costs)
+    print('penalized_improvement')
+    print(ser.penalized_improvement)
+    print('zero_improvement')
+    print(ser.zero_penalized_improvement)
 
     # To inspect one experiment interactively, instantiate SimulateEvaluationResult
     # with a specific directory and use the helper methods below.
