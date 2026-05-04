@@ -7,6 +7,9 @@ class LinearPenaltyFunction:
         if self.coefficients is not None:
             self.theta_u, self.theta_v, self.theta_w, self.theta_x, self.theta_y = self.get_coefficients(self.coefficients)
     
+    def set_coefficients(self, solution):
+        self.theta_u, self.theta_v, self.theta_w, self.theta_x, self.theta_y = self.get_coefficients(solution)
+
     def get_coefficients(self, solution):
         if solution is None:
             if self.coefficients is None:
@@ -42,6 +45,17 @@ class LinearPenaltyFunction:
                                    total_arrival_difference * advance_scheduling_decision.reshape(-1),
                                    total_arrival_difference * overtime_decision])
         return gradient
+    
+    def calculate_expected_continuation_value(self, state, action, is_var=False, coefficients=None):
+        (post_action_regular_bookings, post_action_overtimes, post_action_waitlist) = self.env.post_action_state(state, action, is_var)
+        (advance_scheduling_decision, overtime_decision) = action
+        if coefficients is not None:
+            theta_u, theta_v, theta_w, theta_x, theta_y = coefficients
+        else:
+            theta_u, theta_v, theta_w, theta_x, theta_y = self.theta_u, self.theta_v, self.theta_w, self.theta_x, self.theta_y
+        linear_approx = theta_u @ post_action_regular_bookings + theta_v @ post_action_overtimes + theta_w @ post_action_waitlist + theta_x.reshape(-1) @ advance_scheduling_decision.reshape(-1) + theta_y @ overtime_decision
+        expected_continuation_value = (post_action_waitlist + self.env.arrival_generator.mean_by_type).sum() * linear_approx
+        return expected_continuation_value
 
 
 if __name__ == "__main__":
@@ -50,7 +64,7 @@ if __name__ == "__main__":
     # Example usage
     env = config.env  # Replace with your environment instance
     state, info = env.reset(**config.reset_params)  # Replace with your state initialization logic
-    coefficients = [0] * (env.planning_horizon * 2 + env.num_types + env.booking_window_size * env.num_types + env.planning_horizon)  # Replace with your coefficients
+    coefficients = [1] * (env.planning_horizon * 2 + env.num_types + env.booking_window_size * env.num_types + env.planning_horizon)  # Replace with your coefficients
     penalty_function = LinearPenaltyFunction(env, coefficients=coefficients)
     action = list(env.valid_actions(state))[-1]  # Replace with your action selection logic
     print(state)
@@ -63,5 +77,7 @@ if __name__ == "__main__":
     new_arrival = np.array([1, 1])  # Replace with your new arrival information
     penalty = penalty_function.calculate_penalty(state, action, new_arrival, is_var=False)
     gradient = penalty_function.calculate_gradient(state, action, new_arrival)
+    expected_continuation_value = penalty_function.calculate_expected_continuation_value(state, action)
     print(f"Calculated penalty: {penalty}")
     print(f"Calculated gradient: {gradient}")
+    print(expected_continuation_value)

@@ -503,8 +503,6 @@ if __name__ == "__main__":
     # print('Objective from direct solve with trained coefficients:', direct_obj)
     # print('Action from direct solve with trained coefficients:', action)
     # print("gap between direct and Benders decomposition solve:", (direct_obj - obj)/direct_obj * 100)
-    # coefficients, obj, info = agent.train(verbose=True)
-    #print("Trained coefficients:", coefficients)
     # env.reset_random_seeds()  # Reset random seeds before training again to ensure the same sample paths
     # start = time.time()
     # obj, direct_coefficients, info = agent.benders_decomposition_train(coefficient_bound=GRB.INFINITY, parallel=True, init_state=test_state, verbose=False)
