@@ -196,3 +196,4 @@ decision_maker/col_generation_debug.py
 *.xlsx
 *.json
 */results
+*/results_backup
