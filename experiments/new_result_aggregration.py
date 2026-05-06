@@ -99,14 +99,15 @@ class SimulateEvaluationResult:
         'waiting_time_target_ptc_by_day',
         'waiting_time_target_ptc_by_type_day',
         'waiting_time_violation',
-        'overtime_utilization'
+        'overtime_utilization',
+        'solving_time_per_state'
     )
 
-    def __init__(self,directory_path, file_pattern, env_info, group_ids, is_reuse=False):
+    def __init__(self,directory_path, file_pattern, env_info, group_ids=None, is_reuse=False):
         self.directory_path = directory_path
         self.file_pattern = file_pattern
         self.env_info = env_info
-        self.group_ids = group_ids
+        self.group_ids = group_ids if group_ids is not None else []
         self.is_reuse = is_reuse
         # Using named functions instead of lambdas
         self.scenario_results = dd_dd_dd_float_factory()
@@ -136,6 +137,7 @@ class SimulateEvaluationResult:
         self.improvement = defaultdict(RunningStats)
 
         self.one_time_cost_by_policy = dd_dd_rs_factory()
+        self.solving_time_per_state = defaultdict(RunningStats)
         self.number_of_periods = None
         self.information_relaxation_id = None
 
@@ -152,9 +154,9 @@ class SimulateEvaluationResult:
             self.zero_penalized_improvement[(group_id, policy_id)] = self.zero_penalized_gap[(group_id, policy_id)] / self.penalized_information_relaxation_cost[(group_id)].mean / 0.01
         for (group_id, policy_id), stats in self.penalized_gap.items():
             self.penalized_improvement[(group_id, policy_id)] = self.penalized_gap[(group_id, policy_id)] / self.penalized_information_relaxation_cost[(group_id)].mean / 0.01
-        for group_id, stats in self.gap_to_information_relaxation.items():
-            self.improvement[group_id] = self.gap_to_information_relaxation[group_id] / self.policy_costs[(group_id, policy_id)].mean / 0.01
-        # for (group_id, mutate_val), stats in self.zero_penalized_gap.items():
+        # for group_id, stats in self.gap_to_information_relaxation.items():
+        #     self.improvement[group_id] = self.gap_to_information_relaxation[group_id] / self.policy_costs[(group_id, policy_id)].mean / 0.01
+        # # for (group_id, mutate_val), stats in self.zero_penalized_gap.items():
         #     self.zero_penalized_improvement[(group_id, mutate_val)] = self.zero_penalized_gap[(group_id, mutate_val)] / self.zero_penalized_information_relaxation_cost[(group_id, mutate_val)].mean / 0.01
     
     def _has_valid_cache(self, data):
@@ -191,6 +193,8 @@ class SimulateEvaluationResult:
     def load(self, data):
         policy_id = data['policy_id']
         group_id = data['group_id']
+        if self.group_ids and group_id not in self.group_ids:
+            self.group_ids.append(group_id)
         self.policy_costs[(group_id, policy_id)] += data['total_cost']
         # use the first loaded policy as the information relaxation benchmark
         if self.information_relaxation_id is None:
@@ -246,6 +250,8 @@ class SimulateEvaluationResult:
         )
         if total_scheduled_patients > 0:
             self.waiting_time_violation[(group_id, policy_id)] += patients_outside_target / total_scheduled_patients * 100
+        
+        self.solving_time_per_state[(group_id, policy_id)] += data.get('solving_time_per_state', 0)
             
 
     def generate_table(self):
@@ -319,6 +325,26 @@ class SimulateEvaluationResult:
                                                 title=None,
                                                 save_file=os.path.join(self.directory_path,
                                                                         file_name))
+    
+    def last_decision_period_distribution_table(self):
+        group_id ='3ce2a2f68baf077097e28e1f33c60462'
+        table = f"""
+        \quad $\gamma_q=0.99$ & ${self.after_warmup_policy_costs[(group_id, 'approx_penalized_hindsight_geometric_0_99')].confidence_interval()}$ & ${self.zero_penalized_gap[(group_id, 'approx_penalized_hindsight_geometric_0_99')].confidence_interval()}$ & ${self.zero_penalized_improvement[(group_id, 'approx_penalized_hindsight_geometric_0_99')].confidence_interval()}$ & ${self.penalized_gap[(group_id, 'approx_penalized_hindsight_geometric_0_99')].confidence_interval()}$ & ${self.penalized_improvement[(group_id, 'approx_penalized_hindsight_geometric_0_99')].confidence_interval()}$ \\
+        \quad $\gamma_q=0.98$ & ${self.after_warmup_policy_costs[(group_id, 'approx_penalized_hindsight_geometric_0_98')].confidence_interval()}$ & ${self.zero_penalized_gap[(group_id, 'approx_penalized_hindsight_geometric_0_98')].confidence_interval()}$ & ${self.zero_penalized_improvement[(group_id, 'approx_penalized_hindsight_geometric_0_98')].confidence_interval()}$ & ${self.penalized_gap[(group_id, 'approx_penalized_hindsight_geometric_0_98')].confidence_interval()}$ & ${self.penalized_improvement[(group_id, 'approx_penalized_hindsight_geometric_0_98')].confidence_interval()}$ \\
+        \quad $\gamma_q=0.96$ & ${self.after_warmup_policy_costs[(group_id, 'approx_penalized_hindsight_geometric_0_96')].confidence_interval()}$ & ${self.zero_penalized_gap[(group_id, 'approx_penalized_hindsight_geometric_0_96')].confidence_interval()}$ & ${self.zero_penalized_improvement[(group_id, 'approx_penalized_hindsight_geometric_0_96')].confidence_interval()}$ & ${self.penalized_gap[(group_id, 'approx_penalized_hindsight_geometric_0_96')].confidence_interval()}$ & ${self.penalized_improvement[(group_id, 'approx_penalized_hindsight_geometric_0_96')].confidence_interval()}$ \\
+        \quad $\gamma_q=0.95$ & ${self.after_warmup_policy_costs[(group_id, 'approx_penalized_hindsight_geometric_0_95')].confidence_interval()}$ & ${self.zero_penalized_gap[(group_id, 'approx_penalized_hindsight_geometric_0_95')].confidence_interval()}$ & ${self.zero_penalized_improvement[(group_id, 'approx_penalized_hindsight_geometric_0_95')].confidence_interval()}$ & ${self.penalized_gap[(group_id, 'approx_penalized_hindsight_geometric_0_95')].confidence_interval()}$ & ${self.penalized_improvement[(group_id, 'approx_penalized_hindsight_geometric_0_95')].confidence_interval()}$ \\
+        """
+        return table
+    
+    def solver_compare_table(self):
+        approx_penalized_hindsight_approx_penalized_hindsight = 'e654df848c9ae807dfbe799f66450025'
+        approx_penalized_hindsight_approx_Q = 'bb0efe73303985a5a64575177e78b6dd'
+        table = f"""
+        Penalized Hindsight & \({self.policy_costs[(approx_penalized_hindsight_approx_penalized_hindsight, 'approx_penalized_hindsight_approx_penalized_hindsight')].confidence_interval()}\) & \({self.zero_penalized_improvement[(approx_penalized_hindsight_approx_penalized_hindsight, 'approx_penalized_hindsight_approx_penalized_hindsight')].confidence_interval()}\) & \({self.penalized_improvement[(approx_penalized_hindsight_approx_penalized_hindsight, 'approx_penalized_hindsight_approx_penalized_hindsight')].confidence_interval()}\) & \({self.solving_time_per_state[(approx_penalized_hindsight_approx_penalized_hindsight, 'approx_penalized_hindsight_approx_penalized_hindsight')].mean}\) \\
+        Approximate Q Greedy & \({self.policy_costs[(approx_penalized_hindsight_approx_Q, 'approx_penalized_hindsight_approx_Q')].confidence_interval()}\) & \({self.zero_penalized_improvement[(approx_penalized_hindsight_approx_Q, 'approx_penalized_hindsight_approx_Q')].confidence_interval()}\) & \({self.penalized_improvement[(approx_penalized_hindsight_approx_Q, 'approx_penalized_hindsight_approx_Q')].confidence_interval()}\) & \({self.solving_time_per_state[(approx_penalized_hindsight_approx_Q, 'approx_penalized_hindsight_approx_Q')].mean}\) \\
+        ALP & \({self.policy_costs[(approx_penalized_hindsight_approx_penalized_hindsight, 'row_gen_alp')].confidence_interval()}\) & \({self.zero_penalized_improvement[(approx_penalized_hindsight_approx_penalized_hindsight, 'row_gen_alp')].confidence_interval()}\) & \({self.penalized_improvement[(approx_penalized_hindsight_approx_penalized_hindsight, 'row_gen_alp')].confidence_interval()}\) & \({self.solving_time_per_state[(approx_penalized_hindsight_approx_penalized_hindsight, 'row_gen_alp')].mean}\) \\
+        """
+        return table
 
 
 def run_improvement_plots(base_results_dir, file_pattern, env_info, group_ids, is_reuse=False):
@@ -340,7 +366,7 @@ def run_improvement_plots(base_results_dir, file_pattern, env_info, group_ids, i
 
 if __name__ == "__main__":
 
-    base_results_dir = os.path.join('.', 'experiments', 'results', 'sample_path_length_proposal_geometric')
+    base_results_dir = os.path.join('.', 'experiments', 'results', 'solver_comparison')
     file_pattern = '[0-9]*.jsonl'
     env_info = {
         'waiting_time_targets': [1]*2,
@@ -358,11 +384,10 @@ if __name__ == "__main__":
             base_results_dir,
             file_pattern,
             env_info,
-            group_ids=['3ce2a2f68baf077097e28e1f33c60462'],
             is_reuse=True,
         )
-
-
+    
+    # print(ser.last_decision_period_distribution_table())
     print("Gap to Information Relaxation")
     pprint(ser.gap_to_information_relaxation)
     # print("Improvement")
@@ -380,6 +405,9 @@ if __name__ == "__main__":
     print(ser.penalized_improvement)
     print('zero_improvement')
     print(ser.zero_penalized_improvement)
+    print('Solving time per state')
+    print(ser.solving_time_per_state)
+    print(ser.solver_compare_table())
 
     # To inspect one experiment interactively, instantiate SimulateEvaluationResult
     # with a specific directory and use the helper methods below.
