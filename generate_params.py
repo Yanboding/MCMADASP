@@ -468,12 +468,39 @@ def generate_test_paths_and_init_state(test_envs, test_sample_path_num, warm_up_
                 },
             })
         if 'approx_penalized_hindsight' in policy_ids:
-            agent_args = variant['agent_args']
+            agent_args = copy.deepcopy(variant['agent_args'])
+            print(agent_args)
             if is_require_penalty_coefficients:
                 obj, direct_coefficients, info = train_penalty_coefficients(env_args=env_args, agent_args=agent_args, experiment_name=experiment_name)
             else:
                 direct_coefficients = [0] * (env.planning_horizon * 2 + env.num_types + env.booking_window_size * env.num_types + env.planning_horizon)
             agent_args['agent_args']['penalty_coefficients'] = direct_coefficients
+            agent_args.update(
+                {
+                    'policy_id': 'approx_penalized_hindsight',
+                    'agent_name': 'approx_penalized_hindsight',
+                }
+            )
+            agent_args['agent_args'].update({
+                'solver_name': 'approx_penalized_hindsight',
+            })
+            policies.append(agent_args)
+        if 'approx_Q' in policy_ids:
+            agent_args = copy.deepcopy(variant['agent_args'])
+            if is_require_penalty_coefficients:
+                obj, direct_coefficients, info = train_penalty_coefficients(env_args=env_args, agent_args=agent_args, experiment_name=experiment_name)
+            else:
+                direct_coefficients = [0] * (env.planning_horizon * 2 + env.num_types + env.booking_window_size * env.num_types + env.planning_horizon)
+            agent_args['agent_args']['penalty_coefficients'] = direct_coefficients
+            agent_args.update(
+                {
+                    'policy_id': 'approx_Q',
+                    'agent_name': 'approx_penalized_hindsight',
+                }
+            )
+            agent_args['agent_args'].update({
+                'solver_name': 'approx_Q',
+            })
             policies.append(agent_args)
         # Inject the freshly trained coefficients into the matching policy specs
         # for this variant so each saved record carries everything the runner
@@ -565,16 +592,16 @@ if __name__ == '__main__':
     # for experiment_name in experiments:
     #     test_envs.update(build_variation_test_env(EXPERIMENT_SPECS[experiment_name]))
     # test_envs = build_variation_test_env(EXPERIMENT_SPECS['sample_path_length_proposal_fixed'])
-    test_envs = build_variation_test_env(EXPERIMENT_SPECS['solver_comparison'])
+    test_envs = build_variation_test_env(EXPERIMENT_SPECS['initial_state_congestion'])
     results = generate_test_paths_and_init_state(
         test_envs=test_envs,
         test_sample_path_num=5000,
-        warm_up_periods=100,
+        warm_up_periods=0,
         num_periods=None,
         dat_file='table.dat',
         num_groups=998,  # divide into N groups
         is_require_penalty_coefficients=True,
-        policy_ids=['approx_penalized_hindsight', 'row_gen_alp'],
+        policy_ids=['approx_penalized_hindsight', 'approx_Q', 'row_gen_alp'],
     )
     # test_envs = build_variation_test_env(EXPERIMENT_SPECS['case_study_discount_factor'])
     # results = generate_train_env(
