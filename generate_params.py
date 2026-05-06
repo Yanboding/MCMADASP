@@ -20,7 +20,7 @@ import copy
 import os
 from gurobipy import GRB
 
-from decision_maker import InfinitePenalizedSAAAgent, LinearPenaltyFunction, ALPRowGenerationAgent
+from decision_maker import LinearPenaltyFunction, ALPRowGenerationAgent, ApproxQAgent
 
 
 def _training_uid(env_args, agent_args=None):
@@ -34,7 +34,8 @@ def _training_uid(env_args, agent_args=None):
     return get_uid({'env_args': env_args, 'agent_args': agent_args})
 
 
-def _load_cached_training_result(experiment_name, file_name, env_args, agent_args=None):
+def _load_cached_training_result(experiment_name, file_name, env_args, agent_args):
+    # useful parameters for coefficient training
     file_path = os.path.join('experiments', 'results', experiment_name, file_name)
     if not os.path.exists(file_path):
         return None
@@ -128,9 +129,6 @@ def build_variation_test_env(spec: ExperimentSpec):
     test_params = {}
     for i, val in enumerate(spec.val_args, start=1):
         env_args = copy.deepcopy(base_env_args)
-        discount_factor = env_args['discount_factor']
-        true_geom_p = round(1 - discount_factor, 2)
-        max_periods = int(geom.ppf(0.9999, true_geom_p))
         agent_args = {
             'policy_id': 'approx_penalized_hindsight',
             'agent_name': 'approx_penalized_hindsight',
@@ -138,19 +136,15 @@ def build_variation_test_env(spec: ExperimentSpec):
                 'sample_path_number': 256,
                 'current_decision_var_type': 'integer',
                 'future_decision_var_type': 'continuous',
-                'is_myopic': False,
                 'penalty_ratio': 1,
-                'is_quasi_MC': True,
-                'max_periods': max_periods,
-                'geom_p': true_geom_p,
             },
         }
         if spec.mutate is not None:
             spec.mutate(env_args, val)
         if spec.agent_mutate is not None:
             spec.agent_mutate(agent_args, val)
-        env_uid = get_uid(env_args)
-        key = env_uid if spec.is_single_variant else (env_uid, spec.name, val)
+        group_uid = get_uid({'env_args': env_args, 'agent_args': agent_args})
+        key = group_uid if spec.is_single_variant else (group_uid, spec.name, val)
         test_params[key] = {'env_args': env_args, 'agent_args': agent_args}
     return test_params
 
@@ -249,6 +243,17 @@ def _mutate_fixed_length_for_sample_path_length_proposal(agent_args, max_length)
                     }
                 })
 
+def _mutate_solver(agent_args, solver_name):
+    agent_args.update(
+        {
+            'policy_id': 'approx_penalized_hindsight_' + solver_name,
+            'agent_name': 'approx_penalized_hindsight',
+        }
+    )
+    agent_args['agent_args'].update({
+        'solver_name': solver_name,
+    })
+
 # ---------------------------------------------------------------------------
 # Registry of all experiments. Add new experiments here.
 # ---------------------------------------------------------------------------
@@ -315,6 +320,12 @@ EXPERIMENT_SPECS = {
             val_args=[100, 200, 400],
             agent_mutate=_mutate_fixed_length_for_sample_path_length_proposal,
         ),
+        ExperimentSpec(
+            name='solver_comparison',
+            config_type='toy',
+            val_args=['approx_penalized_hindsight', 'approx_Q'],
+            agent_mutate=_mutate_solver,
+        ),
     ]
 }
 
@@ -331,8 +342,17 @@ def train_penalty_coefficients(env_args, experiment_name, agent_args=None):
     JSON-serializable ``sample_path_length_proposal`` spec dict that is
     materialized into a SamplePathLengthProposal before constructing the agent.
     '''
+    train_params = {
+                    'agent_name': agent_args['agent_name'],
+                    'agent_args': {
+                        'sample_path_number': agent_args['agent_args']['sample_path_number'],
+                        'current_decision_var_type': agent_args['agent_args']['current_decision_var_type'],
+                        'future_decision_var_type': agent_args['agent_args']['future_decision_var_type'],
+                        'penalty_ratio': agent_args['agent_args']['penalty_ratio'],
+                    },
+                }
     agent_args = dict(agent_args or {})
-    cached = _load_cached_training_result(experiment_name, 'penalty_train.jsonl', env_args, agent_args=agent_args)
+    cached = _load_cached_training_result(experiment_name, 'penalty_train.jsonl', env_args, agent_args=train_params)
     if cached is not None:
         cached_result = cached.get('result', {})
         cached_obj = cached_result.get('obj_val')
@@ -351,7 +371,7 @@ def train_penalty_coefficients(env_args, experiment_name, agent_args=None):
             inner['sample_path_length_proposal']
         )
     pprint(inner)
-    agent = InfinitePenalizedSAAAgent(env=env, discount_factor=env.discount_factor,
+    agent = ApproxQAgent(env=env, discount_factor=env.discount_factor,
                                       **inner)
     init_state = None if 'init_state' not in env_args.get('reset_params', {}) else env_args['reset_params']['init_state']
     sample_path_number = agent_args['agent_args']['sample_path_number']
@@ -370,7 +390,7 @@ def train_penalty_coefficients(env_args, experiment_name, agent_args=None):
         obj_val=obj,
         coefficients=direct_coefficients,
         info=info,
-        agent_args=agent_args,
+        agent_args=train_params,
     )
 
     return obj, direct_coefficients, info
@@ -379,7 +399,7 @@ def train_alp_coefficients(env_args, experiment_name):
     '''
     This function can be implemented to train the coefficients for the ALP row generation agent. The training can be done using a simple grid search or a more sophisticated optimization algorithm.
     '''
-    cached = _load_cached_training_result(experiment_name, 'alp_train.jsonl', env_args)
+    cached = _load_cached_training_result(experiment_name, 'alp_train.jsonl', env_args, agent_args={})
     if cached is not None:
         cached_result = cached.get('result', {})
         cached_obj = cached_result.get('obj_val')
@@ -545,7 +565,7 @@ if __name__ == '__main__':
     # for experiment_name in experiments:
     #     test_envs.update(build_variation_test_env(EXPERIMENT_SPECS[experiment_name]))
     # test_envs = build_variation_test_env(EXPERIMENT_SPECS['sample_path_length_proposal_fixed'])
-    test_envs = build_variation_test_env(EXPERIMENT_SPECS['sample_path_length_proposal_geometric'])
+    test_envs = build_variation_test_env(EXPERIMENT_SPECS['solver_comparison'])
     results = generate_test_paths_and_init_state(
         test_envs=test_envs,
         test_sample_path_num=5000,
@@ -554,7 +574,7 @@ if __name__ == '__main__':
         dat_file='table.dat',
         num_groups=998,  # divide into N groups
         is_require_penalty_coefficients=True,
-        policy_ids=['row_gen_alp', 'approx_penalized_hindsight'],
+        policy_ids=['approx_penalized_hindsight', 'row_gen_alp'],
     )
     # test_envs = build_variation_test_env(EXPERIMENT_SPECS['case_study_discount_factor'])
     # results = generate_train_env(

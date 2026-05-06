@@ -1,4 +1,5 @@
 from importance_sampling.proposals import (
+    ArrivalGeneratorSamplePathProposal,
     FixedLengthProposal,
     GeometricLengthProposal,
     SamplePathLengthProposal,
@@ -7,6 +8,7 @@ from importance_sampling.proposals import (
 )
 
 __all__ = [
+    'ArrivalGeneratorSamplePathProposal',
     'FixedLengthProposal',
     'GeometricLengthProposal',
     'SamplePathLengthProposal',

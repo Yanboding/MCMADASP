@@ -15,9 +15,8 @@ from scipy.stats import geom
 
 from experiments.experiment_config import get_config_by_type
 from importance_sampling import build_proposal
-from importance_sampling.proposals import GeometricLengthProposal,FixedLengthProposal
 from utils import iter_to_tuple, get_uid, safe_open, RunningStats, encode, decode, get_solution_value, acquire_grb_env, read_lines_with_pattern
-from decision_maker import InfiniteSAAAgent, InfinitePenalizedSAAAgent, MyopicAgent, ALPRowGenerationAgent, LinearPenaltyFunction
+from decision_maker import InfiniteSAAAgent, InfinitePenalizedSAAAgent, MyopicAgent, ALPRowGenerationAgent, LinearPenaltyFunction, ApproxQAgent
 from policy_evaluator import PolicyEvaluator
 
 def jsonl_result_exists(path, uid, policy_id):
@@ -693,14 +692,12 @@ def calculate_policy_costs(uid, experiment_name, policy_id, agent_name, agent_ar
         generating_function = LinearPenaltyFunction(env=env, coefficients=runtime_agent_args['penalty_coefficients'])
         runtime_agent_args.pop('penalty_coefficients')
         runtime_agent_args['generating_function'] = generating_function
-        runtime_agent_args['sample_path_length_proposal'] = build_proposal(
-            runtime_agent_args['sample_path_length_proposal']
+        runtime_agent_args['sample_path_proposal'] = build_proposal(
+            runtime_agent_args.get('sample_path_proposal', None)
         )
-        agent_instance = InfinitePenalizedSAAAgent(
-            env,
-            discount_factor=env.discount_factor,
-            **runtime_agent_args
-        )
+        agent_instance = ApproxQAgent(env, discount_factor=env.discount_factor,
+                                        **runtime_agent_args
+                                    )
     elif agent_name == "myopic":
         agent_instance = MyopicAgent(env, discount_factor=env.discount_factor, **runtime_agent_args)
     elif agent_name == 'row_gen_alp':
@@ -712,7 +709,6 @@ def calculate_policy_costs(uid, experiment_name, policy_id, agent_name, agent_ar
     actions = []
     costs = []
     penalties = []
-
     checkpoint = load_pickle_if_exists(checkpoint_file)
     if checkpoint is not None:
         states = checkpoint['states']
@@ -721,13 +717,17 @@ def calculate_policy_costs(uid, experiment_name, policy_id, agent_name, agent_ar
         penalties = checkpoint['penalties']
         t = checkpoint['t']
         s = checkpoint['s']
+        solving_time_per_state = checkpoint.get('solving_time_per_state', RunningStats())
         s, _ = env.reset(init_state=s, t=t, new_arrivals=sample_path)
     else:
         t = 1
         s, _ = env.reset(init_state=init_state, t=t, new_arrivals=sample_path)
+        solving_time_per_state = RunningStats()
     for tau in range(len(sample_path) - t + 2):
         current_t = t + tau
+        start_time = time.time()
         _, action, _ = agent_instance.solve(s, current_t)
+        solving_time_per_state += time.time() - start_time
         next_state, cost, done, _ = env.step(action)
 
         if current_t <= len(sample_path):
@@ -749,6 +749,7 @@ def calculate_policy_costs(uid, experiment_name, policy_id, agent_name, agent_ar
                     'actions': actions,
                     'costs': costs,
                     'penalties': penalties,
+                    'solving_time_per_state': solving_time_per_state,
                 }, f)
         if done:
             break
@@ -761,6 +762,7 @@ def calculate_policy_costs(uid, experiment_name, policy_id, agent_name, agent_ar
             'actions': actions,
             'costs': costs,
             'penalties': penalties,
+            'solving_time_per_state': solving_time_per_state,
         }, f)
 
     scheduled_patients = []
@@ -792,6 +794,7 @@ def calculate_policy_costs(uid, experiment_name, policy_id, agent_name, agent_ar
         'scheduled_patients': scheduled_patients,
         'overtime': overtime.tolist(),
         'postponing_decisions': postponing_decisions.tolist(),
+        'solving_time_per_state': solving_time_per_state.mean,
     }
 
     with open(result_file, 'wb') as f:
@@ -823,9 +826,6 @@ def evaluate_policy_costs_with_information_relaxation(uid, experiment_name, muta
     zero_lowerbound_args = {
         'current_decision_var_type': 'integer',
         'future_decision_var_type': 'continuous',
-        'is_myopic': False,
-        'is_include_discount_factor': False,
-        'sample_path': sample_path[warm_up_periods:],
         'generating_function': generating_function,
         'penalty_ratio': 0,
         'grb_env': grb_env,
@@ -833,16 +833,13 @@ def evaluate_policy_costs_with_information_relaxation(uid, experiment_name, muta
     penalized_lowerbound_args = {
         'current_decision_var_type': 'integer',
         'future_decision_var_type': 'continuous',
-        'is_myopic': False,
-        'is_include_discount_factor': False,
-        'sample_path': sample_path[warm_up_periods:],
         'generating_function': generating_function,
         'penalty_ratio': 1,
         'grb_env': grb_env,
     }
 
-    zero_lowerbound_instance = InfinitePenalizedSAAAgent(env, discount_factor=env.discount_factor, **zero_lowerbound_args)
-    penalized_lowerbound_instance = InfinitePenalizedSAAAgent(env, discount_factor=env.discount_factor, **penalized_lowerbound_args)
+    zero_lowerbound_instance = ApproxQAgent(env, discount_factor=env.discount_factor, **zero_lowerbound_args)
+    penalized_lowerbound_instance = ApproxQAgent(env, discount_factor=env.discount_factor, **penalized_lowerbound_args)
 
     summary_rows = []
     for policy_spec in policy_specs:
@@ -861,10 +858,10 @@ def evaluate_policy_costs_with_information_relaxation(uid, experiment_name, muta
         )
         warmup_sate = tuple(np.array(item) for item in policy_result.get('warmup_state', init_state))
         start = time.time()
-        zero_information_relaxation_cost, _, _ = zero_lowerbound_instance.direct_solve(warmup_sate, t=warm_up_periods+1)
+        zero_information_relaxation_cost = zero_lowerbound_instance.calculate_information_relaxation_cost(warmup_sate, sample_path=sample_path[warm_up_periods:])
         print(f"Zero information relaxation cost computed in {time.time() - start:.1f} seconds: {zero_information_relaxation_cost}")
         start = time.time()
-        penalized_information_relaxation_cost, _, _ = penalized_lowerbound_instance.direct_solve(warmup_sate, t=warm_up_periods+1)
+        penalized_information_relaxation_cost = penalized_lowerbound_instance.calculate_information_relaxation_cost(warmup_sate, sample_path=sample_path[warm_up_periods:])
         print(f"Penalized information relaxation cost computed in {time.time() - start:.1f} seconds: {penalized_information_relaxation_cost}")
         policy_result.update({
             'uid': uid,

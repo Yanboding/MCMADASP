@@ -238,7 +238,12 @@ class InfinitePenalizedSAAAgent(InfiniteRTAgent):
         generating_function = self._require_generating_function()
         for period_index, new_arrival in enumerate(self.delta[scenario_id]):
             likelihood_ratio = self._get_period_likelihood_ratio(scenario_id, period_index)
-            penalty = self.penalty_ratio * generating_function.calculate_penalty(state_var, action_var, new_arrival, is_var=True)
+            penalty = self.penalty_ratio * generating_function.calculate_penalty(
+                state_var, 
+                action_var, 
+                new_arrival, 
+                is_var=True
+                )
             cost += likelihood_ratio * penalty
             state_var = self.get_next_state(model=model,
                                             state=state_var,

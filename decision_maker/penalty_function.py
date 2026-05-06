@@ -23,14 +23,27 @@ class LinearPenaltyFunction:
         theta_y = np.array([float(next(it)) for _ in range(self.env.planning_horizon)])
         return theta_u, theta_v, theta_w, theta_x, theta_y
 
+    @staticmethod
+    def _as_scalar_expression(expression):
+        if hasattr(expression, "item"):
+            return expression.item()
+        return expression
+
+    def _get_coefficient_blocks(self, coefficients):
+        if coefficients is not None:
+            coefficient_blocks = coefficients
+        else:
+            coefficient_blocks = self.get_coefficients(self.coefficients)
+        theta_u, theta_v, theta_w, theta_x, theta_y = coefficient_blocks
+        if theta_u is None or theta_v is None or theta_w is None or theta_x is None or theta_y is None:
+            raise ValueError("coefficients are required before evaluating the penalty function.")
+        return theta_u, theta_v, theta_w, theta_x, theta_y
+
     def calculate_penalty(self, state, action, new_arrival, is_var=False, coefficients=None):
         (post_action_regular_bookings, post_action_overtimes, post_action_waitlist) = self.env.post_action_state(state, action, is_var)
         (advance_scheduling_decision, overtime_decision) = action
         total_arrival_difference = np.sum(self.env.arrival_generator.mean_by_type - new_arrival)
-        if coefficients is not None:
-            theta_u, theta_v, theta_w, theta_x, theta_y = coefficients
-        else:
-            theta_u, theta_v, theta_w, theta_x, theta_y = self.theta_u, self.theta_v, self.theta_w, self.theta_x, self.theta_y
+        theta_u, theta_v, theta_w, theta_x, theta_y = self._get_coefficient_blocks(coefficients)
         linear_approx = theta_u @ post_action_regular_bookings + theta_v @ post_action_overtimes + theta_w @ post_action_waitlist + theta_x.reshape(-1) @ advance_scheduling_decision.reshape(-1) + theta_y @ overtime_decision
         penalty_value = total_arrival_difference * linear_approx
         return penalty_value
@@ -49,12 +62,10 @@ class LinearPenaltyFunction:
     def calculate_expected_continuation_value(self, state, action, is_var=False, coefficients=None):
         (post_action_regular_bookings, post_action_overtimes, post_action_waitlist) = self.env.post_action_state(state, action, is_var)
         (advance_scheduling_decision, overtime_decision) = action
-        if coefficients is not None:
-            theta_u, theta_v, theta_w, theta_x, theta_y = coefficients
-        else:
-            theta_u, theta_v, theta_w, theta_x, theta_y = self.theta_u, self.theta_v, self.theta_w, self.theta_x, self.theta_y
+        theta_u, theta_v, theta_w, theta_x, theta_y = self._get_coefficient_blocks(coefficients)
         linear_approx = theta_u @ post_action_regular_bookings + theta_v @ post_action_overtimes + theta_w @ post_action_waitlist + theta_x.reshape(-1) @ advance_scheduling_decision.reshape(-1) + theta_y @ overtime_decision
-        expected_continuation_value = (post_action_waitlist + self.env.arrival_generator.mean_by_type).sum() * linear_approx
+        workload = (post_action_waitlist + self.env.arrival_generator.mean_by_type).sum()
+        expected_continuation_value = self._as_scalar_expression(workload) * self._as_scalar_expression(linear_approx)
         return expected_continuation_value
 
 

@@ -1,5 +1,6 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from typing import Optional
 
 import numpy as np
 
@@ -42,6 +43,7 @@ class SamplePathLengthProposal(ABC):
         should draw their randomness from ``arrival_generator.rng`` so that all
         sampling shares the same RNG state.
         """
+        raise NotImplementedError
 
     def sample_arrival_paths(self, arrival_generator, size):
         """Return ``size`` per-period arrival paths drawn under this proposal.
@@ -56,6 +58,7 @@ class SamplePathLengthProposal(ABC):
     @abstractmethod
     def survival_probability(self, periods):
         """Return P_proposal(L >= t) for one-based period indices."""
+        raise NotImplementedError
 
     def period_likelihood_ratios(self, target_discount_factor, lengths):
         _validate_discount_factor(target_discount_factor, 'target_discount_factor')
@@ -144,8 +147,55 @@ class FixedLengthProposal(SamplePathLengthProposal):
         periods = np.asarray(periods, dtype=int)
         return (periods <= self.max_length).astype(float)
 
+@dataclass(frozen=True)
+class ArrivalGeneratorSamplePathProposal(SamplePathLengthProposal):
+    """Sample paths with the environment arrival generator's path sampler.
+
+    This matches the agents' default non-proposal sampling branch: path lengths
+    and arrivals are both produced by ``arrival_generator.mc_rvs`` or
+    ``arrival_generator.quasi_rvs``, and likelihood ratios are one.
+    """
+
+    use_quasi_mc: Optional[bool] = None
+    is_positive_integer_support: bool = False
+
+    def _use_quasi_mc(self, arrival_generator):
+        if self.use_quasi_mc is not None:
+            return bool(self.use_quasi_mc)
+        return bool(getattr(arrival_generator, 'use_qmc', False))
+
+    def sample_arrival_paths(self, arrival_generator, size):
+        if self._use_quasi_mc(arrival_generator):
+            paths = arrival_generator.quasi_rvs(
+                size=size,
+                is_positive_integer_support=self.is_positive_integer_support,
+            )
+        else:
+            paths = arrival_generator.mc_rvs(
+                size=size,
+                is_positive_integer_support=self.is_positive_integer_support,
+            )
+        lengths = np.array([len(path) for path in paths], dtype=int)
+        return paths, lengths
+
+    def sample_lengths(self, arrival_generator, size):
+        lengths = arrival_generator.rng.geometric(p=arrival_generator.geom_p, size=size)
+        if not self.is_positive_integer_support:
+            lengths = lengths - 1
+        return np.minimum(lengths, arrival_generator.max_periods).astype(int)
+
+    def survival_probability(self, periods):
+        raise NotImplementedError(
+            "ArrivalGeneratorSamplePathProposal uses the arrival generator directly; "
+            "period likelihood ratios are defined by period_likelihood_ratios()."
+        )
+
+    def period_likelihood_ratios(self, target_discount_factor, lengths):
+        return [np.ones(int(length), dtype=float) for length in lengths]
+
 
 _PROPOSAL_REGISTRY = {
+    'arrival_generator': ArrivalGeneratorSamplePathProposal,
     'geometric': GeometricLengthProposal,
     'truncated_geometric': TruncatedGeometricLengthProposal,
     'fixed': FixedLengthProposal,
