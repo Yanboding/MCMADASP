@@ -5,7 +5,7 @@ import gurobipy as gp
 import time
 from gurobipy import GRB
 
-from decision_maker import InfiniteRTAgent,LinearPenaltyFunction
+from decision_maker import InfiniteRTAgent
 from importance_sampling import GeometricLengthProposal
 from importance_sampling.proposals import FixedLengthProposal
 from metaheuristic_algorithm import SubproblemWorker, BendersDecompositionSolver

@@ -1,11 +1,12 @@
 import copy
 import json
+import time
+
 import numpy as np
 import gurobipy as gp
-import time
 from gurobipy import GRB
 
-from decision_maker import InfiniteRTAgent,LinearPenaltyFunction
+from decision_maker import InfiniteRTAgent
 from importance_sampling.proposals import ArrivalGeneratorSamplePathProposal
 from metaheuristic_algorithm import SubproblemWorker, BendersDecompositionSolver
 from utils import solve_and_handle_errors, flatten, set_link_rhs, acquire_grb_env, encode
@@ -30,7 +31,6 @@ class ApproxQAgent(InfiniteRTAgent):
         self.arrival_generator = copy.deepcopy(self.env.arrival_generator)
         self.sample_path_proposal = sample_path_proposal or ArrivalGeneratorSamplePathProposal()
         self.delta, self.period_likelihood_ratios = self._initialize_sample_paths()
-        print()
         self.penalty_ratio = penalty_ratio
         self.generating_function = generating_function
         self.decision_model, self.state_linking_constraints, self.action_t_var = None, None, None
@@ -89,27 +89,6 @@ class ApproxQAgent(InfiniteRTAgent):
             constraint = model.addConstr(var == 0.0, name=f'link_y_{j}')
             linking_constraints.append(constraint)
         return linking_constraints
-    
-    def build_coefficient_linking_constraints(self, model, coefficient_vars):
-        theta_u_vars, theta_v_vars, theta_w_vars, theta_x_vars, theta_y_vars = coefficient_vars
-        linking_constraints = []
-        for j, uj_var in enumerate(theta_u_vars):
-            constraint = model.addConstr(uj_var == 0.0, name=f'link_theta_u_{j}')
-            linking_constraints.append(constraint)
-        for j, vj_var in enumerate(theta_v_vars):
-            constraint = model.addConstr(vj_var == 0.0, name=f'link_theta_v_{j}')
-            linking_constraints.append(constraint)
-        for i, wi_var in enumerate(theta_w_vars):
-            constraint = model.addConstr(wi_var == 0.0, name=f'link_theta_w_{i}')
-            linking_constraints.append(constraint)
-        for n, row in enumerate(theta_x_vars):
-            for i, xi_var in enumerate(row):
-                constraint = model.addConstr(xi_var == 0.0, name=f'link_theta_x_{n}_{i}')
-                linking_constraints.append(constraint)
-        for j, yj_var in enumerate(theta_y_vars):
-            constraint = model.addConstr(yj_var == 0.0, name=f'link_theta_y_{j}')
-            linking_constraints.append(constraint)
-        return linking_constraints
 
     def decision_model_builder_fn(self):
         model = gp.Model(f"Decision_Model", env=self.grb_env)
@@ -156,21 +135,7 @@ class ApproxQAgent(InfiniteRTAgent):
         #     [master_model.addVar(vtype=GRB.CONTINUOUS, lb=-GRB.INFINITY, ub=1e10, name=f"eta_{omega}") for omega in range(len(self.delta))])
         theta_vars = master_model.addMVar(shape=self.sample_path_number, vtype=GRB.CONTINUOUS, lb=-GRB.INFINITY, ub=1e8, name="theta")
         z = theta_vars.sum() / self.sample_path_number
-        post_action_regular_bookings_coeff_vars = master_model.addMVar(shape=self.env.planning_horizon, vtype=GRB.CONTINUOUS, lb=-coefficient_bound, ub=coefficient_bound, name="theta^u")
-        post_action_overtimes_coeff_vars = master_model.addMVar(shape=self.env.planning_horizon, vtype=GRB.CONTINUOUS, lb=-coefficient_bound, ub=coefficient_bound, name="theta^v")
-        post_action_waitlist_coeff_vars = master_model.addMVar(shape=self.env.num_types, vtype=GRB.CONTINUOUS, lb=-coefficient_bound, ub=coefficient_bound, name="theta^w")
-        advance_scheduling_decision_coeff_vars = master_model.addMVar(shape=(self.env.booking_window_size, self.env.num_types), vtype=GRB.CONTINUOUS, lb=-coefficient_bound, ub=coefficient_bound, name="theta^x")
-        overtime_decision_coeff_vars = master_model.addMVar(shape=self.env.planning_horizon, vtype=GRB.CONTINUOUS, lb=-coefficient_bound, ub=coefficient_bound, name="theta^y")
-        # Single flat MVar view over all coefficient blocks. Keeps named sub-MVars
-        # for readability in the LP while exposing an MVar to downstream code
-        # (enables `coefficient_vars.X` and `duals @ coefficient_vars`).
-        coefficient_vars = gp.hstack([
-            post_action_regular_bookings_coeff_vars,
-            post_action_overtimes_coeff_vars,
-            post_action_waitlist_coeff_vars,
-            advance_scheduling_decision_coeff_vars.reshape(-1),
-            overtime_decision_coeff_vars,
-        ])
+        coefficient_vars = self.generating_function.get_coefficient_var(model=master_model, coefficient_bound=coefficient_bound)
         master_model.setObjective(z, GRB.MAXIMIZE)
         return master_model, coefficient_vars, theta_vars
 
@@ -184,17 +149,9 @@ class ApproxQAgent(InfiniteRTAgent):
         sub_model.setParam("MultiObjPre", 0)
         sub_model.setParam("FeasibilityTol", 1e-9)
         sub_model.setParam("OptimalityTol", 1e-9)
-        post_action_regular_bookings_coeff_vars = sub_model.addMVar(shape=self.env.planning_horizon, vtype=GRB.CONTINUOUS, lb=-GRB.INFINITY, ub=GRB.INFINITY, name="theta^u")
-        post_action_overtimes_coeff_vars = sub_model.addMVar(shape=self.env.planning_horizon, vtype=GRB.CONTINUOUS, lb=-GRB.INFINITY, ub=GRB.INFINITY, name="theta^v")
-        post_action_waitlist_coeff_vars = sub_model.addMVar(shape=self.env.num_types, vtype=GRB.CONTINUOUS, lb=-GRB.INFINITY, ub=GRB.INFINITY, name="theta^w")
-        advance_scheduling_decision_coeff_vars = sub_model.addMVar(shape=(self.env.booking_window_size, self.env.num_types), vtype=GRB.CONTINUOUS, lb=-GRB.INFINITY, ub=GRB.INFINITY, name="theta^x")
-        overtime_decision_coeff_vars = sub_model.addMVar(shape=self.env.planning_horizon, vtype=GRB.CONTINUOUS, lb=-GRB.INFINITY, ub=GRB.INFINITY, name="theta^y")
-        coefficient_vars = (post_action_regular_bookings_coeff_vars,
-                            post_action_overtimes_coeff_vars, 
-                            post_action_waitlist_coeff_vars, 
-                            advance_scheduling_decision_coeff_vars,
-                            overtime_decision_coeff_vars)
-        coefficient_linking_constraints = self.build_coefficient_linking_constraints(sub_model, coefficient_vars)
+        coefficient_vars = self.generating_function.get_coefficient_var(model=sub_model, coefficient_bound=GRB.INFINITY)
+        self.generating_function.set_coefficients(solution=coefficient_vars)
+        coefficient_linking_constraints = self.generating_function.build_coefficient_linking_constraints(sub_model, coefficient_vars)
         state = self.env.generate_initial_state() if init_state is None else init_state
         state_var = self.get_state_var(sub_model)
         state_linking_constraints = self.build_state_linking_constraints(sub_model, state_var)
@@ -207,7 +164,7 @@ class ApproxQAgent(InfiniteRTAgent):
         generating_function = self._require_generating_function()
         for period_index, new_arrival in enumerate(self.delta[scenario_id]):
             likelihood_ratio = self._get_period_likelihood_ratio(scenario_id, period_index)
-            penalty = generating_function.calculate_penalty(state_var, action_var, new_arrival, is_var=True, coefficients=coefficient_vars)
+            penalty = generating_function.calculate_penalty(state_var, action_var, new_arrival, is_var=True)
             objective += likelihood_ratio * penalty
             state_var = self.get_next_state(model=sub_model,
                                             state=state_var,
@@ -435,30 +392,39 @@ class ApproxQAgent(InfiniteRTAgent):
 
 if __name__ == '__main__':
     from experiments import get_config_by_type
+    from generating_function import MulticlassLinearPenaltyFunction, LinearPenaltyFunction
     config = get_config_by_type('toy')
     env = config.env
     test_state = (np.array([5, 5, 0, 0, 0, 0, 0]), np.array([0, 0, 0, 0, 0, 0, 0]), np.array([1, 2]))
-    coefficients = [14.540626814834765, 1.5511495238658377, 1.5511495238648707, 1.551149523864899, 1.551149523864559, 1.5511495238653465, 185.41538392612895, 0.1332428878923876, 1.5511495238647601, 1.5511495238651525, 1.55114952386422, 1.551149523863338, 1.5511495238645174, 0.0, 668.562058338164, 457.8833101006897, 419.77572288855816, 367.72846880452494, 419.77572288858147, 367.72846880452687, 391.72572288863086, 367.7284688045264, 419.7757228885221, 367.7284688045268, 461.01343038856766, 367.72846880452346, 309.24753093863814, 367.7284688045271, -48.91385863630643, 0.0, 1.030851306838617e-12, 1.884686541056799e-12, -6.483213120266603e-13, 1.0746273204422448e-12, 1.3735518387560715e-12, -2.8810101527981236e-12, 185.4153839261268]
-    #coefficients = None
-    #coefficients = [0]*len(coefficients)
-    generating_function = LinearPenaltyFunction(env=env, coefficients=coefficients)
+    test_action = (np.array([[0, 0],
+       [0, 0],
+       [1, 1],
+       [0, 1],
+       [0, 0],
+       [0, 0],
+       [0, 0]]), np.array([0, 0, 0, 0, 0, 0, 0]))
+    coefficients = [-8.506673230703488, 20.803823305410205, 8.949007725191958, 7.035934826472743, 6.404644810547097, 6.152425741039451, 215.93249503160055, 1.6207846766501177, 8.822177032253531, 6.391172301334453, 5.765390772891202, 5.50902974495165, 5.495551566445247, -50.39648401261288, 0.9401940738773069, 17.37900433117047, 7.64933715141955, 6.100169675595545, 5.77057773706476, 5.652617245825845, 215.58932932336387, 0.7393353464647373, 7.139718662697062, 5.313030831788522, 5.010546356203956, 4.977777252780282, 4.9990414864448605, -50.7353596798275, -1821.3953403927717, 343.8795537537197, 37.55879181629673, 39.203762515666966, -1882.1410231036018, 420.5404093482836, -1877.8480092709772, 418.5805478627768, -1855.2227173131294, 419.05603024125645, -1856.1932945867225, 419.5402047398881, -1856.684018334899, 419.7162383810243, -1856.6242232883421, 419.7373714931838, -2485.5936935288996, 0.0, 11.917602076210022, -111.58132849100905, 12.07483450156613, -112.0223378787287, 18.392953186410587, -111.92085801812323, 20.67530043490731, -111.77122539770485, 21.239612150222747, -111.73123837761058, 20.45200112265013, -111.7523714897918, 190.27622164613697, 0.0, -5.72171663290405e-12, 1.4248189742238095, 0.2407531112679777, 0.15812277618748655, 0.1165364293994906, 0.10596987331830707, 0.0, -1.234773977816752e-12, 0.6824583695475585, 0.20696116719471824, 0.17714940526803324, 0.13121802252884512, 0.14178457863045593, 0.0]
+    # coefficients = None
+    # coefficients = [0]*len(coefficients)
+    generating_function = MulticlassLinearPenaltyFunction(env=env, coefficients=coefficients)
+    # generating_function = LinearPenaltyFunction(env=env, coefficients=coefficients)
     agent = ApproxQAgent(
             env=env,
             discount_factor=env.discount_factor,
             sample_path_number=256,
             generating_function=generating_function,
             sample_path_proposal=ArrivalGeneratorSamplePathProposal(),
-            solver_name='approx_Q',
+            solver_name='approx_penalized_hindsight',
             is_trained=True
         )
-    #obj, coefficients, info = agent.benders_decomposition_train(verbose=False)
-    #print("Trained coefficients:", coefficients) # 28123
-    obj, action, info = agent.solve(test_state, t=1, action=None, verbose=False)
+    obj, coefficients, info = agent.benders_decomposition_train(verbose=False)
+    # print("Trained coefficients:", coefficients) # 28123
+    obj, action, info = agent.solve(test_state, t=1, action=test_action, verbose=False)
     print("Objective from Decision model:", obj)
     print('Action:', action)
 
-    information_relaxation_cost = agent.calculate_information_relaxation_cost(test_state, sample_path)
-    print("Information relaxation cost for sample path 0:", information_relaxation_cost)
+    # information_relaxation_cost = agent.calculate_information_relaxation_cost(test_state, sample_path)
+    # print("Information relaxation cost for sample path 0:", information_relaxation_cost)
 
 
 

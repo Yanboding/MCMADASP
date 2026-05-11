@@ -1,4 +1,3 @@
-from .penalty_function import LinearPenaltyFunction
 from .optimal_agent import OptimalAgent
 from .infinite_rt_agent import InfiniteRTAgent
 from .infinite_saa_agent import InfiniteSAAAgent

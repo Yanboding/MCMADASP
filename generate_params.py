@@ -20,7 +20,8 @@ import copy
 import os
 from gurobipy import GRB
 
-from decision_maker import LinearPenaltyFunction, ALPRowGenerationAgent, ApproxQAgent
+from decision_maker import ALPRowGenerationAgent, ApproxQAgent
+from generating_function import MulticlassLinearPenaltyFunction, LinearPenaltyFunction
 
 
 def _training_uid(env_args, agent_args=None):
@@ -156,6 +157,7 @@ def build_variation_test_env(spec: ExperimentSpec):
 # ---------------------------------------------------------------------------
 
 def _mutate_initial_state_congestion(env_args, occupancy_level):
+    pprint(env_args)
     total_capacity = env_args['regular_capacity'] + env_args['overtime_capacity']
     treatment_pattern = str2treatment_patterns(env_args['patterns'])
     planning_horizon = env_args['booking_window_size'] + treatment_pattern.shape[0] - 1
@@ -323,8 +325,14 @@ EXPERIMENT_SPECS = {
         ExperimentSpec(
             name='solver_comparison',
             config_type='toy',
-            val_args=['approx_penalized_hindsight', 'approx_Q'],
-            agent_mutate=_mutate_solver,
+            val_args=[0.],
+            mutate=_mutate_initial_state_congestion,
+        ),
+        ExperimentSpec(
+            name='multiclass_LP_solver_comparison',
+            config_type='toy',
+            val_args=[0.],
+            mutate=_mutate_initial_state_congestion,
         ),
     ]
 }
@@ -363,7 +371,8 @@ def train_penalty_coefficients(env_args, experiment_name, agent_args=None):
 
     config_for_train = get_config_by_type('infinite_custom', args=env_args)
     env = config_for_train.env
-    generating_function = LinearPenaltyFunction(env=env)
+    # generating_function = LinearPenaltyFunction(env=env)
+    generating_function = MulticlassLinearPenaltyFunction(env=env)
     inner = dict(agent_args.get('agent_args', {}))
     inner['generating_function'] = generating_function
     if 'sample_path_length_proposal' in inner:
@@ -592,16 +601,16 @@ if __name__ == '__main__':
     # for experiment_name in experiments:
     #     test_envs.update(build_variation_test_env(EXPERIMENT_SPECS[experiment_name]))
     # test_envs = build_variation_test_env(EXPERIMENT_SPECS['sample_path_length_proposal_fixed'])
-    test_envs = build_variation_test_env(EXPERIMENT_SPECS['initial_state_congestion'])
+    test_envs = build_variation_test_env(EXPERIMENT_SPECS['multiclass_LP_solver_comparison'])
     results = generate_test_paths_and_init_state(
         test_envs=test_envs,
         test_sample_path_num=5000,
-        warm_up_periods=0,
+        warm_up_periods=100,
         num_periods=None,
         dat_file='table.dat',
         num_groups=998,  # divide into N groups
         is_require_penalty_coefficients=True,
-        policy_ids=['approx_penalized_hindsight', 'approx_Q', 'row_gen_alp'],
+        policy_ids=['approx_penalized_hindsight', 'approx_Q'],
     )
     # test_envs = build_variation_test_env(EXPERIMENT_SPECS['case_study_discount_factor'])
     # results = generate_train_env(

@@ -1,42 +1,28 @@
 import numpy as np
+import gurobipy as gp
+from gurobipy import GRB
 
-class LinearPenaltyFunction:
+from generating_function import GeneratingFunction
+
+class LinearPenaltyFunction(GeneratingFunction):
     def __init__(self, env, coefficients=None):
-        self.env = env
-        self.coefficients = coefficients
-        if self.coefficients is not None:
-            self.theta_u, self.theta_v, self.theta_w, self.theta_x, self.theta_y = self.get_coefficients(self.coefficients)
-    
-    def set_coefficients(self, solution):
-        self.theta_u, self.theta_v, self.theta_w, self.theta_x, self.theta_y = self.get_coefficients(solution)
-
+        super().__init__(env, coefficients)
+        
     def get_coefficients(self, solution):
         if solution is None:
             if self.coefficients is None:
                 return None, None, None, None, None
             solution = self.coefficients
-        it = iter(solution)
-        theta_u = np.array([float(next(it)) for _ in range(self.env.planning_horizon)])
-        theta_v = np.array([float(next(it)) for _ in range(self.env.planning_horizon)])
-        theta_w = np.array([float(next(it)) for _ in range(self.env.num_types)])
-        theta_x = np.array([[float(next(it)) for _ in range(self.env.num_types)] for _ in range(self.env.booking_window_size)])
-        theta_y = np.array([float(next(it)) for _ in range(self.env.planning_horizon)])
-        return theta_u, theta_v, theta_w, theta_x, theta_y
-
-    @staticmethod
-    def _as_scalar_expression(expression):
-        if hasattr(expression, "item"):
-            return expression.item()
-        return expression
-
-    def _get_coefficient_blocks(self, coefficients):
-        if coefficients is not None:
-            coefficient_blocks = coefficients
-        else:
-            coefficient_blocks = self.get_coefficients(self.coefficients)
-        theta_u, theta_v, theta_w, theta_x, theta_y = coefficient_blocks
-        if theta_u is None or theta_v is None or theta_w is None or theta_x is None or theta_y is None:
-            raise ValueError("coefficients are required before evaluating the penalty function.")
+        T, K, W = self.env.planning_horizon, self.env.num_types, self.env.booking_window_size
+        sizes = [T, T, K, W * K, T]
+        offsets = [0] + list(np.cumsum(sizes))
+        if not isinstance(solution, gp.MVar):
+            solution = np.array(solution, dtype=float)
+        theta_u = solution[offsets[0]:offsets[1]]
+        theta_v = solution[offsets[1]:offsets[2]]
+        theta_w = solution[offsets[2]:offsets[3]]
+        theta_x = solution[offsets[3]:offsets[4]]
+        theta_y = solution[offsets[4]:offsets[5]]
         return theta_u, theta_v, theta_w, theta_x, theta_y
 
     def calculate_penalty(self, state, action, new_arrival, is_var=False, coefficients=None):
@@ -44,7 +30,7 @@ class LinearPenaltyFunction:
         (advance_scheduling_decision, overtime_decision) = action
         total_arrival_difference = np.sum(self.env.arrival_generator.mean_by_type - new_arrival)
         theta_u, theta_v, theta_w, theta_x, theta_y = self._get_coefficient_blocks(coefficients)
-        linear_approx = theta_u @ post_action_regular_bookings + theta_v @ post_action_overtimes + theta_w @ post_action_waitlist + theta_x.reshape(-1) @ advance_scheduling_decision.reshape(-1) + theta_y @ overtime_decision
+        linear_approx = theta_u @ post_action_regular_bookings + theta_v @ post_action_overtimes + theta_w @ post_action_waitlist + theta_x @ advance_scheduling_decision.reshape(-1) + theta_y @ overtime_decision
         penalty_value = total_arrival_difference * linear_approx
         return penalty_value
     
@@ -63,10 +49,17 @@ class LinearPenaltyFunction:
         (post_action_regular_bookings, post_action_overtimes, post_action_waitlist) = self.env.post_action_state(state, action, is_var)
         (advance_scheduling_decision, overtime_decision) = action
         theta_u, theta_v, theta_w, theta_x, theta_y = self._get_coefficient_blocks(coefficients)
-        linear_approx = theta_u @ post_action_regular_bookings + theta_v @ post_action_overtimes + theta_w @ post_action_waitlist + theta_x.reshape(-1) @ advance_scheduling_decision.reshape(-1) + theta_y @ overtime_decision
+        linear_approx = theta_u @ post_action_regular_bookings + theta_v @ post_action_overtimes + theta_w @ post_action_waitlist + theta_x @ advance_scheduling_decision.reshape(-1) + theta_y @ overtime_decision
         workload = (post_action_waitlist + self.env.arrival_generator.mean_by_type).sum()
         expected_continuation_value = self._as_scalar_expression(workload) * self._as_scalar_expression(linear_approx)
         return expected_continuation_value
+    
+    def get_coefficient_var(self, model, coefficient_bound):
+        number_of_coefficients = self.env.planning_horizon * 2 + self.env.num_types + self.env.booking_window_size * self.env.num_types + self.env.planning_horizon
+        return model.addMVar(shape=number_of_coefficients, vtype=GRB.CONTINUOUS, lb=-coefficient_bound, ub=coefficient_bound, name="coefficients")
+    
+    def build_coefficient_linking_constraints(self, model, coefficient_vars):
+        return model.addConstr(coefficient_vars == 0.0, name="link_coefficients")
 
 
 if __name__ == "__main__":
