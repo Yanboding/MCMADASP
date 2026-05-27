@@ -16,8 +16,9 @@ from scipy.stats import geom
 from experiments.experiment_config import get_config_by_type
 from importance_sampling import build_proposal
 from utils import iter_to_tuple, get_uid, safe_open, RunningStats, encode, decode, get_solution_value, acquire_grb_env, read_lines_with_pattern
-from decision_maker import InfiniteSAAAgent, InfinitePenalizedSAAAgent, MyopicAgent, ALPRowGenerationAgent, LinearPenaltyFunction, ApproxQAgent
+from decision_maker import InfiniteSAAAgent, InfinitePenalizedSAAAgent, MyopicAgent, ALPRowGenerationAgent, ApproxQAgent
 from policy_evaluator import PolicyEvaluator
+from generating_function import MulticlassLinearPenaltyFunction, LinearPenaltyFunction
 
 def jsonl_result_exists(path, uid, policy_id):
     """Return True if (uid, policy_id) already exists in JSONL output."""
@@ -818,6 +819,7 @@ def evaluate_policy_costs_with_information_relaxation(uid, experiment_name, muta
     config = get_config_by_type(case_type='infinite_custom', args=env_args)
     env = config.env
     generating_function = LinearPenaltyFunction(env=env, coefficients=penalty_coefficients)
+    # generating_function = MulticlassLinearPenaltyFunction(env=env, coefficients=penalty_coefficients)
 
     discount_factor = env_args.get('discount_factor', env.discount_factor)
     true_geom_p = round(1 - discount_factor, 2)

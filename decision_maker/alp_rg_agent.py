@@ -124,7 +124,7 @@ class ALPRowGenerationAgent(InfiniteRTAgent):
         master_model.setParam("FeasibilityTol", 1e-9)
         master_model.setParam("OptimalityTol", 1e-9)
         master_model.setParam('OutputFlag', 0)
-        BigM = 1e5
+        BigM = 1e4
         self.W_0_var = master_model.addVar(vtype=GRB.CONTINUOUS, lb=-GRB.INFINITY, ub=BigM, name=f"W_0")
         self.U_vars = np.array([master_model.addVar(vtype=GRB.CONTINUOUS, lb=0, ub=BigM, name=f"U_{j}") for j in range(self.env.planning_horizon)])
         self.V_vars = np.array([master_model.addVar(vtype=GRB.CONTINUOUS, lb=0, ub=BigM, name=f"V_{j}") for j in range(self.env.planning_horizon)])

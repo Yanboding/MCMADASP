@@ -1,4 +1,6 @@
 import copy
+import json
+import os
 import time
 
 import numpy as np
@@ -126,7 +128,6 @@ class SubproblemWorker:
             self.objective_builder_fn(self.model, action_values)
         self._set_output_flag(self.model, verbose)
         self.model.optimize()
-
         if self.model.Status == GRB.OPTIMAL:
             v = self.model.ObjVal
             if self.cut_gradient_fn is not None:
@@ -231,7 +232,61 @@ class BendersDecompositionSolver:
         self.theta_vars = theta_vars
         self.action_vars = action_vars
 
-    def update_core_point(self, core: np.ndarray, xk: np.ndarray, k: int, alpha: float = None) -> np.ndarray:
+    def _cut_to_record(self, kind, scenario_id, coefficients, rhs_value, action_values, sense='ge'):
+        coefficients = np.asarray(coefficients, dtype=float).tolist()
+        action_values = np.asarray(action_values, dtype=float).tolist()
+        return {
+            'kind': kind,
+            'scenario_id': int(scenario_id),
+            'sense': sense,
+            'rhs_value': float(rhs_value),
+            'coefficients': coefficients,
+            'action_values': action_values,
+        }
+
+    def _cut_record_to_constraint(self, record):
+        coefficients = np.asarray(record['coefficients'], dtype=float)
+        action_values = np.asarray(record['action_values'], dtype=float)
+        intercept = float(record['rhs_value']) - float(np.dot(coefficients, action_values))
+        cut_expr = intercept + sum(coefficients[j] * self.action_vars[j] for j in range(len(coefficients)))
+
+        if record['kind'] == 'optimality':
+            theta_var = self.theta_vars[record['scenario_id']]
+            if record['sense'] == 'le':
+                return theta_var <= cut_expr
+            return theta_var >= cut_expr
+
+        if record['kind'] == 'feasibility':
+            if record['sense'] == 'le':
+                return cut_expr <= 0
+            return cut_expr >= 0
+
+        raise ValueError(f"Unsupported cut kind: {record['kind']}")
+
+    def _load_cut_checkpoint(self, checkpoint_path):
+        if not checkpoint_path or not os.path.exists(checkpoint_path):
+            return {'cuts': [], 'core_point': None, 'lower_bound': None, 'upper_bound': None, 'iteration': 0}
+
+        with open(checkpoint_path, 'r') as f:
+            state = json.load(f)
+
+        for record in state.get('cuts', []):
+            self.master_model.addConstr(
+                self._cut_record_to_constraint(record),
+                name=f"reloaded_{record['kind']}_cut_s{record['scenario_id']}",
+            )
+
+        return state
+
+    def _save_cut_checkpoint(self, checkpoint_path, state):
+        if not checkpoint_path:
+            return
+        tmp_path = f"{checkpoint_path}.tmp"
+        with open(tmp_path, 'w') as f:
+            json.dump(state, f)
+        os.replace(tmp_path, checkpoint_path)
+
+    def update_core_point(self, core: np.ndarray, xk: np.ndarray, k: int, alpha: float | None = None) -> np.ndarray:
         xk = np.asarray(xk, dtype=float)
         core = np.asarray(core, dtype=float)
         if alpha is None:
@@ -273,25 +328,35 @@ class BendersDecompositionSolver:
               core_alpha=None,
               verbose=False,
               parallel=True,
-              max_workers=None):
+              max_workers=None,
+              checkpoint_path=None,
+              resume_checkpoint_path=None):
         info = {}
         lower_bound = -GRB.INFINITY
         upper_bound = GRB.INFINITY
         core_point = None  # For Pareto cuts; could be average of previous actions, will initialize after first master solve
         executor = ThreadPoolExecutor(max_workers=max_workers) if parallel else None
+        checkpoint_state = self._load_cut_checkpoint(resume_checkpoint_path)
+        if checkpoint_state.get('core_point') is not None:
+            core_point = np.asarray(checkpoint_state['core_point'], dtype=float)
+        lower_bound = checkpoint_state.get('lower_bound', lower_bound) or lower_bound
+        upper_bound = checkpoint_state.get('upper_bound', upper_bound) or upper_bound
+        iteration_offset = int(checkpoint_state.get('iteration', 0) or 0)
+        cut_records = list(checkpoint_state.get('cuts', []))
         try:
             for iteration in range(1, max_iter + 1):
+                global_iteration = iteration_offset + iteration
                 start = time.time()
                 if init_solution is not None and iteration == 1:
                     # Use the provided initial solution instead of solving the master
                     action = np.asarray(init_solution, dtype=float)
                     core_point = copy.deepcopy(action)
-                    print(f"Iteration {iteration}, using init_solution (skipping master solve)")
+                    print(f"Iteration {global_iteration}, using init_solution (skipping master solve)")
                 else:
                     if not solve_and_handle_errors(self.master_model, verbose=verbose):
                         raise RuntimeError("Master model optimal solution not found")
-                    print(f"Iteration {iteration}, master solved in {time.time() - start} seconds")
-                    self._report_memory_usage(iteration)
+                    print(f"Iteration {global_iteration}, master solved in {time.time() - start} seconds")
+                    self._report_memory_usage(global_iteration)
                     action = self.action_vars.X
                     if core_point is None:
                         core_point = copy.deepcopy(action)
@@ -302,12 +367,13 @@ class BendersDecompositionSolver:
                         upper_bound = self.master_model.ObjVal
 
                 # Ask all workers to solve for this action
-                print(f"Iteration {iteration}, action from master: {action.tolist()}")
+                print(f"Iteration {global_iteration}, action from master: {action.tolist()}")
                 # futures = [ex.submit(w.solve, action_t, verbose) for w in workers]
                 start_sub = time.time()
                 active_workers = self.workers[:self.theta_vars.shape[0]]  # Only use as many workers as we have theta variables (scenarios)
                 # Execute subproblems
                 if parallel:
+                    assert executor is not None
                     if use_pareto_cuts:
                         futures = [executor.submit(w.solve_pareto, action, core_point, pareto_epsilon, verbose)
                                    for w in active_workers]
@@ -316,26 +382,40 @@ class BendersDecompositionSolver:
                     results = [f.result() for f in futures]
                 else:
                     results = []
-                    for w in active_workers:
+                    for idx, w in enumerate(active_workers):
+                        start = time.time()
                         if use_pareto_cuts:
                             results.append(w.solve_pareto(action, core_point, pareto_epsilon, verbose))
                         else:
                             results.append(w.solve(action, verbose))
-                print(f"Iteration {iteration}, subproblems solved in {time.time() - start_sub:.2f}s")
-                self._report_memory_usage(iteration, active_workers)
+                        print(f"Iteration {global_iteration}, subproblem {idx} solved in {time.time() - start:.2f}s")
+                print(f"Iteration {global_iteration}, subproblems solved in {time.time() - start_sub:.2f}s")
+                self._report_memory_usage(global_iteration, active_workers)
                 
                 feasibility_cuts = []
                 optimality_cuts = []
+                new_cut_records = []
                 cost_to_go_estimation = 0.0
                 all_feasible = True
 
                 for idx, (is_feasible, v, duals) in enumerate(results):
                     scenario_id = active_workers[idx].subproblem_id
+                    action_values = np.asarray(action, dtype=float)
 
                     if not is_feasible:
                         all_feasible = False
                         cut_expr = v + duals @ (self.action_vars - action)
                         feasibility_cuts.append(cut_expr >= 0)
+                        new_cut_records.append(
+                            self._cut_to_record(
+                                kind='feasibility',
+                                scenario_id=scenario_id,
+                                coefficients=duals,
+                                rhs_value=v,
+                                action_values=action_values,
+                                sense='ge',
+                            )
+                        )
                         # Note: We continue the loop to collect all possible feasibility cuts
                         # rather than breaking, which helps the Master converge faster.
                     else:
@@ -343,18 +423,38 @@ class BendersDecompositionSolver:
                         cut_rhs = v + duals @ (self.action_vars - action)
                         if self.master_model.ModelSense == GRB.MINIMIZE:
                             optimality_cuts.append(self.theta_vars[scenario_id] >= cut_rhs)
+                            new_cut_records.append(
+                                self._cut_to_record(
+                                    kind='optimality',
+                                    scenario_id=scenario_id,
+                                    coefficients=duals,
+                                    rhs_value=v,
+                                    action_values=action_values,
+                                    sense='ge',
+                                )
+                            )
                         else:
                             optimality_cuts.append(self.theta_vars[scenario_id] <= cut_rhs)
+                            new_cut_records.append(
+                                self._cut_to_record(
+                                    kind='optimality',
+                                    scenario_id=scenario_id,
+                                    coefficients=duals,
+                                    rhs_value=v,
+                                    action_values=action_values,
+                                    sense='le',
+                                )
+                            )
                 
                 if not all_feasible:
-                    print(f"Iteration {iteration}, adding {len(feasibility_cuts)} feasibility cuts")
+                    print(f"Iteration {global_iteration}, adding {len(feasibility_cuts)} feasibility cuts")
                     # Some scenario infeasible: add feasibility cuts and repeat
                     self.master_model.addConstrs((feasibility_cuts[i] for i in range(len(feasibility_cuts))),
-                                                name=f"feas_cut_{iteration}_")
+                                                name=f"feas_cut_{global_iteration}_")
                 else:
-                    print(f"Iteration {iteration}, adding {len(optimality_cuts)} optimality cuts")
+                    print(f"Iteration {global_iteration}, adding {len(optimality_cuts)} optimality cuts")
                     # All scenarios feasible: add optimality cuts and continue
-                    self.master_model.addConstrs((optimality_cuts[i] for i in range(len(optimality_cuts))), name=f"opt_cut_{iteration}_")
+                    self.master_model.addConstrs((optimality_cuts[i] for i in range(len(optimality_cuts))), name=f"opt_cut_{global_iteration}_")
                     cost_to_go_estimation = cost_to_go_estimation / self.theta_vars.shape[0]  # Average cost-to-go across scenarios for reporting
                     first_stage_cost = self.imm_cost.getValue() if hasattr(self.imm_cost, 'getValue') else float(self.imm_cost or 0.0)
                     if self.master_model.ModelSense == GRB.MINIMIZE:
@@ -384,6 +484,15 @@ class BendersDecompositionSolver:
                     core_point = self.update_core_point(core_point, action, iteration, alpha=core_alpha)
 
                     print(f"UB: {upper_bound}, LB: {lower_bound}, Gap: {abs(upper_bound - lower_bound)}, First-stage cost: {first_stage_cost}, Cost-to-go estimate: {cost_to_go_estimation}")
+                    checkpoint_state = {
+                        'iteration': global_iteration,
+                        'lower_bound': None if np.isinf(lower_bound) else float(lower_bound),
+                        'upper_bound': None if np.isinf(upper_bound) else float(upper_bound),
+                        'core_point': None if core_point is None else np.asarray(core_point, dtype=float).tolist(),
+                        'cuts': cut_records + new_cut_records,
+                    }
+                    self._save_cut_checkpoint(checkpoint_path, checkpoint_state)
+                    cut_records.extend(new_cut_records)
                     # Average the future cost across scenarios like in direct solution
                     if abs(upper_bound - lower_bound) < tol:
                         info = {}
@@ -476,6 +585,10 @@ class BendersDecompositionSolver:
                                        use_pareto_cuts=use_pareto_cuts,
                                        pareto_epsilon=pareto_epsilon,
                                        verbose=verbose)
+            if obj_val is None:
+                info['debug'] = 'no_objective_value'
+                break
+            obj_val = float(obj_val)
             print(f"Adaptive solve: current objective value = {obj_val}, previous = {prev}", info, abs(obj_val - prev), number_of_workers, len(self.workers))
             if 'debug' in info:
                 break

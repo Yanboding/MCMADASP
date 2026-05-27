@@ -334,6 +334,12 @@ EXPERIMENT_SPECS = {
             val_args=[0.],
             mutate=_mutate_initial_state_congestion,
         ),
+        ExperimentSpec(
+            name='case_study',
+            config_type='ejor',
+            val_args=[0.95],
+            mutate=_mutate_discount_factor,
+        ),
     ]
 }
 
@@ -350,6 +356,7 @@ def train_penalty_coefficients(env_args, experiment_name, agent_args=None):
     JSON-serializable ``sample_path_length_proposal`` spec dict that is
     materialized into a SamplePathLengthProposal before constructing the agent.
     '''
+    agent_args = dict(agent_args or {})
     train_params = {
                     'agent_name': agent_args['agent_name'],
                     'agent_args': {
@@ -359,7 +366,6 @@ def train_penalty_coefficients(env_args, experiment_name, agent_args=None):
                         'penalty_ratio': agent_args['agent_args']['penalty_ratio'],
                     },
                 }
-    agent_args = dict(agent_args or {})
     cached = _load_cached_training_result(experiment_name, 'penalty_train.jsonl', env_args, agent_args=train_params)
     if cached is not None:
         cached_result = cached.get('result', {})
@@ -371,8 +377,8 @@ def train_penalty_coefficients(env_args, experiment_name, agent_args=None):
 
     config_for_train = get_config_by_type('infinite_custom', args=env_args)
     env = config_for_train.env
-    # generating_function = LinearPenaltyFunction(env=env)
-    generating_function = MulticlassLinearPenaltyFunction(env=env)
+    generating_function = LinearPenaltyFunction(env=env)
+    # generating_function = MulticlassLinearPenaltyFunction(env=env)
     inner = dict(agent_args.get('agent_args', {}))
     inner['generating_function'] = generating_function
     if 'sample_path_length_proposal' in inner:
@@ -387,8 +393,16 @@ def train_penalty_coefficients(env_args, experiment_name, agent_args=None):
     print(f"Training penalty coefficients for env_uid {get_uid(env_args)} with init_state: {init_state}, sample_path_number: {sample_path_number}, agent_args: {agent_args}")
     if init_state is not None:
         init_state = tuple(np.array(item) for item in init_state)
+    required_bookings = [(env.regular_capacity + env.overtime_capacity) * env.discount_factor**(j) for j in range(env.planning_horizon)]
+    required_bookings[-1] = 0
+    required_bookings = np.array(required_bookings)
+    E_u_alpha = np.minimum(required_bookings, env.regular_capacity)
+    E_v_alpha = required_bookings - E_u_alpha
+    E_w_alpha = env.arrival_generator.mean_by_type
+    init_state = (E_u_alpha, E_v_alpha, E_w_alpha)
     env.reset_random_seeds()  # Reset random seeds before training again to ensure the same sample paths
-    obj, direct_coefficients, info = agent.benders_decomposition_train(coefficient_bound=GRB.INFINITY, init_state=init_state, parallel=True, verbose=False)
+    print(init_state)
+    obj, direct_coefficients, info = agent.benders_decomposition_train(coefficient_bound=1e4, init_state=init_state, parallel=True, verbose=False)
     print('Obejctive from Benders decomposition training:', obj)
     print('Coefficients from Benders decomposition training:', direct_coefficients)
     _save_training_result(
@@ -432,7 +446,29 @@ def train_alp_coefficients(env_args, experiment_name):
     return obj, coefficients
 
 
-def generate_test_paths_and_init_state(test_envs, test_sample_path_num, warm_up_periods=0, num_periods=None, dat_file=None, num_groups=None, is_require_penalty_coefficients=True, policy_ids=[]):
+def _zero_penalty_coefficients(env):
+    return [0] * (
+        env.planning_horizon * 2
+        + env.num_types
+        + env.booking_window_size * env.num_types
+        + env.planning_horizon
+    )
+
+
+def _build_penalty_policy(base_agent_args, policy_id, solver_name, penalty_coefficients):
+    policy = copy.deepcopy(base_agent_args)
+    policy.update(
+        {
+            'policy_id': policy_id,
+            'agent_name': 'approx_penalized_hindsight',
+        }
+    )
+    policy['agent_args']['penalty_coefficients'] = penalty_coefficients
+    policy['agent_args']['solver_name'] = solver_name
+    return policy
+
+
+def generate_test_paths_and_init_state(test_envs, test_sample_path_num, warm_up_periods=0, num_periods=None, dat_file=None, num_groups=None, is_require_penalty_coefficients=True, policy_ids=None):
     '''
     Inital state is considered as period 1. sample path will start from period 2.
 
@@ -441,14 +477,17 @@ def generate_test_paths_and_init_state(test_envs, test_sample_path_num, warm_up_
     saved params record under the ``policies`` key so the runner knows which
     policies to evaluate against the corresponding sample path.
     '''
+    policy_ids = list(policy_ids or [])
+    policy_id_set = set(policy_ids)
     results = []
     for (env_uid, experiment_name, mutate_val), variant in test_envs.items():
         env_args = variant['env_args']
         env = get_config_by_type('infinite_custom', args=env_args).env
         print(f"Processing env_uid: {env_uid}, experiment_name: {experiment_name}, mutate_val: {mutate_val}")
+
         policies = []
-        if 'row_gen_alp' in policy_ids:
-            obj_alp_train, alp_coefficients = train_alp_coefficients(env_args=env_args, experiment_name=experiment_name)
+        if 'row_gen_alp' in policy_id_set:
+            _, alp_coefficients = train_alp_coefficients(env_args=env_args, experiment_name=experiment_name)
             policies.append({
                 'policy_id': 'row_gen_alp',
                 'agent_name': 'row_gen_alp',
@@ -456,14 +495,14 @@ def generate_test_paths_and_init_state(test_envs, test_sample_path_num, warm_up_
                     'coefficients': alp_coefficients,
                 },
             })
-        if 'myopic' in policy_ids:
+        if 'myopic' in policy_id_set:
             policies.append({
                 'policy_id': 'myopic',
                 'agent_name': 'myopic',
                 'agent_args': {
                 },
             })
-        if 'approx_hindsight' in policy_ids:
+        if 'approx_hindsight' in policy_id_set:
             policies.append({
                 'policy_id': 'approx_hindsight',
                 'agent_name': 'approx_hindsight',
@@ -476,41 +515,37 @@ def generate_test_paths_and_init_state(test_envs, test_sample_path_num, warm_up_
                     'is_quasi_MC': True,
                 },
             })
-        if 'approx_penalized_hindsight' in policy_ids:
+
+        direct_coefficients = _zero_penalty_coefficients(env)
+        need_penalty_for_selected_policy = bool({'approx_penalized_hindsight', 'approx_Q'} & policy_id_set)
+        if is_require_penalty_coefficients and need_penalty_for_selected_policy:
             agent_args = copy.deepcopy(variant['agent_args'])
             print(agent_args)
-            if is_require_penalty_coefficients:
-                obj, direct_coefficients, info = train_penalty_coefficients(env_args=env_args, agent_args=agent_args, experiment_name=experiment_name)
-            else:
-                direct_coefficients = [0] * (env.planning_horizon * 2 + env.num_types + env.booking_window_size * env.num_types + env.planning_horizon)
-            agent_args['agent_args']['penalty_coefficients'] = direct_coefficients
-            agent_args.update(
-                {
-                    'policy_id': 'approx_penalized_hindsight',
-                    'agent_name': 'approx_penalized_hindsight',
-                }
+            _, direct_coefficients, _ = train_penalty_coefficients(
+                env_args=env_args,
+                agent_args=agent_args,
+                experiment_name=experiment_name,
             )
-            agent_args['agent_args'].update({
-                'solver_name': 'approx_penalized_hindsight',
-            })
-            policies.append(agent_args)
-        if 'approx_Q' in policy_ids:
-            agent_args = copy.deepcopy(variant['agent_args'])
-            if is_require_penalty_coefficients:
-                obj, direct_coefficients, info = train_penalty_coefficients(env_args=env_args, agent_args=agent_args, experiment_name=experiment_name)
-            else:
-                direct_coefficients = [0] * (env.planning_horizon * 2 + env.num_types + env.booking_window_size * env.num_types + env.planning_horizon)
-            agent_args['agent_args']['penalty_coefficients'] = direct_coefficients
-            agent_args.update(
-                {
-                    'policy_id': 'approx_Q',
-                    'agent_name': 'approx_penalized_hindsight',
-                }
+
+        if 'approx_penalized_hindsight' in policy_id_set:
+            policies.append(
+                _build_penalty_policy(
+                    base_agent_args=variant['agent_args'],
+                    policy_id='approx_penalized_hindsight',
+                    solver_name='approx_penalized_hindsight',
+                    penalty_coefficients=direct_coefficients,
+                )
             )
-            agent_args['agent_args'].update({
-                'solver_name': 'approx_Q',
-            })
-            policies.append(agent_args)
+        if 'approx_Q' in policy_id_set:
+            policies.append(
+                _build_penalty_policy(
+                    base_agent_args=variant['agent_args'],
+                    policy_id='approx_Q',
+                    solver_name='approx_Q',
+                    penalty_coefficients=direct_coefficients,
+                )
+            )
+
         # Inject the freshly trained coefficients into the matching policy specs
         # for this variant so each saved record carries everything the runner
         # needs to instantiate its agents.
@@ -522,13 +557,13 @@ def generate_test_paths_and_init_state(test_envs, test_sample_path_num, warm_up_
         config_for_sample_path = get_config_by_type('infinite_custom', args=sample_gen_args)
         env_for_sample_path = config_for_sample_path.env
         average_sample_path_length = 0
-        for command_id in range(test_sample_path_num):
+        for _ in range(test_sample_path_num):
             init_state = env_for_sample_path.generate_initial_state() if 'init_state' not in env_args.get('reset_params', {}) else env_args['reset_params']['init_state']
             init_state = tuple(np.array(item).tolist() for item in init_state)
             if num_periods is None:
-                sample_path = env_for_sample_path.reset_arrivals(stop_time=warm_up_periods)
-                additional_sample_path = env_for_sample_path.reset_arrivals()
-                sample_path = np.append(sample_path, additional_sample_path, axis=0) if len(sample_path) > 0 else additional_sample_path
+                warm_up_path = env_for_sample_path.reset_arrivals(stop_time=warm_up_periods)
+                sampled_path = env_for_sample_path.reset_arrivals()
+                sample_path = np.concatenate((warm_up_path, sampled_path), axis=0) if len(warm_up_path) > 0 else sampled_path
             else:
                 sample_path = env_for_sample_path.reset_arrivals(stop_time=num_periods)
             sample_path = sample_path.tolist() if hasattr(sample_path, 'tolist') else sample_path
@@ -555,17 +590,7 @@ def generate_test_paths_and_init_state(test_envs, test_sample_path_num, warm_up_
         print("average sample path length:", average_sample_path_length / test_sample_path_num)
     # Write to dat file if specified
     if dat_file:
-        lines_to_write = []
-        n = num_groups if num_groups and num_groups > 0 else len(results)
-        # Split results into n groups as evenly as possible
-        groups = [results[i::n] for i in range(min(n, len(results)))]
-        for line_index, group in enumerate(groups, start=1):
-            lines_to_write.append(
-                f"{line_index} python run.py --params '" + json.dumps(group) + "'\n"
-            )
-        with open(dat_file, 'w') as f:
-            f.writelines(lines_to_write)
-        print(f"Saved {len(lines_to_write)} group commands to {dat_file}")
+        _split_list_into_groups(results=results, num_groups=num_groups, dat_file=dat_file)
 
     return results
 
@@ -601,16 +626,17 @@ if __name__ == '__main__':
     # for experiment_name in experiments:
     #     test_envs.update(build_variation_test_env(EXPERIMENT_SPECS[experiment_name]))
     # test_envs = build_variation_test_env(EXPERIMENT_SPECS['sample_path_length_proposal_fixed'])
-    test_envs = build_variation_test_env(EXPERIMENT_SPECS['multiclass_LP_solver_comparison'])
+    test_envs = build_variation_test_env(EXPERIMENT_SPECS['case_study'])
+    print(test_envs)
     results = generate_test_paths_and_init_state(
         test_envs=test_envs,
-        test_sample_path_num=5000,
-        warm_up_periods=100,
+        test_sample_path_num=2,
+        warm_up_periods=750,
         num_periods=None,
         dat_file='table.dat',
         num_groups=998,  # divide into N groups
         is_require_penalty_coefficients=True,
-        policy_ids=['approx_penalized_hindsight', 'approx_Q'],
+        policy_ids=['approx_penalized_hindsight', 'row_gen_alp'],
     )
     # test_envs = build_variation_test_env(EXPERIMENT_SPECS['case_study_discount_factor'])
     # results = generate_train_env(
