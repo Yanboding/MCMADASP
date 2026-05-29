@@ -142,10 +142,10 @@ class ApproxQAgent(InfiniteRTAgent):
     def train_subproblem_builder_fn(self, env, scenario_id, init_state = None):
         sub_model = gp.Model(f"Subproblem_SA_Advance_{scenario_id}", env=env)
         # FORCES DUAL SIMPLEX (Crucial for Benders warm-starting)
-        # sub_model.setParam("Method", 1)
-        sub_model.setParam("Method", 2)
+        sub_model.setParam("Method", 1)
+        # sub_model.setParam("Method", 2)
+        # sub_model.setParam('NumericFocus', 2)
         sub_model.setParam('InfUnbdInfo', 1)
-        sub_model.setParam('NumericFocus', 2)
         # Forbidden the model to simplify the model(remove variables/constraints, tighten bounds, etc.). 
         sub_model.setParam('DualReductions', 0)
         sub_model.setParam("MultiObjPre", 0)
@@ -180,7 +180,7 @@ class ApproxQAgent(InfiniteRTAgent):
 
         return sub_model, coefficient_linking_constraints
     
-    def benders_decomposition_train(self, coefficient_bound=GRB.INFINITY, init_state = None, parallel=True, verbose=False):
+    def benders_decomposition_train(self, coefficient_bound=GRB.INFINITY, init_state = None, parallel=True, verbose=False, checkpoint_path=None, resume_checkpoint_path=None):
         # This function can be implemented to train the coefficients using Benders decomposition, which can potentially handle larger sample sizes more efficiently.
         if self.coefficient_model is None:
             master_model, coefficient_vars, theta_vars = self.train_master_builder_fn(coefficient_bound)
@@ -207,7 +207,7 @@ class ApproxQAgent(InfiniteRTAgent):
         # init_solution = [0] * coefficient_vars.shape[0]
         init_solution = None
         # init_solution = [30.936873875657064, 18.797811208402102, 32.55294582735802, 9.771833520893624, 29.930188363086305, -33.43114011845465, 20.429547473135614, 46.134539415653634, -4.1252674656013415, 13.548626019564873, 2.0323452690382933, 4.948082094437374, 57.93083271225687, -34.489745014299935, -22.752348538218, 43.54071439788093, 31.466967896430372, 13.378259245251227, 19.08776734394266, 59.071042428052856, 25.288221363707603, -85.09869832626279, 47.38011323828022, 13.324993447555471, 120.27618769746321, -146.4427825660298, 53.81124295809613, 62.20144296020482, 52.47460135187192, -20.605921066845603, -70.34995701361875, 163.51281510396765, 6.60533255004948, -113.00288841418705, 33.181652159801615, -138.30844267307205, 204.2166397682823, -108.06934994312908, 223.1596242294453, 54.34585807530416, -114.68916798053644, 53.779549516198095, 62.6890753579888, -132.9607322609606, -101.87111132543069, 188.38237324416775, -185.36068477897135, 160.72134253398778, -34.87783019457539, -165.09582122268893, 309.6723857352444, -281.3573729867282, 20.634822124277154, -4.330038407101594, -545.9479495163265, -9429.039169810098, 3.5409097151355686, 42.72230049696095, 4.050174429738009, 35.670251097571274, 36.98752627610553, -14.842276278996323, 49.913767857586976, 54.66824591965885, -52.530284161674125, -28.823009401464518, -57.652652547646206, 19.212696907575882, 76.85986613224023, 5.160918430492718, 39.50172476926792, 25.50910600866467, 7.7759334133560944, 2.0089986019809536, -30.58188582023919, 65.38994859008166, 36.671374472605386, -90.26366448958886, 105.78083415346698, -0.5648379682072561, 128.25828155090278, -156.0041086314322, 38.635648126459955, 20.38702052987313, 80.93143512215346, 3.815132126224707, -92.46317941391825, 197.96664881356114, -25.68888667004868, -12.328857914966688, 26.87900972002935, -129.8723021445483, 169.5594313556061, -73.65427536077355, 275.1945927950061, 124.6267210774115, -115.38995593402508, -0.8009833975152213, 170.7246728785445, -182.7657259493173, -38.18085368994055, 194.01171012567798, -94.2747443869524, 130.44227756106247, -66.84024405114174, -236.27371833168309, 78.66270113673475, -290.8761487468625, 559.6819883801721, 10.752569463662397, -568.3666354164685, 460.2991655053739, 158.37588443883902, -193.9216145621594, -66.55045841285988, -207.6933204550911, 884.6387736746859, 834.2162153685704, 103.98741130638292, 188.55833726572166, -148.4154591226984, 458.8053411903486, 97.82009269273522, -683.2441095608922, 249.08070077390957, 1555.0920357621142, 499.3936371428386, 636.4734869789855, 1159.886874217052, 1223.5386895740824, -1367.153207606466, -1595.6422893171573, -888.3440243358016, -422.17810791305544, -194.8461339958101, -318.43054212783505, 58.16660782382519, 945.9108164251008, 419.2529470909686, -75.06257225194535, -170.04139570753057, 1393.419184961684, 336.99120549569545, 243.60365082069922, 63.47063277731668, -2548.2971870188553, -56.59358071192403, -3898.125694572405, -119.945980678244, 1594.5858996684306, -1826.83311836072, 511.656664330189, 285.070548812395, 15.302270514760435, 783.1727251367164, -169.97055458293417, 30.50868250841404, -1419.3633857400755, 1978.7188485120134, -1237.17936359673, -299.7016084181448, 1133.7911125485473, 1626.7039614341609, -2791.7136436981596, 4932.110023795547, -1621.1935010611166, 1614.62808053739, -2684.6843105273883, -1834.1556419946737, -265.66105234726945, -1100.7602200001638, -43.19070738122594, -1015.8758240434228, -340.1657922735167, -1056.001519347583, -17.93079478161714, 1418.8189946868968, -1178.9843979360733, 533.1787579539204, -654.9609687922073, 309.5191379943023, -556.9154454676293, 3584.4264961308263, 1196.1117601494518, 664.956737746279, -802.0049723400815, -1152.795533244306, -310.3956584546715, -736.2714576859572, 211.31980942983816, -127.2607825414034, -494.4078690542375, -525.3473411965666, -732.8989818387079, 1481.9590664519344, 634.6806703577009, 134.6879987539506, 68.46968101891441, 3077.8622619915873, -1322.1970354819734, 512.0970780186783, 1245.7729699397166, -719.9155689609499, -1621.7511109563402, -750.1924173015896, -113.46683923530412, -169.61181143274712, -849.4577694557283, -202.98673572341264, -100.73746581099192, -145.70199903807247, -1877.1485745988907, 1424.9783136572046, -558.9686778396147, 1013.5386877376707, 429.5499314608378, -339.5011345735725, -422.5436391726017, -673.4762743015218, 2012.8666975530616, 978.2589217291377, 3172.189889204137, -1950.8414941347573, -177.7446453964339, -179.30227820592762, 33.51722879684361, -96.3454538689637, -256.65201206859786, -797.7019125809245, 200.6187091872159, 1008.0988339893294, -184.7277839675159, 210.7837975453668, -1666.6314832114995, 708.2979510251037, 298.1014440671508, 1362.881208995362, -1777.4202962087054, -602.6618168905517, 246.82127551917725, 2733.56739243182, -614.8762690171258, -562.0176945355186, -1840.366957509147, 6.300787588450724, -168.43747666850498, -107.4507641143353, 67.16014554401575, -1040.0810126884169, 1176.994223922966, -365.19203949432733, 1476.6907010629748, -622.3393092792348, 201.3979366409967, 867.4210477363565, -1947.1795033660965, -2124.9113409569673, -1348.1163150065315, -3049.156120283863, -64.26144623664425, -884.6054174034084, -747.6023216699457, -162.44191382329703, -336.3415576460618, -517.8905707558905, -1074.5696036563556, -656.891088093221, -942.1367976911298, 577.3087909632856, -1181.118838679084, -1502.0435839333647, 671.5980199618674, 193.16061819399056, -2786.47090227951, -1306.9089548468223, 852.8301044086406, -1302.224904385813, -365.3136254213454, 271.4708918756479, 803.9348108757275, 135.4272666347038, -195.44298380793145, 455.11977924363435, -88.76208815919365, -386.26451193944445, -1710.604457714806, 504.8046630280259, 436.7521130815965, -859.4393271359357, 243.42496847226232, 571.5925307498603, -368.76125584879134, -664.5101243587413, -2589.091548645905, -3156.5659348645954, -131.34181113562016, 593.5046967988571, -811.8911866374549, 51.22674394003911, -339.02008735168585, -245.10335194903865, 880.9973039628915, 1197.0678380355494, 1802.016595852356, -252.52625963731356, 1012.2671320087128, -204.94160854563643, -1089.7973361867819, -172.74467306160798, -2651.0334619461887, -6839.4918004310075, 784.4196371874947, -1170.2771159834117, -203.9784203434857, 655.6102521142936, -401.94938753332497, -309.32746400678286, 101.80668997192593, 448.39204659667644, 1111.3468105597963, 1319.0966574381764, -1208.9092976254644, -573.5167751989869, -908.1930329607058, -208.38052990026665, -1125.64513683742, 591.0173587930984, 2664.903442325281, -966.8707469666517, -3031.325021884568, -838.709739557322, -446.2868835568282, -850.6388486996685, -94.31674084351106, -19.070580089660293, -265.5034240234173, -793.4095053904985, 1510.6828589792303, 1618.531138143973, 673.3463076083483, 149.7474004104515, 1700.7353455994787, -107.45090930475713, -2917.3333534106296, -1896.7789996216147, -2672.789033777113, -181.71781053904746, 1124.4340396787939, -352.4730923468821, -83.94181618165813, 146.14487566285993, -54.73584703764347, -22.885619323205535, 367.8729495157054, 779.9052998295781, -934.3122290713162, -687.7701320571028, -1650.1609102906584, -1600.2096744658957, 2710.080368242038, 717.4665226361295, -40.71421466925588, 562.8942748669122, -1729.7452923672754, 480.29923516327557, 1865.6243513864613, 293.55308263106957, -433.0955032895382, 284.68396336058413, -576.146963705008, -447.8695286347708, 214.03040936304097, 2480.8180772126143, 55.251309514590616, 134.4546293320938, -1722.7339101804428, 820.8970772405369, 960.29222542825, -275.70321569254907, -1045.0418175086384, 1581.2753046832595, -6346.06265857456, -569.753195867397, 401.41532765688913, -2736.6430023314583, -184.37446659832415, 645.5012988466895, -787.6709263240222, 331.68374100012795, -0.6479521442944248, -1196.8429168055236, 1361.3667957557611, -439.9260662439809, 471.2435814815261, -1524.9493334236724, 306.73192480926315, 1405.3053110351905, -225.88895756671423, -1073.7983932649356, -3697.3755736504518, 1313.1719915872338, -1787.9433822421738, -1055.9662384214976, -344.2674554572283, 480.5497867772467, -401.63469274181057, -132.08782016089646, -113.06792199816887, -610.7462850622754, -570.706251138544, 134.04439385377407, -242.50379867228986, 1141.7066124539663, 726.2978033330783, -400.71446355254614, 990.5246738019534, -682.3572707952825, -2424.0201933059475, 385.29855549654735, -1452.2697167758374, -1234.3986673705163, -276.1457507214158, -180.90707045581195, -207.51250002460756, 474.33340429386413, -366.0105736851623, -156.65846087580408, 1761.139037081204, 1625.4558084790838, -2845.9189743448687, 866.9814741806542, -300.03082629473744, 40.90097763890692, 80.60506930927909, -657.3485269278951, -7502.349234869973, 2839.9554927345425, -343.1129155745543, -466.1732043276838, -259.48020006358223, 624.959438293353, 295.3300819742684, -324.2295717318382, -205.09570365338058, 216.8319159316121, -111.4475703152785, -2961.30246950438, 3.5970806512180378, 618.4868963159754, -172.65190086188164, -214.32370733063183, -1135.856103802185, 1607.3014365248878, 390.2826688005668, 622.9732840424609, 3225.2467499447466, -1785.4950347054846, -289.6105431865559, 228.58093926455103, -486.66798859216874, 331.9423895905381, -177.42511342302527, -580.4450372731009, 942.236750348567, -291.5343134274648, -2758.3542748332698, 1084.6285795089295, 1223.8005160593561, -184.147889323466, -3.0606979733181303, 709.3650861598024, -1467.0983744899718, -224.8782698194575, 3072.627086509512, -2608.3349615407533, -142.42374746249786, 507.75710013283634, -489.29113819279746, 366.563873607009, 249.3278768026298, -543.9822293316092, 988.2370033731124, -1150.624935985006, -884.4461500883978, -705.7819892536902, 67.02536691707697, -622.1388670131668, 9370.354244628512, 10000.0, -1284.387766343003, -43.83498594066923, -336.64051409717797, 76.80023632317157, 48.03185988238591, -97.959637054034, -20.066850268537664, 7.2169875455739305, -22.592328370140326, -16.302748965983394, 74.9041244429616, 134.32948935945322, 24.26064427462712, -71.579036855488, -34.67686324771993, -81.22386745965369, 34.97724202853562, 23.86161316037356, 78.48970745918116, 30.681211865345162, -51.54466078376435, 44.85999301534014, 54.94733072019185, -76.71202199176457, 9.631051612768688, 23.09136082112512, 61.60971403449678, 29.1867274453751, 110.7271508084791, -31.6304959353005, 119.9573825603302, -74.78749537832353, -65.5523035943056, -65.49342029477253, -102.44050265334715, -39.29540855231676, -124.12120150830569, -47.3855370243699, -106.74659128220623, -24.687965332567313, 108.83072031276096, -43.66847842195264, 285.6193246053477, -121.11212898998315, 178.66430447794028, 30.557917272950732, -146.216172243583, -225.0740034784603, 69.71566959773938, 340.3924192121032, 215.46725584117667, 237.22917603930162, -67.4859346202273, -610.9477512907654, 324.88956279581816, 601.4716391165779, -10000.0]
-        upper_bound, info = self.coefficient_model.solve(init_solution=init_solution, is_hard_bound=True, max_iter=1500, parallel=parallel, verbose=verbose, checkpoint_path="benders_cuts.json", resume_checkpoint_path="benders_cuts.json")
+        upper_bound, info = self.coefficient_model.solve(init_solution=init_solution, is_hard_bound=True, max_iter=1500, parallel=parallel, verbose=verbose, checkpoint_path=checkpoint_path, resume_checkpoint_path=resume_checkpoint_path)
         self.coefficients = np.asarray(coefficient_vars.X).tolist()
         self.is_trained = True
         generating_function = self._require_generating_function()
@@ -273,6 +273,8 @@ class ApproxQAgent(InfiniteRTAgent):
         model.setParam('InfUnbdInfo', 1)
         model.setParam('DualReductions', 0)
         model.setParam("Method", 1)
+        # model.setParam("Method", 2)
+        # model.setParam('NumericFocus', 2)
         model.setParam("MultiObjPre", 0)
         model.setParam("FeasibilityTol", 1e-9)
         model.setParam("OptimalityTol", 1e-9)
@@ -327,8 +329,7 @@ class ApproxQAgent(InfiniteRTAgent):
             self.workers = []
             for omega in range(self.sample_path_number):
                 start = time.time()
-                print(f'Start build {omega} with sample path length {len(self.delta[omega])}')
-                worker_env = acquire_grb_env({"Threads": 0}, verbose=False, wait=InfiniteRTAgent.TOKEN_WAIT) if parallel else self.grb_env
+                worker_env = acquire_grb_env({"Threads": 1}, verbose=False, wait=InfiniteRTAgent.TOKEN_WAIT) if parallel else self.grb_env
                 sub_model, action_linking_constraints, worker_state_linking_constraints = self.hindsight_subproblem_builder_fn(
                     env=worker_env,
                     scenario_id=omega,
@@ -339,7 +340,7 @@ class ApproxQAgent(InfiniteRTAgent):
                     state_linking_constraints=worker_state_linking_constraints,
                     subproblem_id=omega,
                 ))
-                print(f'Finished build {omega} in {time.time() - start} seconds')
+                print(f'Finished build {omega} with sample path length {len(self.delta[omega])} in {time.time()-start} seconds')
 
         for worker in self.workers:
             set_link_rhs(worker.state_linking_constraints, flatten_state)
@@ -374,6 +375,93 @@ class ApproxQAgent(InfiniteRTAgent):
                 f.write(json.dumps(debug_info))
         return obj, action_t, info
     
+    def hindsight_direct_builder_fn(self):
+        model = gp.Model(f"Direct_Penalized_Hindsight", env=self.grb_env)
+        model.setParam('InfUnbdInfo', 1)
+        model.setParam('DualReductions', 0)
+        model.setParam("Method", 2)
+        model.setParam("MultiObjPre", 0)
+        model.setParam("FeasibilityTol", 1e-9)
+        model.setParam("OptimalityTol", 1e-9)
+        # First-stage (master-equivalent) state/action
+        state_var = self.get_state_var(model)
+        state_linking_constraints = self.build_state_linking_constraints(model, state_var)
+        first_stage_action_var = self.get_action_var(model=model, advance_scheduling_type=self.current_decision_var_type)
+        self.add_action_space_constraints(model=model, state_var=state_var, action_var=first_stage_action_var)
+        imm_cost = self.env.cost_fn(state_var, first_stage_action_var, is_var=True)
+
+        # Build each scenario branch independently from the same initial state,
+        # mirroring the Benders subproblem structure.
+        continuation_cost = 0
+        generating_function = self._require_generating_function()
+        for scenario_id, new_arrivals in enumerate(self.delta):
+            start = time.time()
+
+            scenario_state_var = self.get_state_var(model)
+            master_state_flat = flatten(state_var)
+            scenario_state_flat = flatten(scenario_state_var)
+            # Tie each scenario branch to the shared first-stage state.
+            for i in range(master_state_flat.shape[0]):
+                model.addConstr(
+                    scenario_state_flat[i] == master_state_flat[i],
+                    name=f"direct_link_state_s{scenario_id}_{i}",
+                )
+
+            scenario_action_var = self.get_action_var(model=model, advance_scheduling_type=self.future_decision_var_type)
+            self.add_action_space_constraints(model=model, state_var=scenario_state_var, action_var=scenario_action_var)
+
+            # Force scenario first decision to match the shared first-stage action.
+            first_stage_action_flat = flatten(first_stage_action_var)
+            scenario_action_flat = flatten(scenario_action_var)
+            for i in range(first_stage_action_flat.shape[0]):
+                model.addConstr(scenario_action_flat[i] == first_stage_action_flat[i],
+                                name=f"direct_link_action_s{scenario_id}_{i}")
+
+            scenario_cost = 0
+            for period_index, new_arrival in enumerate(new_arrivals):
+                likelihood_ratio = self._get_period_likelihood_ratio(scenario_id, period_index)
+                penalty = self.penalty_ratio * generating_function.calculate_penalty(
+                    scenario_state_var,
+                    scenario_action_var,
+                    new_arrival,
+                    is_var=True,
+                )
+                scenario_cost += likelihood_ratio * penalty
+                scenario_state_var = self.get_next_state(
+                    model=model,
+                    state=scenario_state_var,
+                    action=scenario_action_var,
+                    new_arrival=new_arrival,
+                )
+                scenario_action_var = self.get_action_var(model=model, advance_scheduling_type=self.future_decision_var_type)
+                self.add_action_space_constraints(model=model, state_var=scenario_state_var, action_var=scenario_action_var)
+                scenario_cost += likelihood_ratio * self.env.cost_fn(scenario_state_var, scenario_action_var, is_var=True)
+
+            continuation_cost += scenario_cost
+            print(f'Finished build {scenario_id} with sample path length {len(new_arrivals)} in {time.time()-start} seconds')
+
+        # Match Benders master objective scaling: average over scenarios.
+        model.setObjective(
+            imm_cost + self.discount_factor * (continuation_cost / self.sample_path_number),
+            GRB.MINIMIZE,
+        )
+        return model, state_linking_constraints, first_stage_action_var, {}
+    
+    def hindsight_direct_solve(self, state, t, action=None, verbose=False):
+        if self.decision_model is None:
+            self.decision_model, self.state_linking_constraints, self.action_var, self.info = self.hindsight_direct_builder_fn()
+        flatten_state = flatten(state)
+        set_link_rhs(self.state_linking_constraints, flatten_state)
+        if action is not None:
+            self.set_action(action_var=self.action_var, action=action)
+        # Clean solution before resolving
+        self.decision_model.reset()
+        if not solve_and_handle_errors(self.decision_model, verbose=verbose):
+            raise RuntimeError("Direct model optimal solution not found")
+        # ---------- 8. return ----------
+        action = self.get_solution(self.action_var, is_final=True)
+        return self.decision_model.ObjVal, action, self.info
+    
     def solve(self, state, t,
                     action=None,
                     tol=1e-9,
@@ -388,6 +476,8 @@ class ApproxQAgent(InfiniteRTAgent):
             return self.approx_Q_solve(state, t, action=action, verbose=verbose)
         elif self.solver_name == 'approx_penalized_hindsight':
             return self.hindsight_solve(state, t, action=action, tol=tol, max_iterations=max_iterations, use_pareto_cuts=use_pareto_cuts, pareto_epsilon=pareto_epsilon, core_alpha=core_alpha, parallel=parallel, max_workers=max_workers, verbose=verbose)
+        elif self.solver_name == 'direct_penalized_hindsight':
+            return self.hindsight_direct_solve(state, t, action=action, verbose=verbose)
         else:
             raise ValueError(f"Unsupported solver_name: {self.solver_name}")
     
@@ -395,35 +485,53 @@ class ApproxQAgent(InfiniteRTAgent):
 if __name__ == '__main__':
     from experiments import get_config_by_type
     from generating_function import MulticlassLinearPenaltyFunction, LinearPenaltyFunction
-    config = get_config_by_type('toy')
+    config = get_config_by_type('ejor')
     env = config.env
-    test_state = (np.array([5, 5, 0, 0, 0, 0, 0]), np.array([0, 0, 0, 0, 0, 0, 0]), np.array([1, 2]))
-    test_action = (np.array([[0, 0],
-       [0, 0],
-       [1, 1],
-       [0, 1],
-       [0, 0],
-       [0, 0],
-       [0, 0]]), np.array([0, 0, 0, 0, 0, 0, 0]))
-    coefficients = [-8.506673230703488, 20.803823305410205, 8.949007725191958, 7.035934826472743, 6.404644810547097, 6.152425741039451, 215.93249503160055, 1.6207846766501177, 8.822177032253531, 6.391172301334453, 5.765390772891202, 5.50902974495165, 5.495551566445247, -50.39648401261288, 0.9401940738773069, 17.37900433117047, 7.64933715141955, 6.100169675595545, 5.77057773706476, 5.652617245825845, 215.58932932336387, 0.7393353464647373, 7.139718662697062, 5.313030831788522, 5.010546356203956, 4.977777252780282, 4.9990414864448605, -50.7353596798275, -1821.3953403927717, 343.8795537537197, 37.55879181629673, 39.203762515666966, -1882.1410231036018, 420.5404093482836, -1877.8480092709772, 418.5805478627768, -1855.2227173131294, 419.05603024125645, -1856.1932945867225, 419.5402047398881, -1856.684018334899, 419.7162383810243, -1856.6242232883421, 419.7373714931838, -2485.5936935288996, 0.0, 11.917602076210022, -111.58132849100905, 12.07483450156613, -112.0223378787287, 18.392953186410587, -111.92085801812323, 20.67530043490731, -111.77122539770485, 21.239612150222747, -111.73123837761058, 20.45200112265013, -111.7523714897918, 190.27622164613697, 0.0, -5.72171663290405e-12, 1.4248189742238095, 0.2407531112679777, 0.15812277618748655, 0.1165364293994906, 0.10596987331830707, 0.0, -1.234773977816752e-12, 0.6824583695475585, 0.20696116719471824, 0.17714940526803324, 0.13121802252884512, 0.14178457863045593, 0.0]
+    required_bookings = [(env.regular_capacity + env.overtime_capacity) * env.discount_factor**(j) for j in range(env.planning_horizon)]
+    required_bookings[-1] = 0
+    required_bookings = np.array(required_bookings)
+    E_u_alpha = np.minimum(required_bookings, env.regular_capacity)
+    E_v_alpha = required_bookings - E_u_alpha
+    E_w_alpha = env.arrival_generator.mean_by_type
+    test_state = (np.around(E_u_alpha), np.around(E_v_alpha), np.ceil(E_w_alpha).astype(int))
+    print(test_state)
+    # test_state = (np.array([5, 5, 0, 0, 0, 0, 0]), np.array([0, 0, 0, 0, 0, 0, 0]), np.array([1, 2]))
+    # test_action = (np.array([[0, 0],
+    #    [0, 0],
+    #    [1, 1],
+    #    [0, 1],
+    #    [0, 0],
+    #    [0, 0],
+    #    [0, 0]]), np.array([0, 0, 0, 0, 0, 0, 0]))
+    # coefficients = [-8.506673230703488, 20.803823305410205, 8.949007725191958, 7.035934826472743, 6.404644810547097, 6.152425741039451, 215.93249503160055, 1.6207846766501177, 8.822177032253531, 6.391172301334453, 5.765390772891202, 5.50902974495165, 5.495551566445247, -50.39648401261288, 0.9401940738773069, 17.37900433117047, 7.64933715141955, 6.100169675595545, 5.77057773706476, 5.652617245825845, 215.58932932336387, 0.7393353464647373, 7.139718662697062, 5.313030831788522, 5.010546356203956, 4.977777252780282, 4.9990414864448605, -50.7353596798275, -1821.3953403927717, 343.8795537537197, 37.55879181629673, 39.203762515666966, -1882.1410231036018, 420.5404093482836, -1877.8480092709772, 418.5805478627768, -1855.2227173131294, 419.05603024125645, -1856.1932945867225, 419.5402047398881, -1856.684018334899, 419.7162383810243, -1856.6242232883421, 419.7373714931838, -2485.5936935288996, 0.0, 11.917602076210022, -111.58132849100905, 12.07483450156613, -112.0223378787287, 18.392953186410587, -111.92085801812323, 20.67530043490731, -111.77122539770485, 21.239612150222747, -111.73123837761058, 20.45200112265013, -111.7523714897918, 190.27622164613697, 0.0, -5.72171663290405e-12, 1.4248189742238095, 0.2407531112679777, 0.15812277618748655, 0.1165364293994906, 0.10596987331830707, 0.0, -1.234773977816752e-12, 0.6824583695475585, 0.20696116719471824, 0.17714940526803324, 0.13121802252884512, 0.14178457863045593, 0.0]
     # coefficients = None
-    # coefficients = [0]*len(coefficients)
-    generating_function = MulticlassLinearPenaltyFunction(env=env, coefficients=coefficients)
-    # generating_function = LinearPenaltyFunction(env=env, coefficients=coefficients)
+    coefficients = [0] * (
+        env.planning_horizon * 2
+        + env.num_types
+        + env.booking_window_size * env.num_types
+        + env.planning_horizon
+    )
+    # generating_function = MulticlassLinearPenaltyFunction(env=env, coefficients=coefficients)
+    generating_function = LinearPenaltyFunction(env=env, coefficients=coefficients)
     agent = ApproxQAgent(
             env=env,
             discount_factor=env.discount_factor,
             sample_path_number=256,
             generating_function=generating_function,
             sample_path_proposal=ArrivalGeneratorSamplePathProposal(),
-            solver_name='approx_penalized_hindsight',
+            solver_name='direct_penalized_hindsight',
             is_trained=True
         )
-    obj, coefficients, info = agent.benders_decomposition_train(verbose=False)
+    # obj, coefficients, info = agent.benders_decomposition_train(verbose=False)
     # print("Trained coefficients:", coefficients) # 28123
-    obj, action, info = agent.solve(test_state, t=1, action=test_action, verbose=False)
+    start = time.time()
+    obj, action, info = agent.hindsight_solve(test_state, t=1, action=None, parallel=True, verbose=False)
+    print(f"Penalized hindsight solve time: {time.time() - start} seconds")
     print("Objective from Decision model:", obj)
-    print('Action:', action)
+    start = time.time()
+    obj, action, info = agent.hindsight_direct_solve(test_state, t=1, action=None, verbose=False)
+    print(f"Direct penalized hindsight solve time: {time.time() - start} seconds")
+    print("Objective from Decision model:", obj) # 5438809.375351633
 
     # information_relaxation_cost = agent.calculate_information_relaxation_cost(test_state, sample_path)
     # print("Information relaxation cost for sample path 0:", information_relaxation_cost)

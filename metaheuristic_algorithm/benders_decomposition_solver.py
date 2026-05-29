@@ -383,12 +383,12 @@ class BendersDecompositionSolver:
                 else:
                     results = []
                     for idx, w in enumerate(active_workers):
-                        start = time.time()
+                        # start = time.time()
                         if use_pareto_cuts:
                             results.append(w.solve_pareto(action, core_point, pareto_epsilon, verbose))
                         else:
                             results.append(w.solve(action, verbose))
-                        print(f"Iteration {global_iteration}, subproblem {idx} solved in {time.time() - start:.2f}s")
+                        # print(f"Iteration {global_iteration}, subproblem {idx} solved in {time.time() - start:.2f}s")
                 print(f"Iteration {global_iteration}, subproblems solved in {time.time() - start_sub:.2f}s")
                 self._report_memory_usage(global_iteration, active_workers)
                 

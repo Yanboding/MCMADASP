@@ -690,6 +690,7 @@ def calculate_policy_costs(uid, experiment_name, policy_id, agent_name, agent_ar
     serializable_agent_args = {k: _to_jsonable(v) for k, v in runtime_agent_args.items() if k != 'grb_env'}
 
     if agent_name in {"approx_hindsight", "approx_penalized_hindsight"}:
+        print(runtime_agent_args)
         generating_function = LinearPenaltyFunction(env=env, coefficients=runtime_agent_args['penalty_coefficients'])
         runtime_agent_args.pop('penalty_coefficients')
         runtime_agent_args['generating_function'] = generating_function

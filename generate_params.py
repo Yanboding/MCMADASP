@@ -393,16 +393,16 @@ def train_penalty_coefficients(env_args, experiment_name, agent_args=None):
     print(f"Training penalty coefficients for env_uid {get_uid(env_args)} with init_state: {init_state}, sample_path_number: {sample_path_number}, agent_args: {agent_args}")
     if init_state is not None:
         init_state = tuple(np.array(item) for item in init_state)
-    required_bookings = [(env.regular_capacity + env.overtime_capacity) * env.discount_factor**(j) for j in range(env.planning_horizon)]
-    required_bookings[-1] = 0
-    required_bookings = np.array(required_bookings)
-    E_u_alpha = np.minimum(required_bookings, env.regular_capacity)
-    E_v_alpha = required_bookings - E_u_alpha
-    E_w_alpha = env.arrival_generator.mean_by_type
-    init_state = (E_u_alpha, E_v_alpha, E_w_alpha)
-    env.reset_random_seeds()  # Reset random seeds before training again to ensure the same sample paths
+    # required_bookings = [(env.regular_capacity + env.overtime_capacity) * env.discount_factor**(j) for j in range(env.planning_horizon)]
+    # required_bookings[-1] = 0
+    # required_bookings = np.array(required_bookings)
+    # E_u_alpha = np.minimum(required_bookings, env.regular_capacity)
+    # E_v_alpha = required_bookings - E_u_alpha
+    # E_w_alpha = env.arrival_generator.mean_by_type
+    # init_state = (E_u_alpha, E_v_alpha, E_w_alpha)
+    # env.reset_random_seeds()
     print(init_state)
-    obj, direct_coefficients, info = agent.benders_decomposition_train(coefficient_bound=1e4, init_state=init_state, parallel=True, verbose=False)
+    obj, direct_coefficients, info = agent.benders_decomposition_train(coefficient_bound=GRB.INFINITY, init_state=init_state, parallel=True, verbose=False)
     print('Obejctive from Benders decomposition training:', obj)
     print('Coefficients from Benders decomposition training:', direct_coefficients)
     _save_training_result(
@@ -503,18 +503,25 @@ def generate_test_paths_and_init_state(test_envs, test_sample_path_num, warm_up_
                 },
             })
         if 'approx_hindsight' in policy_id_set:
-            policies.append({
-                'policy_id': 'approx_hindsight',
-                'agent_name': 'approx_hindsight',
-                'agent_args': {
-                    'sample_path_number': 256,
-                    'current_decision_var_type': 'integer',
-                    'future_decision_var_type': 'continuous',
-                    'is_myopic': False,
-                    'penalty_ratio': 0,
-                    'is_quasi_MC': True,
-                },
-            })
+            # policies.append({
+            #     'policy_id': 'approx_hindsight',
+            #     'agent_name': 'approx_hindsight',
+            #     'agent_args': {
+            #         'sample_path_number': 256,
+            #         'current_decision_var_type': 'integer',
+            #         'future_decision_var_type': 'continuous',
+            #         'penalty_ratio': 0,
+            #         'penalty_coefficients': _zero_penalty_coefficients(env),
+            #     },
+            # })
+            policies.append(
+                _build_penalty_policy(
+                    base_agent_args=variant['agent_args'],
+                    policy_id='approx_hindsight',
+                    solver_name='approx_penalized_hindsight',
+                    penalty_coefficients= _zero_penalty_coefficients(env),
+                )
+            )
 
         direct_coefficients = _zero_penalty_coefficients(env)
         need_penalty_for_selected_policy = bool({'approx_penalized_hindsight', 'approx_Q'} & policy_id_set)
@@ -626,17 +633,17 @@ if __name__ == '__main__':
     # for experiment_name in experiments:
     #     test_envs.update(build_variation_test_env(EXPERIMENT_SPECS[experiment_name]))
     # test_envs = build_variation_test_env(EXPERIMENT_SPECS['sample_path_length_proposal_fixed'])
-    test_envs = build_variation_test_env(EXPERIMENT_SPECS['case_study'])
+    test_envs = build_variation_test_env(EXPERIMENT_SPECS['initial_state_congestion'])
     print(test_envs)
     results = generate_test_paths_and_init_state(
         test_envs=test_envs,
-        test_sample_path_num=2,
-        warm_up_periods=750,
+        test_sample_path_num=1,
+        warm_up_periods=0,
         num_periods=None,
         dat_file='table.dat',
         num_groups=998,  # divide into N groups
         is_require_penalty_coefficients=True,
-        policy_ids=['approx_penalized_hindsight', 'row_gen_alp'],
+        policy_ids=['approx_penalized_hindsight', 'approx_hindsight', 'row_gen_alp', 'myopic'],
     )
     # test_envs = build_variation_test_env(EXPERIMENT_SPECS['case_study_discount_factor'])
     # results = generate_train_env(

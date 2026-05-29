@@ -164,8 +164,8 @@ class ExperimentConfig:
         arrival_rates = [1, 2]
         l = [[(0, 1, 0), (1, booking_window_size, 100)],
              [(0, 1, 0), (1, booking_window_size, 10)]]
-        regular_capacity = 5
-        overtime_capacity = 5
+        regular_capacity = 7
+        overtime_capacity = 3
         holding_cost = [wait_time(l[i]) for i in range(len(treatment_patterns))]
         holding_cost = np.array(holding_cost).T
         treatment_pattern = str2treatment_patterns(treatment_patterns)
