@@ -653,7 +653,7 @@ def calculate_information_relexation_costs(env_args, experiment_name, train_samp
     print("Gap:", gap_stats)
     print("Relative improvement stats:", relative_improvement_stats)
 
-def calculate_policy_costs(uid, experiment_name, policy_id, agent_name, agent_args, env_args, init_state, sample_path, warm_up_periods, generating_function):
+def calculate_policy_costs(uid, experiment_name, policy_id, agent_name, agent_args, env_args, init_state, sample_path, warm_up_periods, generating_function, grb_env=None, grb_sub_envs=None):
     def _to_float(v):
         if hasattr(v, "getValue"):
             return float(v.getValue())
@@ -697,12 +697,14 @@ def calculate_policy_costs(uid, experiment_name, policy_id, agent_name, agent_ar
             runtime_agent_args.get('sample_path_proposal', None)
         )
         agent_instance = ApproxQAgent(env, discount_factor=env.discount_factor,
+                                        grb_env=grb_env,
+                                        subproblem_grb_envs=grb_sub_envs,
                                         **runtime_agent_args
                                     )
     elif agent_name == "myopic":
-        agent_instance = MyopicAgent(env, discount_factor=env.discount_factor, **runtime_agent_args)
+        agent_instance = MyopicAgent(env, discount_factor=env.discount_factor, grb_env=grb_env, **runtime_agent_args)
     elif agent_name == 'row_gen_alp':
-        agent_instance = ALPRowGenerationAgent(env, discount_factor=env.discount_factor, **runtime_agent_args)
+        agent_instance = ALPRowGenerationAgent(env, discount_factor=env.discount_factor, grb_env=grb_env, **runtime_agent_args)
     else:
         raise ValueError(f"Unsupported policy: {agent_name}")
 
@@ -831,7 +833,7 @@ def evaluate_policy_costs_with_information_relaxation(uid, experiment_name, muta
         'generating_function': generating_function,
         'penalty_ratio': 0,
         'grb_env': grb_env,
-        'grb_sub_envs': grb_sub_envs,
+        'subproblem_grb_envs': grb_sub_envs,
     }
     penalized_lowerbound_args = {
         'current_decision_var_type': 'integer',
@@ -839,7 +841,7 @@ def evaluate_policy_costs_with_information_relaxation(uid, experiment_name, muta
         'generating_function': generating_function,
         'penalty_ratio': 1,
         'grb_env': grb_env,
-        'grb_sub_envs': grb_sub_envs,
+        'subproblem_grb_envs': grb_sub_envs,
     }
 
     zero_lowerbound_instance = ApproxQAgent(env, discount_factor=env.discount_factor, **zero_lowerbound_args)
@@ -859,6 +861,8 @@ def evaluate_policy_costs_with_information_relaxation(uid, experiment_name, muta
             sample_path=sample_path,
             warm_up_periods=warm_up_periods,
             generating_function=generating_function,
+            grb_env=grb_env,
+            grb_sub_envs=grb_sub_envs,
         )
         warmup_sate = tuple(np.array(item) for item in policy_result.get('warmup_state', init_state))
         start = time.time()
@@ -1087,10 +1091,33 @@ if __name__ == '__main__':
     # for param in params:
     #     train_penalty_coefficients(**param, job_id=args.job_id)
     grb_env = acquire_grb_env({"Threads": 1}, verbose=False, wait=15)
-    grb_sub_envs = [acquire_grb_env({"Threads": 1}, verbose=False, wait=15) for _ in range(256)]
+    # Dynamically allocate a pool of Gurobi tokens (envs) for the subproblems.
+    # A Gurobi env is NOT thread-safe for concurrent optimization, so the
+    # minimum number of tokens needed equals the number of subproblems solved
+    # concurrently, i.e. the number of available CPUs. Subproblems are then
+    # partitioned across this pool and the ones sharing an env are solved
+    # sequentially (see SubproblemWorker grouping in the Benders solver), so we
+    # only hold `min(sample_path_number, num_cpus)` tokens instead of one per
+    # subproblem.
+    sample_path_number = max(
+        (spec.get('agent_args', {}).get('sample_path_number', 0)
+         for param in params
+         for spec in param.get('policy_specs', [])),
+        default=0,
+    )
+    slurm_cpus = os.environ.get("SLURM_CPUS_PER_TASK") or os.environ.get("SLURM_CPUS_ON_NODE")
+    try:
+        num_cpus = int(slurm_cpus) if slurm_cpus else (os.cpu_count() or 1)
+    except ValueError:
+        num_cpus = os.cpu_count() or 1
+    num_sub_envs = min(sample_path_number, num_cpus) if sample_path_number else 0
+    grb_sub_envs = [
+        acquire_grb_env({"Threads": 1}, verbose=False, wait=15)
+        for _ in range(num_sub_envs)
+    ]
+    print(num_sub_envs)
     failed_jobs = []
     for param in params:
-        pprint(param['env_args'])
         # coefficient_training_test(**param, grb_env=grb_env, job_id=args.job_id)
         # coefficient_out_of_sample_test(**param, grb_env=grb_env, job_id=args.job_id)
         evaluate_policy_costs_with_information_relaxation(**param, grb_env=grb_env, grb_sub_envs=grb_sub_envs, job_id=args.job_id)

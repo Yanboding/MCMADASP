@@ -24,7 +24,7 @@ ID=`echo "$LINE" | cut -d" " -f1`
 # The rest of the line:
 COMM=`echo "$LINE" | cut -d" " -f2-`
 
-METAJOB_ID=${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID}
+METAJOB_ID=${SLURM_ARRAY_JOB_ID:-${SLURM_JOB_ID:-local}}_${SLURM_ARRAY_TASK_ID:-${i1}}
 
 # ++++++++++++++++++++++  This part can be customized:  ++++++++++++++++++++++++
 #  Here:
@@ -49,7 +49,11 @@ if [[ "$COMM" == *" --params '"* ]]; then
   SUFFIX="${REST#"$PARAMS_PAYLOAD"}"
   SUFFIX="${SUFFIX#\'}"
 
-  TMP_PARAMS_FILE=$(mktemp "${TMPDIR:-/tmp}/params_${METAJOB_ID}_${ID}_XXXXXX.json")
+  TMP_PARAMS_FILE=$(mktemp "${TMPDIR:-/tmp}/params_${METAJOB_ID}_${ID}_XXXXXX")
+  if [[ -z "$TMP_PARAMS_FILE" ]]; then
+    echo "Failed to create temporary params file" >&2
+    exit 1
+  fi
   printf "%s" "$PARAMS_PAYLOAD" > "$TMP_PARAMS_FILE"
 
   COMM="${PREFIX} --params_file \"${TMP_PARAMS_FILE}\"${SUFFIX}"

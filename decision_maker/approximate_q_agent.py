@@ -51,18 +51,21 @@ class ApproxQAgent(InfiniteRTAgent):
         """Return the Gurobi env to use for the given subproblem.
 
         If a pool of pre-created environments (tokens) was supplied via
-        ``subproblem_grb_envs`` it is reused (one token per subproblem),
-        avoiding repeated token acquisition. Otherwise fall back to the
-        previous behaviour: acquire a fresh token when running in parallel,
-        or share the agent's main env when serial.
+        ``subproblem_grb_envs`` it is reused. The pool may be SMALLER than the
+        number of subproblems: subproblems are mapped onto the pool round-robin
+        (``scenario_id % pool_size``) so that the number of tokens held equals
+        the number of concurrent worker threads (typically the CPU count)
+        rather than one token per subproblem. Subproblems sharing an env are
+        solved sequentially by the Benders solver (grouped by env) to respect
+        Gurobi's lack of thread-safety for concurrent optimization.
+
+        Otherwise fall back to the previous behaviour: acquire a fresh token
+        when running in parallel, or share the agent's main env when serial.
         """
         if self.subproblem_grb_envs is not None:
-            if scenario_id >= len(self.subproblem_grb_envs):
-                raise ValueError(
-                    f"Not enough Gurobi tokens supplied: need at least "
-                    f"{self.sample_path_number}, got {len(self.subproblem_grb_envs)}."
-                )
-            return self.subproblem_grb_envs[scenario_id]
+            if len(self.subproblem_grb_envs) == 0:
+                raise ValueError("subproblem_grb_envs was supplied but is empty.")
+            return self.subproblem_grb_envs[scenario_id % len(self.subproblem_grb_envs)]
         if parallel:
             return acquire_grb_env(default_params, verbose=False, wait=InfiniteRTAgent.TOKEN_WAIT)
         return self.grb_env
@@ -217,7 +220,8 @@ class ApproxQAgent(InfiniteRTAgent):
                                                 subproblem_id=scenario_id,
                                                 objective_builder_fn=None,
                                                 cut_gradient_fn=None,
-                                                verbose=verbose))
+                                                verbose=verbose,
+                                                grb_env=grb_env))
                 print(f'Finished build {scenario_id} with sample path length {len(self.delta[scenario_id])} in {time.time()-start} seconds')
             self.coefficient_model  = BendersDecompositionSolver(master_model=master_model,
                                                                  workers=workers,
@@ -348,7 +352,7 @@ class ApproxQAgent(InfiniteRTAgent):
             for omega in range(self.sample_path_number):
                 start = time.time()
                 print(f'Start build {omega} with sample path length {len(self.delta[omega])}')
-                worker_env = self._get_subproblem_env(omega, {"Threads": 0}, parallel)
+                worker_env = self._get_subproblem_env(omega, {"Threads": 1}, parallel)
                 sub_model, action_linking_constraints, worker_state_linking_constraints = self.hindsight_subproblem_builder_fn(
                     env=worker_env,
                     scenario_id=omega,
@@ -358,6 +362,7 @@ class ApproxQAgent(InfiniteRTAgent):
                     link_rows=action_linking_constraints,
                     state_linking_constraints=worker_state_linking_constraints,
                     subproblem_id=omega,
+                    grb_env=worker_env,
                 ))
                 print(f'Finished build {omega} in {time.time() - start} seconds')
 
@@ -401,7 +406,7 @@ class ApproxQAgent(InfiniteRTAgent):
                     use_pareto_cuts=False,
                     pareto_epsilon=1e-4,
                     core_alpha=None,
-                    parallel=False,
+                    parallel=True,
                     max_workers=None,
                     verbose=False):
         if self.solver_name == 'approx_Q':

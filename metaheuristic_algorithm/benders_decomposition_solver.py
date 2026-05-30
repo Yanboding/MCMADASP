@@ -26,6 +26,52 @@ def _resolve_parallel_workers(max_workers, worker_count):
     return max(1, min(os.cpu_count() or 1, worker_count))
 
 
+def _group_workers_by_env(workers):
+    """Partition workers into groups that share a Gurobi environment.
+
+    A Gurobi ``Env`` is not thread-safe for concurrent optimization, so two
+    workers whose models live in the same env must not be solved at the same
+    time. Returning one list per distinct env lets the caller solve each group
+    sequentially (on a single thread) while running different groups in
+    parallel. Workers without a recorded env (``grb_env is None``) are treated
+    as having their own private env, preserving the original one-thread-per-
+    worker parallelism.
+    """
+    groups = {}
+    order = []
+    for worker in workers:
+        env = getattr(worker, "grb_env", None)
+        key = id(env) if env is not None else ("__private__", id(worker))
+        if key not in groups:
+            groups[key] = []
+            order.append(key)
+        groups[key].append(worker)
+    return [groups[key] for key in order]
+
+
+def _dispatch_subproblem_solves(env_groups, active_workers, solve_one, executor):
+    """Solve every worker via ``solve_one(worker)``, respecting env grouping.
+
+    Workers in the same env group are solved sequentially on a single thread,
+    while different groups run concurrently on ``executor`` (a Gurobi ``Env`` is
+    not thread-safe for concurrent optimization). When ``executor`` is ``None``
+    the solves run sequentially. Results are returned in ``active_workers``
+    order. Any ``RuntimeError`` raised while starting worker threads propagates
+    to the caller so it can fall back to a sequential strategy.
+    """
+    if executor is None:
+        result_by_worker = {id(w): solve_one(w) for group in env_groups for w in group}
+    else:
+        def run_group(group):
+            return [(w, solve_one(w)) for w in group]
+
+        result_by_worker = {}
+        for future in [executor.submit(run_group, group) for group in env_groups]:
+            for worker, result in future.result():
+                result_by_worker[id(worker)] = result
+    return [result_by_worker[id(w)] for w in active_workers]
+
+
 def benders_callback(model, where):
     if where == GRB.Callback.MIPSOL:
         x_vars = model._action_vars
@@ -34,7 +80,9 @@ def benders_callback(model, where):
         tol = model._tol
         use_pareto_cuts = model._use_pareto
         pareto_epsilon = model._pareto_epsilon
-        max_workers = _resolve_parallel_workers(model._max_workers, len(workers[:len(theta_vars)]))
+        active_workers = workers[:len(theta_vars)]
+        env_groups = _group_workers_by_env(active_workers)
+        max_workers = _resolve_parallel_workers(model._max_workers, len(env_groups))
 
         # 1. Get current candidate solution (xk)
         x_vals = np.array(model.cbGetSolution(x_vars))
@@ -51,25 +99,21 @@ def benders_callback(model, where):
 
         current_core = model._core_point
 
-        # 3. Solve subproblems (Parallel)
+        # 3. Solve subproblems. Workers sharing a Gurobi env are solved
+        # sequentially within one group task; different env groups run in
+        # parallel (Gurobi envs are not thread-safe for concurrent optimize).
+        if use_pareto_cuts:
+            solve_one = lambda w: w.solve_pareto(x_vals, current_core, pareto_epsilon)
+        else:
+            solve_one = lambda w: w.solve(x_vals)
         try:
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                if use_pareto_cuts:
-                    futures = [executor.submit(w.solve_pareto, x_vals, current_core, pareto_epsilon)
-                               for w in workers[:len(theta_vars)]]
-                else:
-                    futures = [executor.submit(w.solve, x_vals)
-                               for w in workers[:len(theta_vars)]]
-                results = [f.result() for f in futures]
+                results = _dispatch_subproblem_solves(env_groups, active_workers, solve_one, executor)
         except RuntimeError as exc:
             if "can't start new thread" not in str(exc):
                 raise
             print("Falling back to sequential Benders subproblem solves: unable to start worker threads.")
-            if use_pareto_cuts:
-                results = [w.solve_pareto(x_vals, current_core, pareto_epsilon)
-                           for w in workers[:len(theta_vars)]]
-            else:
-                results = [w.solve(x_vals) for w in workers[:len(theta_vars)]]
+            results = _dispatch_subproblem_solves(env_groups, active_workers, solve_one, None)
 
         # 4. Process results and add Lazy Constraints
         for i, (is_feasible, obj_val, duals) in enumerate(results):
@@ -95,9 +139,14 @@ class SubproblemWorker:
     """
 
     def __init__(self, model, link_rows, state_linking_constraints, subproblem_id, verbose: bool = True,
-                 objective_builder_fn=None, cut_gradient_fn=None):
+                 objective_builder_fn=None, cut_gradient_fn=None, grb_env=None):
         # Build the model and linking constraints inside THIS env.
         self.model = model
+        # The Gurobi environment this worker's model lives in. Workers that
+        # share an env must never be optimized concurrently (a Gurobi Env is
+        # not thread-safe), so the solver groups workers by this env and solves
+        # each group sequentially while running different envs in parallel.
+        self.grb_env = grb_env
         # Normalize link_rows to a flat list of scalar Constr objects so that
         # per-element attributes like .index/.Pi/.FarkasDual/.RHS work uniformly.
         # The input may be an MConstr, a plain list of Constr, or a mixed list
@@ -344,6 +393,68 @@ class BendersDecompositionSolver:
         )
         return master_memory, subproblem_memories
 
+    def _solve_all_subproblems(self, active_workers, env_groups, solve_one, executor, global_iteration):
+        """Solve every subproblem for the current master action.
+
+        Uses the parallel env-group dispatch when ``executor`` is available and
+        transparently falls back to a sequential solve (with per-subproblem
+        timing) if worker threads cannot be started. Returns the results aligned
+        to ``active_workers`` together with the (possibly disabled) executor.
+        """
+        if executor is not None:
+            try:
+                results = _dispatch_subproblem_solves(env_groups, active_workers, solve_one, executor)
+                return results, executor
+            except RuntimeError as exc:
+                if "can't start new thread" not in str(exc):
+                    raise
+                print("Falling back to sequential Benders subproblem solves: unable to start worker threads.")
+                executor.shutdown(wait=True, cancel_futures=True)
+                executor = None
+
+        results = []
+        for idx, worker in enumerate(active_workers):
+            start = time.time()
+            results.append(solve_one(worker))
+            print(f"Iteration {global_iteration}, subproblem {idx} solved in {time.time() - start:.2f}s")
+        return results, executor
+
+    def _build_cuts(self, results, active_workers, action):
+        """Convert subproblem results into Benders cuts and checkpoint records.
+
+        Returns ``(all_feasible, feasibility_cuts, optimality_cuts, cut_records,
+        cost_to_go)`` where ``cost_to_go`` is the sum of feasible subproblem
+        objectives (the caller averages it across scenarios).
+        """
+        is_min = self.master_model.ModelSense == GRB.MINIMIZE
+        action_values = np.asarray(action, dtype=float)
+        feasibility_cuts, optimality_cuts, cut_records = [], [], []
+        cost_to_go = 0.0
+        all_feasible = True
+        for worker, (is_feasible, v, duals) in zip(active_workers, results):
+            scenario_id = worker.subproblem_id
+            # theta[s] >= v + duals^T (x - x_k)  (>= flips to <= for maximization)
+            cut_expr = v + duals @ (self.action_vars - action)
+            if not is_feasible:
+                all_feasible = False
+                feasibility_cuts.append(cut_expr >= 0)
+                cut_records.append(
+                    self._cut_to_record('feasibility', scenario_id, duals, v, action_values, 'ge')
+                )
+            else:
+                cost_to_go += v
+                if is_min:
+                    optimality_cuts.append(self.theta_vars[scenario_id] >= cut_expr)
+                    cut_records.append(
+                        self._cut_to_record('optimality', scenario_id, duals, v, action_values, 'ge')
+                    )
+                else:
+                    optimality_cuts.append(self.theta_vars[scenario_id] <= cut_expr)
+                    cut_records.append(
+                        self._cut_to_record('optimality', scenario_id, duals, v, action_values, 'le')
+                    )
+        return all_feasible, feasibility_cuts, optimality_cuts, cut_records, cost_to_go
+
     def solve(self, 
               init_solution=None,
               is_hard_bound=False,
@@ -360,9 +471,19 @@ class BendersDecompositionSolver:
         info = {}
         lower_bound = -GRB.INFINITY
         upper_bound = GRB.INFINITY
-        core_point = None  # For Pareto cuts; could be average of previous actions, will initialize after first master solve
-        resolved_max_workers = _resolve_parallel_workers(max_workers, len(self.workers[:self.theta_vars.shape[0]]))
+        core_point = None  # For Pareto cuts; initialized after the first master solve.
+        is_min = self.master_model.ModelSense == GRB.MINIMIZE
+        scenario_count = self.theta_vars.shape[0]
+
+        # The worker set and their env grouping are fixed for the whole solve,
+        # so compute them once. Workers sharing an env must be solved
+        # sequentially (envs are not thread-safe for concurrent optimize), which
+        # makes the env group, not the individual worker, the unit of parallelism.
+        active_workers = self.workers[:scenario_count]
+        env_groups = _group_workers_by_env(active_workers)
+        resolved_max_workers = _resolve_parallel_workers(max_workers, len(env_groups))
         executor = ThreadPoolExecutor(max_workers=resolved_max_workers) if parallel else None
+
         checkpoint_state = self._load_cut_checkpoint(resume_checkpoint_path)
         if checkpoint_state.get('core_point') is not None:
             core_point = np.asarray(checkpoint_state['core_point'], dtype=float)
@@ -375,7 +496,7 @@ class BendersDecompositionSolver:
                 global_iteration = iteration_offset + iteration
                 start = time.time()
                 if init_solution is not None and iteration == 1:
-                    # Use the provided initial solution instead of solving the master
+                    # Use the provided initial solution instead of solving the master.
                     action = np.asarray(init_solution, dtype=float)
                     core_point = copy.deepcopy(action)
                     print(f"Iteration {global_iteration}, using init_solution (skipping master solve)")
@@ -387,164 +508,86 @@ class BendersDecompositionSolver:
                     action = self.action_vars.X
                     if core_point is None:
                         core_point = copy.deepcopy(action)
-                
-                    if self.master_model.ModelSense == GRB.MINIMIZE:
+                    if is_min:
                         lower_bound = self.master_model.ObjVal
                     else:
                         upper_bound = self.master_model.ObjVal
 
-                # Ask all workers to solve for this action
                 print(f"Iteration {global_iteration}, action from master: {action.tolist()}")
-                # futures = [ex.submit(w.solve, action_t, verbose) for w in workers]
-                start_sub = time.time()
-                active_workers = self.workers[:self.theta_vars.shape[0]]  # Only use as many workers as we have theta variables (scenarios)
-                # Execute subproblems
-                if parallel:
-                    assert executor is not None
-                    try:
-                        if use_pareto_cuts:
-                            futures = [executor.submit(w.solve_pareto, action, core_point, pareto_epsilon, verbose)
-                                       for w in active_workers]
-                        else:
-                            futures = [executor.submit(w.solve, action, verbose) for w in active_workers]
-                        results = [f.result() for f in futures]
-                    except RuntimeError as exc:
-                        if "can't start new thread" not in str(exc):
-                            raise
-                        print("Falling back to sequential Benders subproblem solves: unable to start worker threads.")
-                        executor.shutdown(wait=True, cancel_futures=True)
-                        executor = None
-                        parallel = False
-                        results = []
-                        for idx, w in enumerate(active_workers):
-                            start = time.time()
-                            if use_pareto_cuts:
-                                results.append(w.solve_pareto(action, core_point, pareto_epsilon, verbose))
-                            else:
-                                results.append(w.solve(action, verbose))
-                            print(f"Iteration {global_iteration}, subproblem {idx} solved in {time.time() - start:.2f}s")
+
+                # Solve every subproblem for this candidate action.
+                if use_pareto_cuts:
+                    solve_one = lambda w: w.solve_pareto(action, core_point, pareto_epsilon, verbose)
                 else:
-                    results = []
-                    for idx, w in enumerate(active_workers):
-                        start = time.time()
-                        if use_pareto_cuts:
-                            results.append(w.solve_pareto(action, core_point, pareto_epsilon, verbose))
-                        else:
-                            results.append(w.solve(action, verbose))
-                        print(f"Iteration {global_iteration}, subproblem {idx} solved in {time.time() - start:.2f}s")
+                    solve_one = lambda w: w.solve(action, verbose)
+                start_sub = time.time()
+                results, executor = self._solve_all_subproblems(
+                    active_workers, env_groups, solve_one, executor, global_iteration
+                )
+                parallel = executor is not None
                 print(f"Iteration {global_iteration}, subproblems solved in {time.time() - start_sub:.2f}s")
                 self._report_memory_usage(global_iteration, active_workers)
-                
-                feasibility_cuts = []
-                optimality_cuts = []
-                new_cut_records = []
-                cost_to_go_estimation = 0.0
-                all_feasible = True
 
-                for idx, (is_feasible, v, duals) in enumerate(results):
-                    scenario_id = active_workers[idx].subproblem_id
-                    action_values = np.asarray(action, dtype=float)
+                all_feasible, feasibility_cuts, optimality_cuts, new_cut_records, cost_to_go_estimation = \
+                    self._build_cuts(results, active_workers, action)
 
-                    if not is_feasible:
-                        all_feasible = False
-                        cut_expr = v + duals @ (self.action_vars - action)
-                        feasibility_cuts.append(cut_expr >= 0)
-                        new_cut_records.append(
-                            self._cut_to_record(
-                                kind='feasibility',
-                                scenario_id=scenario_id,
-                                coefficients=duals,
-                                rhs_value=v,
-                                action_values=action_values,
-                                sense='ge',
-                            )
-                        )
-                        # Note: We continue the loop to collect all possible feasibility cuts
-                        # rather than breaking, which helps the Master converge faster.
-                    else:
-                        cost_to_go_estimation += v
-                        cut_rhs = v + duals @ (self.action_vars - action)
-                        if self.master_model.ModelSense == GRB.MINIMIZE:
-                            optimality_cuts.append(self.theta_vars[scenario_id] >= cut_rhs)
-                            new_cut_records.append(
-                                self._cut_to_record(
-                                    kind='optimality',
-                                    scenario_id=scenario_id,
-                                    coefficients=duals,
-                                    rhs_value=v,
-                                    action_values=action_values,
-                                    sense='ge',
-                                )
-                            )
-                        else:
-                            optimality_cuts.append(self.theta_vars[scenario_id] <= cut_rhs)
-                            new_cut_records.append(
-                                self._cut_to_record(
-                                    kind='optimality',
-                                    scenario_id=scenario_id,
-                                    coefficients=duals,
-                                    rhs_value=v,
-                                    action_values=action_values,
-                                    sense='le',
-                                )
-                            )
-                
                 if not all_feasible:
+                    # Some scenario infeasible: add feasibility cuts and repeat.
                     print(f"Iteration {global_iteration}, adding {len(feasibility_cuts)} feasibility cuts")
-                    # Some scenario infeasible: add feasibility cuts and repeat
-                    self.master_model.addConstrs((feasibility_cuts[i] for i in range(len(feasibility_cuts))),
-                                                name=f"feas_cut_{global_iteration}_")
+                    self.master_model.addConstrs(
+                        (feasibility_cuts[i] for i in range(len(feasibility_cuts))),
+                        name=f"feas_cut_{global_iteration}_",
+                    )
+                    print('-' * 20)
+                    continue
+
+                # All scenarios feasible: add optimality cuts and refresh bounds.
+                print(f"Iteration {global_iteration}, adding {len(optimality_cuts)} optimality cuts")
+                self.master_model.addConstrs(
+                    (optimality_cuts[i] for i in range(len(optimality_cuts))),
+                    name=f"opt_cut_{global_iteration}_",
+                )
+                cost_to_go_estimation /= scenario_count  # Average cost-to-go across scenarios for reporting.
+                first_stage_cost = self.imm_cost.getValue() if hasattr(self.imm_cost, 'getValue') else float(self.imm_cost or 0.0)
+                if is_min:
+                    upper_bound = first_stage_cost + cost_to_go_estimation
                 else:
-                    print(f"Iteration {global_iteration}, adding {len(optimality_cuts)} optimality cuts")
-                    # All scenarios feasible: add optimality cuts and continue
-                    self.master_model.addConstrs((optimality_cuts[i] for i in range(len(optimality_cuts))), name=f"opt_cut_{global_iteration}_")
-                    cost_to_go_estimation = cost_to_go_estimation / self.theta_vars.shape[0]  # Average cost-to-go across scenarios for reporting
-                    first_stage_cost = self.imm_cost.getValue() if hasattr(self.imm_cost, 'getValue') else float(self.imm_cost or 0.0)
-                    if self.master_model.ModelSense == GRB.MINIMIZE:
-                        upper_bound = first_stage_cost + cost_to_go_estimation
+                    lower_bound = first_stage_cost + cost_to_go_estimation
+
+                # If an init_solution was supplied, its evaluated cost is a valid
+                # bound on the master's optimum. Add it once as a hard constraint
+                # to prune the master's search space.
+                if init_solution is not None and iteration == 1 and is_hard_bound:
+                    master_obj_expr = self.master_model.getObjective()
+                    if is_min:
+                        self.master_model.addConstr(master_obj_expr <= upper_bound, name="init_solution_upper_bound")
+                        print(f"Added hard master upper bound from init_solution: {upper_bound}")
                     else:
-                        lower_bound = first_stage_cost + cost_to_go_estimation
+                        self.master_model.addConstr(master_obj_expr >= lower_bound, name="init_solution_lower_bound")
+                        print(f"Added hard master lower bound from init_solution: {lower_bound}")
 
-                    # If an init_solution was supplied, its evaluated cost is a
-                    # valid bound on the master's optimum. Add it once as a hard
-                    # constraint to prune the master's search space.
-                    if init_solution is not None and iteration == 1 and is_hard_bound:
-                        master_obj_expr = self.master_model.getObjective()
-                        if self.master_model.ModelSense == GRB.MINIMIZE:
-                            self.master_model.addConstr(
-                                master_obj_expr <= upper_bound,
-                                name="init_solution_upper_bound",
-                            )
-                            print(f"Added hard master upper bound from init_solution: {upper_bound}")
-                        else:
-                            self.master_model.addConstr(
-                                master_obj_expr >= lower_bound,
-                                name="init_solution_lower_bound",
-                            )
-                            print(f"Added hard master lower bound from init_solution: {lower_bound}")
+                # Update core point AFTER we have a valid x_k from the master.
+                core_point = self.update_core_point(core_point, action, iteration, alpha=core_alpha)
 
-                    # update core point AFTER you have a valid x_k from the master
-                    core_point = self.update_core_point(core_point, action, iteration, alpha=core_alpha)
+                print(f"UB: {upper_bound}, LB: {lower_bound}, Gap: {abs(upper_bound - lower_bound)}, "
+                      f"First-stage cost: {first_stage_cost}, Cost-to-go estimate: {cost_to_go_estimation}")
+                checkpoint_state = {
+                    'iteration': global_iteration,
+                    'lower_bound': None if np.isinf(lower_bound) else float(lower_bound),
+                    'upper_bound': None if np.isinf(upper_bound) else float(upper_bound),
+                    'core_point': None if core_point is None else np.asarray(core_point, dtype=float).tolist(),
+                    'cuts': cut_records + new_cut_records,
+                }
+                self._save_cut_checkpoint(checkpoint_path, checkpoint_state)
+                cut_records.extend(new_cut_records)
 
-                    print(f"UB: {upper_bound}, LB: {lower_bound}, Gap: {abs(upper_bound - lower_bound)}, First-stage cost: {first_stage_cost}, Cost-to-go estimate: {cost_to_go_estimation}")
-                    checkpoint_state = {
-                        'iteration': global_iteration,
-                        'lower_bound': None if np.isinf(lower_bound) else float(lower_bound),
-                        'upper_bound': None if np.isinf(upper_bound) else float(upper_bound),
-                        'core_point': None if core_point is None else np.asarray(core_point, dtype=float).tolist(),
-                        'cuts': cut_records + new_cut_records,
-                    }
-                    self._save_cut_checkpoint(checkpoint_path, checkpoint_state)
-                    cut_records.extend(new_cut_records)
-                    # Average the future cost across scenarios like in direct solution
-                    if abs(upper_bound - lower_bound) < tol:
-                        info = {}
-                        break
-                    if lower_bound > upper_bound:
-                        print("Error: Lower bound exceeded upper bound (check dual rays/bounds).")
-                        # save more state here for debugging
-                        info = {'debug': 'lower_bound_exceeded_upper_bound'}
-                        break
+                if abs(upper_bound - lower_bound) < tol:
+                    info = {}
+                    break
+                if lower_bound > upper_bound:
+                    print("Error: Lower bound exceeded upper bound (check dual rays/bounds).")
+                    info = {'debug': 'lower_bound_exceeded_upper_bound'}
+                    break
                 print('-' * 20)
             else:
                 print('Max iterations reached')

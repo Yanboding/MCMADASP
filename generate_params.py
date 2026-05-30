@@ -506,29 +506,24 @@ def generate_test_paths_and_init_state(test_envs, test_sample_path_num, warm_up_
                 'agent_args': {
                 },
             })
-        if 'approx_hindsight' in policy_id_set:
-            policies.append({
-                'policy_id': 'approx_hindsight',
-                'agent_name': 'approx_hindsight',
-                'agent_args': {
-                    'sample_path_number': 256,
-                    'current_decision_var_type': 'integer',
-                    'future_decision_var_type': 'continuous',
-                    'is_myopic': False,
-                    'penalty_ratio': 0,
-                    'is_quasi_MC': True,
-                },
-            })
 
         direct_coefficients = _zero_penalty_coefficients(env)
-        need_penalty_for_selected_policy = bool({'approx_penalized_hindsight', 'approx_Q'} & policy_id_set)
-        if is_require_penalty_coefficients and need_penalty_for_selected_policy:
+        if is_require_penalty_coefficients:
             agent_args = copy.deepcopy(variant['agent_args'])
-            print(agent_args)
             _, direct_coefficients, _ = train_penalty_coefficients(
                 env_args=env_args,
                 agent_args=agent_args,
                 experiment_name=experiment_name,
+            )
+
+        if 'approx_hindsight' in policy_id_set:
+            policies.append(
+                _build_penalty_policy(
+                    base_agent_args=variant['agent_args'],
+                    policy_id='approx_hindsight',
+                    solver_name='approx_penalized_hindsight',
+                    penalty_coefficients= _zero_penalty_coefficients(env),
+                )
             )
 
         if 'approx_penalized_hindsight' in policy_id_set:
@@ -634,13 +629,13 @@ if __name__ == '__main__':
     print(test_envs)
     results = generate_test_paths_and_init_state(
         test_envs=test_envs,
-        test_sample_path_num=1,
+        test_sample_path_num=1000,
         warm_up_periods=750,
         num_periods=None,
         dat_file='table.dat',
-        num_groups=998,  # divide into N groups
+        num_groups=70,  # divide into N groups
         is_require_penalty_coefficients=True,
-        policy_ids=['approx_penalized_hindsight', 'row_gen_alp', 'myopic'],
+        policy_ids=['approx_hindsight', 'row_gen_alp', 'myopic'],
     )
     # test_envs = build_variation_test_env(EXPERIMENT_SPECS['case_study'])
     # results = generate_train_env(
