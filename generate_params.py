@@ -41,14 +41,18 @@ def _load_cached_training_result(experiment_name, file_name, env_args, agent_arg
     if not os.path.exists(file_path):
         return None
     target_uid = _training_uid(env_args, agent_args)
+    print(f"Looking for cached training result with uid={target_uid} in {file_path}...")
     cached_record = None
     with open(file_path, 'r') as f:
         for line in f:
             if not line.strip():
                 continue
             record = json.loads(line)
+            print(record)
             if record.get('uid') == target_uid:
                 cached_record = record
+    print('cached_record')
+    print(cached_record)
     return cached_record
 
 
@@ -630,19 +634,17 @@ if __name__ == '__main__':
     print(test_envs)
     results = generate_test_paths_and_init_state(
         test_envs=test_envs,
-        test_sample_path_num=2,
+        test_sample_path_num=1,
         warm_up_periods=750,
         num_periods=None,
         dat_file='table.dat',
         num_groups=998,  # divide into N groups
         is_require_penalty_coefficients=True,
-        policy_ids=['approx_penalized_hindsight', 'row_gen_alp'],
+        policy_ids=['approx_penalized_hindsight', 'row_gen_alp', 'myopic'],
     )
-    # test_envs = build_variation_test_env(EXPERIMENT_SPECS['case_study_discount_factor'])
+    # test_envs = build_variation_test_env(EXPERIMENT_SPECS['case_study'])
     # results = generate_train_env(
     #     test_envs=test_envs,
-    #     dat_file='table.dat'
-    # )
     #     dat_file='table.dat'
     # )
 

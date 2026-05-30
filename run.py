@@ -806,7 +806,7 @@ def calculate_policy_costs(uid, experiment_name, policy_id, agent_name, agent_ar
 
     return result
 
-def evaluate_policy_costs_with_information_relaxation(uid, experiment_name, mutate_val, init_state, sample_path, warm_up_periods, env_args, policy_specs, penalty_coefficients, group_id, grb_env, job_id):
+def evaluate_policy_costs_with_information_relaxation(uid, experiment_name, mutate_val, init_state, sample_path, warm_up_periods, env_args, policy_specs, penalty_coefficients, group_id, grb_env, grb_sub_envs, job_id):
     '''
     This function evaluates the costs of different policies and their gaps to the information relaxation lower bounds.
     '''
@@ -831,6 +831,7 @@ def evaluate_policy_costs_with_information_relaxation(uid, experiment_name, muta
         'generating_function': generating_function,
         'penalty_ratio': 0,
         'grb_env': grb_env,
+        'grb_sub_envs': grb_sub_envs,
     }
     penalized_lowerbound_args = {
         'current_decision_var_type': 'integer',
@@ -838,6 +839,7 @@ def evaluate_policy_costs_with_information_relaxation(uid, experiment_name, muta
         'generating_function': generating_function,
         'penalty_ratio': 1,
         'grb_env': grb_env,
+        'grb_sub_envs': grb_sub_envs,
     }
 
     zero_lowerbound_instance = ApproxQAgent(env, discount_factor=env.discount_factor, **zero_lowerbound_args)
@@ -1003,23 +1005,39 @@ def train_penalty_coefficients(env_args, experiment_name, sample_path_number, mu
     config_for_train = get_config_by_type('infinite_custom', args=env_args)
     env = config_for_train.env
     generating_function = LinearPenaltyFunction(env=env)
-    materialized_agent_args = dict(agent_args)
-    if 'sample_path_length_proposal' in materialized_agent_args:
-        materialized_agent_args['sample_path_length_proposal'] = build_proposal(
-            materialized_agent_args['sample_path_length_proposal']
+    inner = dict(agent_args.get('agent_args', {}))
+    inner['generating_function'] = generating_function
+    if 'sample_path_length_proposal' in inner:
+        inner['sample_path_length_proposal'] = build_proposal(
+            inner['sample_path_length_proposal']
         )
-    agent = InfinitePenalizedSAAAgent(env=env, discount_factor=env.discount_factor,
-                                      sample_path_number=sample_path_number,
-                                      current_decision_var_type='continuous',
-                                      future_decision_var_type='continuous',
-                                      generating_function=generating_function,
-                                      is_myopic=False,
-                                      **materialized_agent_args)
-    init_state = None
+    pprint(inner)
+    sample_path_number = agent_args['agent_args']['sample_path_number']
+    # Pre-create one Gurobi token (env) per subproblem so ApproxQAgent can
+    # reuse them instead of acquiring/releasing a token for every subproblem.
+    subproblem_grb_envs = [
+        acquire_grb_env({"Threads": 1}, verbose=False)
+        for _ in range(sample_path_number)
+    ]
+    agent = ApproxQAgent(env=env, discount_factor=env.discount_factor,
+                                      subproblem_grb_envs=subproblem_grb_envs,
+                                      **inner)
+    init_state = None if 'init_state' not in env_args.get('reset_params', {}) else env_args['reset_params']['init_state']
+    sample_path_number = agent_args['agent_args']['sample_path_number']
     print(f"Training penalty coefficients for env_uid {get_uid(env_args)} with init_state: {init_state}, sample_path_number: {sample_path_number}, agent_args: {agent_args}")
+    if init_state is not None:
+        init_state = tuple(np.array(item) for item in init_state)
+    required_bookings = [(env.regular_capacity + env.overtime_capacity) * env.discount_factor**(j) for j in range(env.planning_horizon)]
+    required_bookings[-1] = 0
+    required_bookings = np.array(required_bookings)
+    E_u_alpha = np.minimum(required_bookings, env.regular_capacity)
+    E_v_alpha = required_bookings - E_u_alpha
+    E_w_alpha = env.arrival_generator.mean_by_type
+    init_state = (E_u_alpha, E_v_alpha, E_w_alpha)
     env.reset_random_seeds()  # Reset random seeds before training again to ensure the same sample paths
-    obj, direct_coefficients, info = agent.benders_decomposition_train(coefficient_bound=GRB.INFINITY, init_state = init_state, parallel=True, verbose=False)
-    print('Obejctive from Benders decomposition training:', obj) # Full MILP:39050.05571672409 # LP: 21524.097118570513
+    print(init_state)
+    obj, direct_coefficients, info = agent.benders_decomposition_train(coefficient_bound=1e4, init_state=init_state, parallel=True, verbose=False)
+    print('Obejctive from Benders decomposition training:', obj)
     print('Coefficients from Benders decomposition training:', direct_coefficients)
     _save_training_result(
         experiment_name=experiment_name,
@@ -1066,11 +1084,13 @@ if __name__ == '__main__':
     # evaluate_information_relaxation_cost(**params, generating_function=generating_function, job_id=args.job_id)
     # calculate_penalized_lowerbound_with_same_initial_state(**params, lowerbound_args=lowerbound_args, generating_function=generating_function, job_id=args.job_id)
     # calculate_information_relexation_costs(**params, train_sample_path_num=30,test_sample_path_num=8, job_id=args.job_id)
-    # train_penalty_coefficients(**params, job_id=args.job_id)
-    grb_env = acquire_grb_env({"Threads": 0}, verbose=False, wait=15)
+    # for param in params:
+    #     train_penalty_coefficients(**param, job_id=args.job_id)
+    grb_env = acquire_grb_env({"Threads": 1}, verbose=False, wait=15)
+    grb_sub_envs = [acquire_grb_env({"Threads": 1}, verbose=False, wait=15) for _ in range(256)]
     failed_jobs = []
     for param in params:
         pprint(param['env_args'])
         # coefficient_training_test(**param, grb_env=grb_env, job_id=args.job_id)
         # coefficient_out_of_sample_test(**param, grb_env=grb_env, job_id=args.job_id)
-        evaluate_policy_costs_with_information_relaxation(**param, grb_env=grb_env, job_id=args.job_id)
+        evaluate_policy_costs_with_information_relaxation(**param, grb_env=grb_env, grb_sub_envs=grb_sub_envs, job_id=args.job_id)

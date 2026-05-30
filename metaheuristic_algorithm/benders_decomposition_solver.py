@@ -10,6 +10,22 @@ from utils import solve_and_handle_errors, set_link_rhs
 from concurrent.futures import ThreadPoolExecutor
 
 
+def _resolve_parallel_workers(max_workers, worker_count):
+    if worker_count <= 0:
+        return 1
+    if max_workers is not None:
+        return max(1, min(int(max_workers), worker_count))
+
+    slurm_cpus = os.environ.get("SLURM_CPUS_PER_TASK") or os.environ.get("SLURM_CPUS_ON_NODE")
+    if slurm_cpus is not None:
+        try:
+            return max(1, min(int(slurm_cpus), worker_count))
+        except ValueError:
+            pass
+
+    return max(1, min(os.cpu_count() or 1, worker_count))
+
+
 def benders_callback(model, where):
     if where == GRB.Callback.MIPSOL:
         x_vars = model._action_vars
@@ -18,7 +34,7 @@ def benders_callback(model, where):
         tol = model._tol
         use_pareto_cuts = model._use_pareto
         pareto_epsilon = model._pareto_epsilon
-        max_workers = model._max_workers
+        max_workers = _resolve_parallel_workers(model._max_workers, len(workers[:len(theta_vars)]))
 
         # 1. Get current candidate solution (xk)
         x_vals = np.array(model.cbGetSolution(x_vars))
@@ -36,14 +52,24 @@ def benders_callback(model, where):
         current_core = model._core_point
 
         # 3. Solve subproblems (Parallel)
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        try:
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                if use_pareto_cuts:
+                    futures = [executor.submit(w.solve_pareto, x_vals, current_core, pareto_epsilon)
+                               for w in workers[:len(theta_vars)]]
+                else:
+                    futures = [executor.submit(w.solve, x_vals)
+                               for w in workers[:len(theta_vars)]]
+                results = [f.result() for f in futures]
+        except RuntimeError as exc:
+            if "can't start new thread" not in str(exc):
+                raise
+            print("Falling back to sequential Benders subproblem solves: unable to start worker threads.")
             if use_pareto_cuts:
-                futures = [executor.submit(w.solve_pareto, x_vals, current_core, pareto_epsilon)
+                results = [w.solve_pareto(x_vals, current_core, pareto_epsilon)
                            for w in workers[:len(theta_vars)]]
             else:
-                futures = [executor.submit(w.solve, x_vals)
-                           for w in workers[:len(theta_vars)]]
-            results = [f.result() for f in futures]
+                results = [w.solve(x_vals) for w in workers[:len(theta_vars)]]
 
         # 4. Process results and add Lazy Constraints
         for i, (is_feasible, obj_val, duals) in enumerate(results):
@@ -335,7 +361,8 @@ class BendersDecompositionSolver:
         lower_bound = -GRB.INFINITY
         upper_bound = GRB.INFINITY
         core_point = None  # For Pareto cuts; could be average of previous actions, will initialize after first master solve
-        executor = ThreadPoolExecutor(max_workers=max_workers) if parallel else None
+        resolved_max_workers = _resolve_parallel_workers(max_workers, len(self.workers[:self.theta_vars.shape[0]]))
+        executor = ThreadPoolExecutor(max_workers=resolved_max_workers) if parallel else None
         checkpoint_state = self._load_cut_checkpoint(resume_checkpoint_path)
         if checkpoint_state.get('core_point') is not None:
             core_point = np.asarray(checkpoint_state['core_point'], dtype=float)
@@ -374,12 +401,28 @@ class BendersDecompositionSolver:
                 # Execute subproblems
                 if parallel:
                     assert executor is not None
-                    if use_pareto_cuts:
-                        futures = [executor.submit(w.solve_pareto, action, core_point, pareto_epsilon, verbose)
-                                   for w in active_workers]
-                    else:
-                        futures = [executor.submit(w.solve, action, verbose) for w in active_workers]
-                    results = [f.result() for f in futures]
+                    try:
+                        if use_pareto_cuts:
+                            futures = [executor.submit(w.solve_pareto, action, core_point, pareto_epsilon, verbose)
+                                       for w in active_workers]
+                        else:
+                            futures = [executor.submit(w.solve, action, verbose) for w in active_workers]
+                        results = [f.result() for f in futures]
+                    except RuntimeError as exc:
+                        if "can't start new thread" not in str(exc):
+                            raise
+                        print("Falling back to sequential Benders subproblem solves: unable to start worker threads.")
+                        executor.shutdown(wait=True, cancel_futures=True)
+                        executor = None
+                        parallel = False
+                        results = []
+                        for idx, w in enumerate(active_workers):
+                            start = time.time()
+                            if use_pareto_cuts:
+                                results.append(w.solve_pareto(action, core_point, pareto_epsilon, verbose))
+                            else:
+                                results.append(w.solve(action, verbose))
+                            print(f"Iteration {global_iteration}, subproblem {idx} solved in {time.time() - start:.2f}s")
                 else:
                     results = []
                     for idx, w in enumerate(active_workers):
