@@ -345,6 +345,25 @@ class SimulateEvaluationResult:
         ALP & \({self.policy_costs[(approx_penalized_hindsight_approx_penalized_hindsight, 'row_gen_alp')].confidence_interval()}\) & \({self.zero_penalized_improvement[(approx_penalized_hindsight_approx_penalized_hindsight, 'row_gen_alp')].confidence_interval()}\) & \({self.penalized_improvement[(approx_penalized_hindsight_approx_penalized_hindsight, 'row_gen_alp')].confidence_interval()}\) & \({self.solving_time_per_state[(approx_penalized_hindsight_approx_penalized_hindsight, 'row_gen_alp')].mean}\) \\
         """
         return table
+    
+    def initial_state_congestion_distribution_table(self):
+        opc_20 = '347989b0945decac3603070c5485b3f8'
+        opc_50 = 'd371745175d939eb1e1cb94afa2d0651'
+        opc_80 = '49a2d779c9d5c1c801c5a6f9fa26c0a3'
+        table = f"""
+        Penalized Hindsight & & & & & & \\\\
+        \quad Policy cost & \({self.policy_costs[(opc_20, 'approx_penalized_hindsight')].confidence_interval()}\) & & \({self.policy_costs[(opc_50, 'approx_penalized_hindsight')].confidence_interval()}\) & &\({self.policy_costs[(opc_80, 'approx_penalized_hindsight')].confidence_interval()}\) & \\\\
+        \quad Zero penalty gap & \({self.zero_penalized_gap[(opc_20, 'approx_penalized_hindsight')].confidence_interval()}\) & \({self.zero_penalized_improvement[(opc_20, 'approx_penalized_hindsight')].confidence_interval()}\) & \({self.zero_penalized_gap[(opc_50, 'approx_penalized_hindsight')].confidence_interval()}\) & \({self.zero_penalized_improvement[(opc_50, 'approx_penalized_hindsight')].confidence_interval()}\) & \({self.zero_penalized_gap[(opc_80, 'approx_penalized_hindsight')].confidence_interval()}\) & \({self.zero_penalized_improvement[(opc_80, 'approx_penalized_hindsight')].confidence_interval()}\)\\\\
+        \quad Max penalty gap & \({self.penalized_gap[(opc_20, 'approx_penalized_hindsight')].confidence_interval()}\) & \({self.penalized_improvement[(opc_20, 'approx_penalized_hindsight')].confidence_interval()}\) & \({self.penalized_gap[(opc_50, 'approx_penalized_hindsight')].confidence_interval()}\) & \({self.penalized_improvement[(opc_50, 'approx_penalized_hindsight')].confidence_interval()}\) & \({self.penalized_gap[(opc_80, 'approx_penalized_hindsight')].confidence_interval()}\) & \({self.penalized_improvement[(opc_80, 'approx_penalized_hindsight')].confidence_interval()}\)\\\\
+        Approximate Q Greedy & & & & & & \\\\
+        \quad Policy cost & \({self.policy_costs[(opc_20, 'approx_Q')].confidence_interval()}\) & & \({self.policy_costs[(opc_50, 'approx_Q')].confidence_interval()}\) & &\({self.policy_costs[(opc_80, 'approx_Q')].confidence_interval()}\) & \\\\
+        \quad Zero penalty gap & \({self.zero_penalized_gap[(opc_20, 'approx_Q')].confidence_interval()}\) & \({self.zero_penalized_improvement[(opc_20, 'approx_Q')].confidence_interval()}\) & \({self.zero_penalized_gap[(opc_50, 'approx_Q')].confidence_interval()}\) & \({self.zero_penalized_improvement[(opc_50, 'approx_Q')].confidence_interval()}\) & \({self.zero_penalized_gap[(opc_80, 'approx_Q')].confidence_interval()}\) & \({self.zero_penalized_improvement[(opc_80, 'approx_Q')].confidence_interval()}\)\\\\
+        \quad Max penalty gap & \({self.penalized_gap[(opc_20, 'approx_Q')].confidence_interval()}\) & \({self.penalized_improvement[(opc_20, 'approx_Q')].confidence_interval()}\) & \({self.penalized_gap[(opc_50, 'approx_Q')].confidence_interval()}\) & \({self.penalized_improvement[(opc_50, 'approx_Q')].confidence_interval()}\) & \({self.penalized_gap[(opc_80, 'approx_Q')].confidence_interval()}\) & \({self.penalized_improvement[(opc_80, 'approx_Q')].confidence_interval()}\)\\\\
+        ALP & & & & & & \\\\
+        \quad Policy cost & \({self.policy_costs[(opc_20, 'row_gen_alp')].confidence_interval()}\) & & \({self.policy_costs[(opc_50, 'row_gen_alp')].confidence_interval()}\) & &\({self.policy_costs[(opc_80, 'row_gen_alp')].confidence_interval()}\) & \\\\
+        \quad Zero penalty gap & \({self.zero_penalized_gap[(opc_20, 'row_gen_alp')].confidence_interval()}\) & \({self.zero_penalized_improvement[(opc_20, 'row_gen_alp')].confidence_interval()}\) & \({self.zero_penalized_gap[(opc_50, 'row_gen_alp')].confidence_interval()}\) & \({self.zero_penalized_improvement[(opc_50, 'row_gen_alp')].confidence_interval()}\) & \({self.zero_penalized_gap[(opc_80, 'row_gen_alp')].confidence_interval()}\) & \({self.zero_penalized_improvement[(opc_80, 'row_gen_alp')].confidence_interval()}\)\\\\
+        \quad Max penalty gap & \({self.penalized_gap[(opc_20, 'row_gen_alp')].confidence_interval()}\) & \({self.penalized_improvement[(opc_20, 'row_gen_alp')].confidence_interval()}\) & \({self.penalized_gap[(opc_50, 'row_gen_alp')].confidence_interval()}\) & \({self.penalized_improvement[(opc_50, 'row_gen_alp')].confidence_interval()}\) & \({self.penalized_gap[(opc_80, 'row_gen_alp')].confidence_interval()}\) & \({self.penalized_improvement[(opc_80, 'row_gen_alp')].confidence_interval()}\)\\\\"""
+        return table
 
 
 def run_improvement_plots(base_results_dir, file_pattern, env_info, group_ids, is_reuse=False):
@@ -366,7 +385,7 @@ def run_improvement_plots(base_results_dir, file_pattern, env_info, group_ids, i
 
 if __name__ == "__main__":
 
-    base_results_dir = os.path.join('.', 'experiments', 'results', 'solver_comparison')
+    base_results_dir = os.path.join('.', 'experiments', 'results', 'initial_state_congestion')
     file_pattern = '[0-9]*.jsonl'
     env_info = {
         'waiting_time_targets': [1]*2,
@@ -399,15 +418,16 @@ if __name__ == "__main__":
     # pprint(ser.waiting_time_target_ptc_by_day)
 
     # ser.generate_table()
-    print('self.after_warmup_policy_costs')
-    print(ser.after_warmup_policy_costs)
+    print('self.policy_costs')
+    print(ser.policy_costs)
     print('penalized_improvement')
     print(ser.penalized_improvement)
     print('zero_improvement')
     print(ser.zero_penalized_improvement)
     print('Solving time per state')
     print(ser.solving_time_per_state)
-    print(ser.solver_compare_table())
+    print(ser.group_ids)
+    print(ser.initial_state_congestion_distribution_table())
 
     # To inspect one experiment interactively, instantiate SimulateEvaluationResult
     # with a specific directory and use the helper methods below.

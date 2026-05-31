@@ -41,14 +41,18 @@ def _load_cached_training_result(experiment_name, file_name, env_args, agent_arg
     if not os.path.exists(file_path):
         return None
     target_uid = _training_uid(env_args, agent_args)
+    print(f"Looking for cached training result with uid={target_uid} in {file_path}...")
     cached_record = None
     with open(file_path, 'r') as f:
         for line in f:
             if not line.strip():
                 continue
             record = json.loads(line)
+            print(record)
             if record.get('uid') == target_uid:
                 cached_record = record
+    print('cached_record')
+    print(cached_record)
     return cached_record
 
 
@@ -340,6 +344,12 @@ EXPERIMENT_SPECS = {
             val_args=[0.95],
             mutate=_mutate_discount_factor,
         ),
+        ExperimentSpec(
+            name='steady_state',
+            config_type='toy',
+            val_args=[0.],
+            mutate=_mutate_initial_state_congestion,
+        ),
     ]
 }
 
@@ -502,18 +512,17 @@ def generate_test_paths_and_init_state(test_envs, test_sample_path_num, warm_up_
                 'agent_args': {
                 },
             })
+
+        direct_coefficients = _zero_penalty_coefficients(env)
+        if is_require_penalty_coefficients:
+            agent_args = copy.deepcopy(variant['agent_args'])
+            _, direct_coefficients, _ = train_penalty_coefficients(
+                env_args=env_args,
+                agent_args=agent_args,
+                experiment_name=experiment_name,
+            )
+
         if 'approx_hindsight' in policy_id_set:
-            # policies.append({
-            #     'policy_id': 'approx_hindsight',
-            #     'agent_name': 'approx_hindsight',
-            #     'agent_args': {
-            #         'sample_path_number': 256,
-            #         'current_decision_var_type': 'integer',
-            #         'future_decision_var_type': 'continuous',
-            #         'penalty_ratio': 0,
-            #         'penalty_coefficients': _zero_penalty_coefficients(env),
-            #     },
-            # })
             policies.append(
                 _build_penalty_policy(
                     base_agent_args=variant['agent_args'],
@@ -521,17 +530,6 @@ def generate_test_paths_and_init_state(test_envs, test_sample_path_num, warm_up_
                     solver_name='approx_penalized_hindsight',
                     penalty_coefficients= _zero_penalty_coefficients(env),
                 )
-            )
-
-        direct_coefficients = _zero_penalty_coefficients(env)
-        need_penalty_for_selected_policy = bool({'approx_penalized_hindsight', 'approx_Q'} & policy_id_set)
-        if is_require_penalty_coefficients and need_penalty_for_selected_policy:
-            agent_args = copy.deepcopy(variant['agent_args'])
-            print(agent_args)
-            _, direct_coefficients, _ = train_penalty_coefficients(
-                env_args=env_args,
-                agent_args=agent_args,
-                experiment_name=experiment_name,
             )
 
         if 'approx_penalized_hindsight' in policy_id_set:
@@ -633,23 +631,21 @@ if __name__ == '__main__':
     # for experiment_name in experiments:
     #     test_envs.update(build_variation_test_env(EXPERIMENT_SPECS[experiment_name]))
     # test_envs = build_variation_test_env(EXPERIMENT_SPECS['sample_path_length_proposal_fixed'])
-    test_envs = build_variation_test_env(EXPERIMENT_SPECS['initial_state_congestion'])
+    test_envs = build_variation_test_env(EXPERIMENT_SPECS['steady_state'])
     print(test_envs)
     results = generate_test_paths_and_init_state(
         test_envs=test_envs,
-        test_sample_path_num=1,
-        warm_up_periods=0,
+        test_sample_path_num=5000,
+        warm_up_periods=100,
         num_periods=None,
         dat_file='table.dat',
-        num_groups=998,  # divide into N groups
+        num_groups=70,  # divide into N groups
         is_require_penalty_coefficients=True,
         policy_ids=['approx_penalized_hindsight', 'approx_hindsight', 'row_gen_alp', 'myopic'],
     )
-    # test_envs = build_variation_test_env(EXPERIMENT_SPECS['case_study_discount_factor'])
+    # test_envs = build_variation_test_env(EXPERIMENT_SPECS['case_study'])
     # results = generate_train_env(
     #     test_envs=test_envs,
-    #     dat_file='table.dat'
-    # )
     #     dat_file='table.dat'
     # )
 
