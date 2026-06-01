@@ -8,7 +8,7 @@ from utils import get_solution_value, solve_and_handle_errors, clean_value
 
 class ALPRowGenerationAgent(InfiniteRTAgent):
 
-    def __init__(self, env, discount_factor, V=None, Q=None, coefficients=None, pretrain=False, decay_factor=0.95, grb_env=None):
+    def __init__(self, env, discount_factor, V=None, Q=None, coefficients=None, pretrain=False, decay_factor=0.999, grb_env=None):
         super().__init__(env, discount_factor, V, Q, grb_env=grb_env)
         self.is_trained = False
         self.decay_factor = decay_factor
@@ -124,7 +124,7 @@ class ALPRowGenerationAgent(InfiniteRTAgent):
         master_model.setParam("FeasibilityTol", 1e-9)
         master_model.setParam("OptimalityTol", 1e-9)
         master_model.setParam('OutputFlag', 0)
-        BigM = 1e4
+        BigM = 1e5
         self.W_0_var = master_model.addVar(vtype=GRB.CONTINUOUS, lb=-GRB.INFINITY, ub=BigM, name=f"W_0")
         self.U_vars = np.array([master_model.addVar(vtype=GRB.CONTINUOUS, lb=0, ub=BigM, name=f"U_{j}") for j in range(self.env.planning_horizon)])
         self.V_vars = np.array([master_model.addVar(vtype=GRB.CONTINUOUS, lb=0, ub=BigM, name=f"V_{j}") for j in range(self.env.planning_horizon)])

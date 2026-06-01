@@ -478,7 +478,7 @@ def _build_penalty_policy(base_agent_args, policy_id, solver_name, penalty_coeff
     return policy
 
 
-def generate_test_paths_and_init_state(test_envs, test_sample_path_num, warm_up_periods=0, num_periods=None, dat_file=None, num_groups=None, is_require_penalty_coefficients=True, policy_ids=None):
+def generate_test_paths_and_init_state(test_envs, test_sample_path_num, warm_up_periods=0, num_periods=None, dat_file=None, num_groups=None, is_require_penalty_coefficients=True, is_require_alp_coefficients=False, policy_ids=None):
     '''
     Inital state is considered as period 1. sample path will start from period 2.
 
@@ -495,6 +495,17 @@ def generate_test_paths_and_init_state(test_envs, test_sample_path_num, warm_up_
         env = get_config_by_type('infinite_custom', args=env_args).env
         print(f"Processing env_uid: {env_uid}, experiment_name: {experiment_name}, mutate_val: {mutate_val}")
 
+        direct_coefficients = _zero_penalty_coefficients(env)
+        if is_require_penalty_coefficients:
+            agent_args = copy.deepcopy(variant['agent_args'])
+            _, direct_coefficients, _ = train_penalty_coefficients(
+                env_args=env_args,
+                agent_args=agent_args,
+                experiment_name=experiment_name,
+            )
+        if is_require_alp_coefficients:
+            _, alp_coefficients = train_alp_coefficients(env_args=env_args, experiment_name=experiment_name)
+        
         policies = []
         if 'row_gen_alp' in policy_id_set:
             _, alp_coefficients = train_alp_coefficients(env_args=env_args, experiment_name=experiment_name)
@@ -512,16 +523,6 @@ def generate_test_paths_and_init_state(test_envs, test_sample_path_num, warm_up_
                 'agent_args': {
                 },
             })
-
-        direct_coefficients = _zero_penalty_coefficients(env)
-        if is_require_penalty_coefficients:
-            agent_args = copy.deepcopy(variant['agent_args'])
-            _, direct_coefficients, _ = train_penalty_coefficients(
-                env_args=env_args,
-                agent_args=agent_args,
-                experiment_name=experiment_name,
-            )
-
         if 'approx_hindsight' in policy_id_set:
             policies.append(
                 _build_penalty_policy(
@@ -587,6 +588,7 @@ def generate_test_paths_and_init_state(test_envs, test_sample_path_num, warm_up_
                 "mutate_val": mutate_val,
                 **params,
                 "penalty_coefficients": direct_coefficients,
+                'alp_coefficients': alp_coefficients if is_require_alp_coefficients else None,
                 "group_id": env_uid,
                 "policy_specs": policies,
             }
@@ -626,22 +628,23 @@ def generate_train_env(test_envs, dat_file=None):
 
 
 if __name__ == '__main__':
-    # test_envs = {}
-    # experiments = list(EXPERIMENT_SPECS.keys())
-    # for experiment_name in experiments:
-    #     test_envs.update(build_variation_test_env(EXPERIMENT_SPECS[experiment_name]))
+    test_envs = {}
+    experiments = ['high_priority_proportion', 'high_priority_waiting_time_penalty', 'initial_state_congestion', 'low_priority_waiting_time_target']
+    for experiment_name in experiments:
+        test_envs.update(build_variation_test_env(EXPERIMENT_SPECS[experiment_name]))
     # test_envs = build_variation_test_env(EXPERIMENT_SPECS['sample_path_length_proposal_fixed'])
-    test_envs = build_variation_test_env(EXPERIMENT_SPECS['steady_state'])
+    # test_envs = build_variation_test_env(EXPERIMENT_SPECS['steady_state'])
     print(test_envs)
     results = generate_test_paths_and_init_state(
         test_envs=test_envs,
         test_sample_path_num=5000,
-        warm_up_periods=100,
+        warm_up_periods=0,
         num_periods=None,
         dat_file='table.dat',
         num_groups=998,  # divide into N groups
         is_require_penalty_coefficients=True,
-        policy_ids=['approx_penalized_hindsight', 'approx_hindsight', 'row_gen_alp', 'myopic'],
+        is_require_alp_coefficients=True,
+        policy_ids=[],
     )
     # test_envs = build_variation_test_env(EXPERIMENT_SPECS['case_study'])
     # results = generate_train_env(

@@ -940,7 +940,7 @@ def coefficient_training_test(uid, experiment_name, env_args, group_id, grb_env,
     with open(output_file, 'a') as f:
         f.write(json.dumps(result) + '\n')
 
-def coefficient_out_of_sample_test(uid, experiment_name, mutate_val, env_args, penalty_coefficients, init_state, sample_path, warm_up_periods, group_id, grb_env, job_id, alp_coefficients):
+def coefficient_out_of_sample_test(uid, experiment_name, mutate_val, env_args, penalty_coefficients, init_state, sample_path, warm_up_periods, group_id, grb_env, job_id, alp_coefficients, policy_specs):
     '''
     This function tests the out-of-sample performance of the trained coefficients by evaluating the penalized lower bound and zero-penalty lower bound on same initial state but different sample path that were not seen during training.
     '''
@@ -948,41 +948,50 @@ def coefficient_out_of_sample_test(uid, experiment_name, mutate_val, env_args, p
     config_for_train = get_config_by_type('infinite_custom', args=env_args)
     env = config_for_train.env
     generating_function = LinearPenaltyFunction(env=env, coefficients=penalty_coefficients)
-    zero_penalized_args = {
+    zero_lowerbound_args = {
         'current_decision_var_type': 'integer',
         'future_decision_var_type': 'continuous',
-        'is_myopic': False,
-        'is_include_discount_factor': False,
-        'sample_path': sample_path[warm_up_periods:],
         'generating_function': generating_function,
         'penalty_ratio': 0,
         'grb_env': grb_env,
     }
-    penalized_args = {
+    penalized_lowerbound_args = {
         'current_decision_var_type': 'integer',
         'future_decision_var_type': 'continuous',
-        'is_myopic': False,
-        'is_include_discount_factor': False,
-        'sample_path': sample_path[warm_up_periods:],
         'generating_function': generating_function,
         'penalty_ratio': 1,
         'grb_env': grb_env,
     }
+
     ALP_args = {
-        
+        'coefficients': alp_coefficients,
+        'grb_env': grb_env,
     }
-    zero_penalized_agent = InfinitePenalizedSAAAgent(env=env, discount_factor=env.discount_factor, **zero_penalized_args)
-    penalized_agent = InfinitePenalizedSAAAgent(env=env, discount_factor=env.discount_factor, **penalized_args)
-    zero_penalized_information_relaxation_cost, _, _ = zero_penalized_agent.direct_solve(test_state, t=1)
-    penalized_information_relaxation_cost, _, _ = penalized_agent.direct_solve(test_state, t=1)
+
+    zero_lowerbound_instance = ApproxQAgent(env, discount_factor=env.discount_factor, **zero_lowerbound_args)
+    penalized_lowerbound_instance = ApproxQAgent(env, discount_factor=env.discount_factor, **penalized_lowerbound_args)
+    alp_instance = ALPRowGenerationAgent(env, discount_factor=env.discount_factor, **ALP_args)
+    sample_path = np.array(sample_path)
+    start = time.time()
+    print(test_state)
+    zero_information_relaxation_cost = zero_lowerbound_instance.calculate_information_relaxation_cost(test_state, sample_path=sample_path[warm_up_periods:])
+    print(f"Zero information relaxation cost computed in {time.time() - start:.1f} seconds: {zero_information_relaxation_cost}")
+    start = time.time()
+    penalized_information_relaxation_cost = penalized_lowerbound_instance.calculate_information_relaxation_cost(test_state, sample_path=sample_path[warm_up_periods:])
+    print(f"Penalized information relaxation cost computed in {time.time() - start:.1f} seconds: {penalized_information_relaxation_cost}")
+    start = time.time()
+    alp_cost, _, _ = alp_instance.solve(test_state, t=1)
+    print(f"ALP bound computed in {time.time() - start:.1f} seconds: {alp_cost}")
     result = {
             'uid': uid,
             'group_id': group_id,
             'experiment_name': experiment_name,
             'mutate_val': mutate_val,
             'penalized_lower_bound_objective': penalized_information_relaxation_cost,
-            'zero_penalized_lower_bound_objective': zero_penalized_information_relaxation_cost,
-            'gap_between_penalized_and_zero': penalized_information_relaxation_cost - zero_penalized_information_relaxation_cost,
+            'zero_penalized_lower_bound_objective': zero_information_relaxation_cost,
+            'alp_bound': alp_cost,
+            'gap_between_penalized_and_zero': penalized_information_relaxation_cost - zero_information_relaxation_cost,
+            'gap_between_penalized_and_alp': penalized_information_relaxation_cost - alp_cost,
             'coefficients': penalty_coefficients,
         }
     output_file = os.path.join('experiments', 'results', experiment_name, f'{job_id}.jsonl')
@@ -1115,16 +1124,16 @@ if __name__ == '__main__':
     except ValueError:
         num_cpus = os.cpu_count() or 1
     num_sub_envs = min(sample_path_number, num_cpus, 2) if sample_path_number else 0
-    grb_sub_envs = [
-        acquire_grb_env({"Threads": 1}, verbose=False, wait=15)
-        for _ in range(num_sub_envs)
-    ]
+    # grb_sub_envs = [
+    #     acquire_grb_env({"Threads": 1}, verbose=False, wait=15)
+    #     for _ in range(num_sub_envs)
+    # ]
     failed_jobs = []
     for param in params:
         # coefficient_training_test(**param, grb_env=grb_env, job_id=args.job_id)
         coefficient_out_of_sample_test(**param, grb_env=grb_env, job_id=args.job_id)
-        try:
-            evaluate_policy_costs_with_information_relaxation(**param, grb_env=grb_env, grb_sub_envs=grb_sub_envs, job_id=args.job_id)
-        except Exception as e:
-            print(f"Error in evaluate_policy_costs_with_information_relaxation for param {param}: {e}")
-            failed_jobs.append((param, str(e)))
+        # try:
+        #     evaluate_policy_costs_with_information_relaxation(**param, grb_env=grb_env, grb_sub_envs=grb_sub_envs, job_id=args.job_id)
+        # except Exception as e:
+        #     print(f"Error in evaluate_policy_costs_with_information_relaxation for param {param}: {e}")
+        #     failed_jobs.append((param, str(e)))

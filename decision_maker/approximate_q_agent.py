@@ -210,7 +210,6 @@ class ApproxQAgent(InfiniteRTAgent):
         if self.coefficient_model is None:
             master_model, coefficient_vars, theta_vars = self.train_master_builder_fn(coefficient_bound)
             master_model.update()
-            print('master_model', master_model.ModelSense, GRB.MAXIMIZE)
             workers = []
             for scenario_id in range(self.sample_path_number):
                 start = time.time()
