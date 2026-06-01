@@ -639,7 +639,7 @@ if __name__ == '__main__':
         warm_up_periods=100,
         num_periods=None,
         dat_file='table.dat',
-        num_groups=70,  # divide into N groups
+        num_groups=998,  # divide into N groups
         is_require_penalty_coefficients=True,
         policy_ids=['approx_penalized_hindsight', 'approx_hindsight', 'row_gen_alp', 'myopic'],
     )

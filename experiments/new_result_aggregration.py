@@ -385,7 +385,7 @@ def run_improvement_plots(base_results_dir, file_pattern, env_info, group_ids, i
 
 if __name__ == "__main__":
 
-    base_results_dir = os.path.join('.', 'experiments', 'results', 'initial_state_congestion')
+    base_results_dir = os.path.join('.', 'experiments', 'results', 'steady_state')
     file_pattern = '[0-9]*.jsonl'
     env_info = {
         'waiting_time_targets': [1]*2,

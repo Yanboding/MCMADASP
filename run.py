@@ -968,6 +968,9 @@ def coefficient_out_of_sample_test(uid, experiment_name, mutate_val, env_args, p
         'penalty_ratio': 1,
         'grb_env': grb_env,
     }
+    ALP_args = {
+        
+    }
     zero_penalized_agent = InfinitePenalizedSAAAgent(env=env, discount_factor=env.discount_factor, **zero_penalized_args)
     penalized_agent = InfinitePenalizedSAAAgent(env=env, discount_factor=env.discount_factor, **penalized_args)
     zero_penalized_information_relaxation_cost, _, _ = zero_penalized_agent.direct_solve(test_state, t=1)
@@ -1057,6 +1060,7 @@ def train_penalty_coefficients(env_args, experiment_name, sample_path_number, mu
 
     return obj, direct_coefficients, info
 if __name__ == '__main__':
+    print('Pass')
     parser = argparse.ArgumentParser(description="Example of using argparse to pass in a list of lists.")
     parser.add_argument('--params', help='Input JSON-encoded list of lists', type=str)
     parser.add_argument('--params_file', help='Path to JSON file containing params payload', type=str)
@@ -1072,7 +1076,6 @@ if __name__ == '__main__':
 
     if isinstance(params, dict):
         params = [params]
-
     # alp_train(**params, job_id=args.job_id)
     #experiment(**params, job_id=args.job_id)
     #value_function_experiment(**params, job_id=args.job_id)
@@ -1111,14 +1114,17 @@ if __name__ == '__main__':
         num_cpus = int(slurm_cpus) if slurm_cpus else (os.cpu_count() or 1)
     except ValueError:
         num_cpus = os.cpu_count() or 1
-    num_sub_envs = min(sample_path_number, num_cpus) if sample_path_number else 0
+    num_sub_envs = min(sample_path_number, num_cpus, 2) if sample_path_number else 0
     grb_sub_envs = [
         acquire_grb_env({"Threads": 1}, verbose=False, wait=15)
         for _ in range(num_sub_envs)
     ]
-    print(num_sub_envs)
     failed_jobs = []
     for param in params:
         # coefficient_training_test(**param, grb_env=grb_env, job_id=args.job_id)
-        # coefficient_out_of_sample_test(**param, grb_env=grb_env, job_id=args.job_id)
-        evaluate_policy_costs_with_information_relaxation(**param, grb_env=grb_env, grb_sub_envs=grb_sub_envs, job_id=args.job_id)
+        coefficient_out_of_sample_test(**param, grb_env=grb_env, job_id=args.job_id)
+        try:
+            evaluate_policy_costs_with_information_relaxation(**param, grb_env=grb_env, grb_sub_envs=grb_sub_envs, job_id=args.job_id)
+        except Exception as e:
+            print(f"Error in evaluate_policy_costs_with_information_relaxation for param {param}: {e}")
+            failed_jobs.append((param, str(e)))

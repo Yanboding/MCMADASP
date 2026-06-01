@@ -355,7 +355,6 @@ class ApproxQAgent(InfiniteRTAgent):
             self.workers = []
             for omega in range(self.sample_path_number):
                 start = time.time()
-                print(f'Start build {omega} with sample path length {len(self.delta[omega])}')
                 worker_env = self._get_subproblem_env(omega, {"Threads": 1}, parallel)
                 sub_model, action_linking_constraints, worker_state_linking_constraints = self.hindsight_subproblem_builder_fn(
                     env=worker_env,
