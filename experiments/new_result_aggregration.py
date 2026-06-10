@@ -198,12 +198,10 @@ class SimulateEvaluationResult:
             self.group_ids.append(group_id)
         self.policy_costs[(group_id, policy_id)] += data['total_cost']
         # use the first loaded policy as the information relaxation benchmark
-        if self.information_relaxation_id is None:
-            self.information_relaxation_id = policy_id
-        if policy_id == self.information_relaxation_id:
-            self.zero_penalized_information_relaxation_cost[group_id] += data['zero_information_relaxation_cost']
-            self.penalized_information_relaxation_cost[group_id] += data['penalized_information_relaxation_cost']
-            self.gap_to_information_relaxation[group_id] += data['penalized_information_relaxation_cost'] - data['zero_information_relaxation_cost']
+        self.information_relaxation_id = policy_id
+        self.zero_penalized_information_relaxation_cost[(group_id, policy_id)] += data['zero_information_relaxation_cost']
+        self.penalized_information_relaxation_cost[(group_id, policy_id)] += data['penalized_information_relaxation_cost']
+        self.gap_to_information_relaxation[(group_id, policy_id)] += data['penalized_information_relaxation_cost'] - data['zero_information_relaxation_cost']
         self.zero_penalized_gap[(group_id, policy_id)] += data['gap_to_zero_information_relaxation']
         self.penalized_gap[(group_id, policy_id)] += data['gap_to_penalized_information_relaxation']
         if self.number_of_periods is None:
@@ -215,7 +213,7 @@ class SimulateEvaluationResult:
         # becarful abount the warm-up period.
         costs_after_warmup = data['costs'][warm_up_periods:] if len(data['costs']) > warm_up_periods else data['costs']
 
-        self.after_warmup_policy_costs[(group_id, policy_id)] += sum(cost * (0.99 ** t) for t, cost in enumerate(costs_after_warmup))
+        self.after_warmup_policy_costs[(group_id, policy_id)] += sum(cost for t, cost in enumerate(costs_after_warmup))
         
         scheduled_patients = np.array(data["scheduled_patients"])[warm_up_periods:].sum(axis=0) if len(data["scheduled_patients"]) > warm_up_periods else np.array(data["scheduled_patients"]).sum(axis=0)
         
@@ -394,7 +392,7 @@ if __name__ == "__main__":
     config = get_config_by_type('ejor')
     env = config.env
     waiting_time_targets = [env.holding_cost.get_waiting_target(i) for i in range(env.num_types)]
-    base_results_dir = os.path.join('.', 'experiments', 'results', 'case_study')
+    base_results_dir = os.path.join('.', 'experiments', 'results', 'case_study_095')
     file_pattern = '[0-9]*.jsonl'
     # group_ids = ['73d11360affe39305e7716cf5c42ac04', '841708e72300000ddfd948daf08d6805', 'a3202d39ed34711b47ecebb72aabad43']
     # run_improvement_plots(
@@ -408,14 +406,22 @@ if __name__ == "__main__":
             base_results_dir,
             file_pattern,
             env,
-            is_reuse=True,
+            is_reuse=False,
         )
     
     # print(ser.last_decision_period_distribution_table())
     print('Summary table')
     print(ser.performance_summary_table())
+    print('ser.zero_penalized_gap')
     pprint(ser.zero_penalized_gap)
+    print('ser.penalized_gap')
+    pprint(ser.penalized_gap)
+    print('ser.after_warmup_policy_costs')
     pprint(ser.after_warmup_policy_costs)
+    print('ser.zero_penalized_information_relaxation_cost')
+    pprint(ser.zero_penalized_information_relaxation_cost)
+    print('ser.penalized_information_relaxation_cost')
+    pprint(ser.penalized_information_relaxation_cost)
     #print(ser.format_table())
     #pprint(ser.waiting_time_target_ptc_by_day)
     #pprint(ser.waiting_time_target_ptc_by_type_day)

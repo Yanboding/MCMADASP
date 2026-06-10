@@ -586,72 +586,6 @@ def calculate_information_relaxation_cost(env, env_args, experiment_name, lowerb
     with open(output_file, 'a') as f:  # 'a' will create the file if not present
         f.write(json.dumps(res) + '\n')
     return res
-    
-
-def _evaluate_one_scenario(task):
-    """Top-level worker for ProcessPoolExecutor — must be module-level for pickling.
-    Each process builds its own env/Gurobi env so nothing is shared across workers.
-    """
-    env_args, experiment_name, coefficients, init_state, sample_path, job_id = task
-    config = get_config_by_type(case_type='infinite_custom', args=env_args)
-    env = config.env
-    generating_function = LinearPenaltyFunction(env, coefficients=coefficients)
-    zero_args     = {'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous',
-                     'is_myopic': False, 'is_include_discount_factor': False, 'penalty_ratio': 0}
-    penalized_args = {'current_decision_var_type': 'integer', 'future_decision_var_type': 'continuous',
-                      'is_myopic': False, 'is_include_discount_factor': False, 'penalty_ratio': 1}
-    zero_res     = caclaulte_information_relexation_cost(env, env_args, experiment_name, zero_args,     generating_function, init_state, sample_path, job_id)
-    penalized_res = caclaulte_information_relexation_cost(env, env_args, experiment_name, penalized_args, generating_function, init_state, sample_path, job_id)
-    gap = penalized_res['penalized_cost'] - zero_res['penalized_cost']
-    return gap, penalized_res['penalized_cost'], zero_res['penalized_cost']
-
-
-def calculate_information_relexation_costs(env_args, experiment_name, train_sample_path_num, test_sample_path_num, job_id, num_workers=None):
-    # ---------- Train penalty coefficients (sequential) ----------
-    config = get_config_by_type(case_type='infinite_custom', args=env_args)
-    env = config.env
-    generating_function = LinearPenaltyFunction(env=env)
-    t0 = time.time()
-    agent = InfinitePenalizedSAAAgent(env=env, discount_factor=env.discount_factor, sample_path_number=train_sample_path_num,
-                                      generating_function=generating_function, is_myopic=False)
-    obj, coefficients, info = agent.reformulate_train(coefficient_bound=GRB.INFINITY)
-    print(f"Training time: {time.time() - t0:.1f}s")
-
-    # ---------- Pre-generate all test scenarios in the main process ----------
-    # (preserves reproducibility / deterministic RNG order)
-    scenarios = []
-    for _ in range(test_sample_path_num):
-        init_state  = env.generate_initial_state()
-        sample_path = env.reset_arrivals()
-        scenarios.append((env_args, experiment_name, coefficients,
-                          init_state, sample_path, job_id))
-
-    # ---------- Parallel evaluation ----------
-    penalized_lowerbound_stats = RunningStats()
-    zero_penalized_lowerbound_stats = RunningStats()
-    gap_stats = RunningStats()
-    n_workers = num_workers or min(test_sample_path_num, (os.cpu_count() or 1))
-    with ProcessPoolExecutor(max_workers=1) as executor:
-        futures = {executor.submit(_evaluate_one_scenario, task): i
-                   for i, task in enumerate(scenarios)}
-        for future in as_completed(futures):
-            i = futures[future]
-            try:
-                gap, penalized_cost, zero_cost = future.result()
-                gap_stats += gap
-                penalized_lowerbound_stats += penalized_cost
-                zero_penalized_lowerbound_stats += zero_cost
-                print(f"Scenario {i} done | gap={gap:.2f} | penalized_cost={penalized_cost:.2f} | zero_cost={zero_cost:.2f}")
-            except Exception as exc:
-                print(f"Scenario {i} raised: {exc}")
-
-    # ---------- Aggregate ----------
-    relative_improvement_stats = (gap_stats / zero_penalized_lowerbound_stats.mean) / 0.01
-    print('Train objective:', obj)
-    print("Test penalized cost:", penalized_lowerbound_stats)
-    print("Test zero penalized cost:", zero_penalized_lowerbound_stats)
-    print("Gap:", gap_stats)
-    print("Relative improvement stats:", relative_improvement_stats)
 
 def calculate_policy_costs(uid, experiment_name, policy_id, agent_name, agent_args, env_args, init_state, sample_path, warm_up_periods, generating_function, grb_env=None, grb_sub_envs=None):
     def _to_float(v):
@@ -823,9 +757,6 @@ def evaluate_policy_costs_with_information_relaxation(uid, experiment_name, muta
     generating_function = LinearPenaltyFunction(env=env, coefficients=penalty_coefficients)
     # generating_function = MulticlassLinearPenaltyFunction(env=env, coefficients=penalty_coefficients)
 
-    discount_factor = env_args.get('discount_factor', env.discount_factor)
-    true_geom_p = round(1 - discount_factor, 2)
-    max_periods = int(geom.ppf(0.9999, true_geom_p)) if true_geom_p > 0 else len(sample_path)
 
     zero_lowerbound_args = {
         'current_decision_var_type': 'integer',
