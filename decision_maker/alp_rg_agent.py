@@ -124,7 +124,7 @@ class ALPRowGenerationAgent(InfiniteRTAgent):
         master_model.setParam("FeasibilityTol", 1e-9)
         master_model.setParam("OptimalityTol", 1e-9)
         master_model.setParam('OutputFlag', 0)
-        BigM = 1e4
+        BigM = 1e5
         self.W_0_var = master_model.addVar(vtype=GRB.CONTINUOUS, lb=-GRB.INFINITY, ub=BigM, name=f"W_0")
         self.U_vars = np.array([master_model.addVar(vtype=GRB.CONTINUOUS, lb=0, ub=BigM, name=f"U_{j}") for j in range(self.env.planning_horizon)])
         self.V_vars = np.array([master_model.addVar(vtype=GRB.CONTINUOUS, lb=0, ub=BigM, name=f"V_{j}") for j in range(self.env.planning_horizon)])
@@ -221,11 +221,12 @@ class ALPRowGenerationAgent(InfiniteRTAgent):
 
 if "__main__" == __name__:
     from experiments import get_config_by_type
-    config = get_config_by_type('toy')
+    config = get_config_by_type('ejor')
     env = config.env
     init_state = config.init_state
     agent = ALPRowGenerationAgent(env=env, discount_factor=env.discount_factor)
     print(agent.train(debug=False))
+    print('env.discount_factor:', env.discount_factor)
     #duals = [84.0, 0.0, 0.0, 0.0, 0.0, 1.0]
     # [10000.0, 5919.593918987857, 5860.397979797979, 5801.794, 0.0, 4951.015202530357, 4901.505050505051, 4852.490000000002, 0.0, 10000.0, 10000.0]
     #print(list(agent.separation_callback(duals)))

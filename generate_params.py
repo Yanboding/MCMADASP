@@ -633,9 +633,9 @@ if __name__ == '__main__':
         warm_up_periods=750,
         num_periods=None,
         dat_file='table.dat',
-        num_groups=70,  # divide into N groups
+        num_groups=100,  # divide into N groups
         is_require_penalty_coefficients=True,
-        policy_ids=['approx_hindsight', 'row_gen_alp', 'myopic'],
+        policy_ids=['row_gen_alp', 'myopic'],
     )
     # test_envs = build_variation_test_env(EXPERIMENT_SPECS['case_study'])
     # results = generate_train_env(

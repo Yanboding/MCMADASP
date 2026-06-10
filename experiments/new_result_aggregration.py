@@ -103,10 +103,11 @@ class SimulateEvaluationResult:
         'solving_time_per_state'
     )
 
-    def __init__(self,directory_path, file_pattern, env_info, group_ids=None, is_reuse=False):
+    def __init__(self,directory_path, file_pattern, env, group_ids=None, is_reuse=False):
         self.directory_path = directory_path
         self.file_pattern = file_pattern
-        self.env_info = env_info
+        self.env = env
+        self.waiting_time_targets = np.array([env.holding_cost.get_waiting_target(i) for i in range(env.num_types)])
         self.group_ids = group_ids if group_ids is not None else []
         self.is_reuse = is_reuse
         # Using named functions instead of lambdas
@@ -151,9 +152,9 @@ class SimulateEvaluationResult:
             self._load_from_jsonl()
             self._save_cache(pickle_file)
         for (group_id, policy_id), stats in self.zero_penalized_gap.items():
-            self.zero_penalized_improvement[(group_id, policy_id)] = self.zero_penalized_gap[(group_id, policy_id)] / self.penalized_information_relaxation_cost[(group_id)].mean / 0.01
+            self.zero_penalized_improvement[(group_id, policy_id)] = self.zero_penalized_gap[(group_id, policy_id)] / self.after_warmup_policy_costs[(group_id, policy_id)].mean / 0.01
         for (group_id, policy_id), stats in self.penalized_gap.items():
-            self.penalized_improvement[(group_id, policy_id)] = self.penalized_gap[(group_id, policy_id)] / self.penalized_information_relaxation_cost[(group_id)].mean / 0.01
+            self.penalized_improvement[(group_id, policy_id)] = self.penalized_gap[(group_id, policy_id)] / self.after_warmup_policy_costs[(group_id, policy_id)].mean / 0.01
         # for group_id, stats in self.gap_to_information_relaxation.items():
         #     self.improvement[group_id] = self.gap_to_information_relaxation[group_id] / self.policy_costs[(group_id, policy_id)].mean / 0.01
         # # for (group_id, mutate_val), stats in self.zero_penalized_gap.items():
@@ -223,13 +224,14 @@ class SimulateEvaluationResult:
         cum_scheduled_patients = scheduled_patients.cumsum(axis=0)
         total_scheduled_patients_by_type = scheduled_patients.sum(axis=0)
         scheduled_patients_ptc_by_day = np.divide(
-                                                cum_scheduled_patients * 100,
+                                                cum_scheduled_patients,
                                                 total_scheduled_patients_by_type,
-                                                out=np.zeros_like(cum_scheduled_patients, dtype=float),
+                                                out=np.ones_like(cum_scheduled_patients, dtype=float),
                                                 where=total_scheduled_patients_by_type != 0
-                                            )
+                                            ) * 100
         cum_total_scheduled_patients_by_day = scheduled_patients.sum(axis=1).cumsum(axis=0)
-        total_scheduled_patients_ptc_by_day = cum_total_scheduled_patients_by_day/total_scheduled_patients * 100 if total_scheduled_patients > 0 else np.zeros_like(cum_total_scheduled_patients_by_day)
+        total_scheduled_patients_ptc_by_day = (cum_total_scheduled_patients_by_day/total_scheduled_patients if total_scheduled_patients > 0 else np.ones_like(cum_total_scheduled_patients_by_day)) * 100
+
 
         for day in range(len(scheduled_patients)):
             for treatment_type in range(len(scheduled_patients[day])):
@@ -237,15 +239,13 @@ class SimulateEvaluationResult:
                 self.waiting_time_target_ptc_by_day[policy_id][day] += total_scheduled_patients_ptc_by_day[day]
         
         for day in range(len(data["overtime"])):
-            self.overtime_utilization[(group_id, policy_id)] += data["overtime"][day] / self.env_info['overtime_capacity'] * 100
+            self.overtime_utilization[(group_id, policy_id)] += data["overtime"][day] / self.env.overtime_capacity * 100
         # calculate the waiting time violation rate
         # scheduled_patients is a 2D array of shape (num_days, num_types), where each entry represents the number of patients of a certain type scheduled on a certain day. We need to calculate the percentage of patients that are scheduled outside of their waiting time target. For each treatment type, we have a waiting time target (e.g., 1 day, 5 days, etc.). We can calculate the cumulative percentage of patients scheduled by each day and compare it to the waiting time target to determine the violation rate.
         
-        waiting_time_targets = self.env_info.get('waiting_time_targets', [])
-        num_types = len(waiting_time_targets)
         patients_outside_target = sum(
-            total_scheduled_patients_by_type[t] - cum_scheduled_patients[waiting_time_targets[t] - 1][t]
-            for t in range(num_types)
+            total_scheduled_patients_by_type[t] - cum_scheduled_patients[self.waiting_time_targets[t] - 1][t]
+            for t in range(self.env.num_types)
             if total_scheduled_patients_by_type[t] > 0
         )
         if total_scheduled_patients > 0:
@@ -279,20 +279,23 @@ class SimulateEvaluationResult:
     
     def format_table(self):
         kys = self.waiting_time_target_ptc_by_type_day.keys()
-        experiment_labels = 'ALP'
+        policy_label = {
+            'myopic': 'Myopic',
+            'row_gen_alp': 'ALP',
+            'approx_hindsight': 'Penalized Hindsight',
+        }
         for agent_name in kys:
             table = defaultdict(list)
             table2 = {}
             for day in [1, 5, 10, 15, 20]:
-                total_mean = self.waiting_time_target_ptc_by_day[agent_name][day].mean
-                total_hw = self.waiting_time_target_ptc_by_day[agent_name][day].half_window(0.95)
+                total_mean = self.waiting_time_target_ptc_by_day[agent_name][day-1].mean
+                total_hw = self.waiting_time_target_ptc_by_day[agent_name][day-1].half_window(0.95)
                 table2[day] = (round(total_mean, 2), round(total_hw, 3))
                 for type in range(len(self.waiting_time_target_ptc_by_type_day[agent_name])):
-                    mean = self.waiting_time_target_ptc_by_type_day[agent_name][type][day].mean
-                    hw = self.waiting_time_target_ptc_by_type_day[agent_name][type][day].half_window(0.95)
+                    mean = self.waiting_time_target_ptc_by_type_day[agent_name][type][day-1].mean
+                    hw = self.waiting_time_target_ptc_by_type_day[agent_name][type][day-1].half_window(0.95)
                     table[type+1].append((day, round(mean), round(hw)))
-            print(table2)
-            print('ALP')
+            print(policy_label[agent_name])
             for type in sorted(table.keys()):
                 line = f'{type} '
                 for (day, ptc, hw) in table[type]:
@@ -305,12 +308,15 @@ class SimulateEvaluationResult:
             line += r' \\'
             print(line)
     
-    def summary_table(self):
-        group_id = 'f4e3ac161730cb1a133fc82f962b8c4f'
-        table = f"""
-        Myopic & ${self.after_warmup_policy_costs[(group_id, 'myopic')].confidence_interval()}$ & ${self.waiting_time_violation[(group_id, 'myopic')].confidence_interval()}$ & ${self.overtime_utilization[(group_id, 'myopic')].confidence_interval()}$ \\\\
-        ALP & ${self.after_warmup_policy_costs[(group_id, 'row_gen_alp')].confidence_interval()}$ & ${self.waiting_time_violation[(group_id, 'row_gen_alp')].confidence_interval()}$ & ${self.overtime_utilization[(group_id, 'row_gen_alp')].confidence_interval()}$ \\\\
-        """
+    def performance_summary_table(self):
+        policy_label = {
+            'myopic': 'Myopic',
+            'row_gen_alp': 'ALP',
+            'approx_hindsight': 'Penalized Hindsight',
+        }
+        table = ''
+        for (group_id, policy_id), stats in self.after_warmup_policy_costs.items():
+            table += f"{policy_label.get(policy_id, policy_id)} & ${stats.confidence_interval()}$ & ${self.waiting_time_violation[(group_id, policy_id)].confidence_interval()}$ & ${self.overtime_utilization[(group_id, policy_id)].confidence_interval()}$ & ${self.zero_penalized_improvement[(group_id, policy_id)].confidence_interval()}$ & ${self.penalized_improvement[(group_id, policy_id)].confidence_interval()}$\\\\\n"
         return table
     
     def plot_percentage_improvement(self, scale, xlabel, ylabel, file_name):
@@ -382,15 +388,14 @@ def run_improvement_plots(base_results_dir, file_pattern, env_info, group_ids, i
             ylabel=IMPROVEMENT_YLABEL,
             file_name=f"{config['name']}_lower_bound_improvement.svg",
         )
-
+# I want to plot discount improvement
 if __name__ == "__main__":
-
-    base_results_dir = os.path.join('.', 'experiments', 'results', 'initial_state_congestion')
+    from experiments import get_config_by_type
+    config = get_config_by_type('ejor')
+    env = config.env
+    waiting_time_targets = [env.holding_cost.get_waiting_target(i) for i in range(env.num_types)]
+    base_results_dir = os.path.join('.', 'experiments', 'results', 'case_study')
     file_pattern = '[0-9]*.jsonl'
-    env_info = {
-        'waiting_time_targets': [1]*2,
-        'overtime_capacity': 5,
-    }
     # group_ids = ['73d11360affe39305e7716cf5c42ac04', '841708e72300000ddfd948daf08d6805', 'a3202d39ed34711b47ecebb72aabad43']
     # run_improvement_plots(
     #     base_results_dir=base_results_dir,
@@ -402,13 +407,16 @@ if __name__ == "__main__":
     ser = SimulateEvaluationResult(
             base_results_dir,
             file_pattern,
-            env_info,
+            env,
             is_reuse=True,
         )
     
     # print(ser.last_decision_period_distribution_table())
-    print("Gap to Information Relaxation")
-    pprint(ser.gap_to_information_relaxation)
+    print('Summary table')
+    print(ser.performance_summary_table())
+    print(ser.format_table())
+    #pprint(ser.waiting_time_target_ptc_by_day)
+    #pprint(ser.waiting_time_target_ptc_by_type_day)
     # print("Improvement")
     # pprint(ser.improvement)
 
@@ -418,16 +426,16 @@ if __name__ == "__main__":
     # pprint(ser.waiting_time_target_ptc_by_day)
 
     # ser.generate_table()
-    print('self.policy_costs')
-    print(ser.policy_costs)
-    print('penalized_improvement')
-    print(ser.penalized_improvement)
-    print('zero_improvement')
-    print(ser.zero_penalized_improvement)
-    print('Solving time per state')
-    print(ser.solving_time_per_state)
-    print(ser.group_ids)
-    print(ser.initial_state_congestion_distribution_table())
+    # print('self.policy_costs')
+    # print(ser.policy_costs)
+    # print('penalized_improvement')
+    # print(ser.penalized_improvement)
+    # print('zero_improvement')
+    # print(ser.zero_penalized_improvement)
+    # print('Solving time per state')
+    # print(ser.solving_time_per_state)
+    # print(ser.group_ids)
+    # print(ser.initial_state_congestion_distribution_table())
 
     # To inspect one experiment interactively, instantiate SimulateEvaluationResult
     # with a specific directory and use the helper methods below.

@@ -4,8 +4,8 @@
 #SBATCH -t 48:00:00
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
-#SBATCH --cpus-per-task=64
-#SBATCH --mem=64G
+#SBATCH --cpus-per-task=32
+#SBATCH --mem=128G
 #  You have to replace Your_account_name below with the name of your account:
 #SBATCH -A def-sarhangi
 

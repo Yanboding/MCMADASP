@@ -1115,7 +1115,7 @@ if __name__ == '__main__':
         acquire_grb_env({"Threads": 1}, verbose=False, wait=15)
         for _ in range(num_sub_envs)
     ]
-    print(num_sub_envs)
+    print('num_sub_envs:', num_sub_envs)
     failed_jobs = []
     for param in params:
         # coefficient_training_test(**param, grb_env=grb_env, job_id=args.job_id)

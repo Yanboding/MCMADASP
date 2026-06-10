@@ -257,7 +257,7 @@ class ExperimentConfig:
             'duration': 1,
             'regular_capacity': 120,
             "overtime_capacity": 15,
-            'discount_factor': 0.95,
+            'discount_factor': 0.99,
             'reset_params': {
                 "init_state": initial_state,
             },
