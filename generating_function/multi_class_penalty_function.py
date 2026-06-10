@@ -46,6 +46,22 @@ class MulticlassLinearPenaltyFunction(GeneratingFunction):
         expected_continuation_value = workload @ linear_approx
         return expected_continuation_value
     
+    def calculate_state_value(self, state, is_var=False, coefficients=None):
+        """Evaluate V_theta(s) = sum_k theta_k * phi_k(s) for a single state.
+
+        The basis phi(s) only involves the state blocks (theta_u, theta_v,
+        theta_w); the action blocks (theta_x, theta_y) have zero features and
+        are therefore not identified from state-only data. For a fixed numeric
+        state the expression is LINEAR in theta, so it can be used directly in
+        a Gurobi least-squares fit when ``coefficients`` are decision
+        variables.
+        """
+        regular_bookings, overtimes, waitlist = state
+        theta_u, theta_v, theta_w, _, _ = self._get_coefficient_blocks(coefficients)
+        linear_approx = theta_u @ regular_bookings + theta_v @ overtimes + theta_w @ waitlist
+        workload = waitlist + self.env.arrival_generator.mean_by_type
+        return self._as_scalar_expression(workload @ linear_approx)
+
     def get_coefficient_var(self, model, coefficient_bound):
         number_of_coefficients = (self.env.planning_horizon * 2 + self.env.num_types + self.env.booking_window_size * self.env.num_types + self.env.planning_horizon) * self.env.num_types
         return model.addMVar(shape=number_of_coefficients, vtype=GRB.CONTINUOUS, lb=-coefficient_bound, ub=coefficient_bound, name="coefficients")

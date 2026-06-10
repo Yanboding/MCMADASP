@@ -116,6 +116,11 @@ class ApproxQAgent(InfiniteRTAgent):
         return linking_constraints
 
     def decision_model_builder_fn(self):
+        generating_function = self._require_generating_function()
+        if generating_function.coefficients is None:
+            raise RuntimeError(
+                "generating_function has no trained coefficients. Call "
+                "regression_train(X, Y) (or benders_decomposition_train) first.")
         model = gp.Model(f"Decision_Model", env=self.grb_env)
         model.setParam("MultiObjPre", 0)
         model.setParam("MIPGapAbs", 1e-9)         # Enforce extremely tight absolute gap
@@ -123,7 +128,6 @@ class ApproxQAgent(InfiniteRTAgent):
         model.setParam("FeasibilityTol", 1e-9)
         model.setParam("OptimalityTol", 1e-9)
         model.setParam("NonConvex", 2)
-        generating_function = self._require_generating_function()
         state_var = self.get_state_var(model)
         state_linking_constraints = self.build_state_linking_constraints(model, state_var)
         action_var = self.get_action_var(model=model, advance_scheduling_type=self.current_decision_var_type)
@@ -135,6 +139,10 @@ class ApproxQAgent(InfiniteRTAgent):
         return model, state_linking_constraints, action_var, {}
     
     def approx_Q_solve(self, state, t, action=None, verbose=False):
+        if not self.is_trained:
+            raise RuntimeError(
+                "Coefficients are not trained yet. Call regression_train(X, Y) "
+                "(or benders_decomposition_train) before solving.")
         if self.decision_model is None:
             self.decision_model, self.state_linking_constraints, self.action_var, self.info = self.decision_model_builder_fn()
         flatten_state = flatten(state)
@@ -148,6 +156,52 @@ class ApproxQAgent(InfiniteRTAgent):
         # ---------- 8. return ----------
         action = self.get_solution(self.action_var, is_final=True)
         return self.decision_model.ObjVal, action, self.info
+    
+    def regression_train(self, X, Y, regularization=1e-8, coefficient_bound=GRB.INFINITY, verbose=False):
+        """Fit the coefficients theta of V_theta(s) = sum_k theta_k * phi_k(s).
+
+        Solves the (ridge-regularized) least-squares problem
+
+            min_theta (1/N) * sum_i (V_theta(s_i) - y_i)^2 + regularization * ||theta||^2
+
+        as a Gurobi QP, where ``X`` is an iterable of states and ``Y`` the
+        corresponding value-function targets V(s_i). The fitted coefficients
+        are written into ``self.generating_function`` so that subsequent calls
+        to ``approx_Q_solve`` use the trained value-function approximation.
+        The small ridge term keeps the QP well-posed and pins basis weights
+        with zero features (e.g. action blocks) to zero.
+
+        Returns ``(coefficients, training_mse)``.
+        """
+        generating_function = self._require_generating_function()
+        Y = np.asarray(Y, dtype=float).reshape(-1)
+        if len(X) != len(Y):
+            raise ValueError(f"X and Y must have the same length, got {len(X)} and {len(Y)}.")
+        if len(Y) == 0:
+            raise ValueError("The training dataset is empty.")
+        model = gp.Model("Value_Function_Regression", env=self.grb_env)
+        model.setParam("OutputFlag", 1 if verbose else 0)
+        theta_vars = generating_function.get_coefficient_var(model=model, coefficient_bound=coefficient_bound)
+        coefficient_blocks = generating_function.get_coefficients(theta_vars)
+        residual_vars = model.addMVar(shape=len(Y), vtype=GRB.CONTINUOUS, lb=-GRB.INFINITY, name="residual")
+        for i, state in enumerate(X):
+            prediction = generating_function.calculate_state_value(state, is_var=True, coefficients=coefficient_blocks)
+            model.addConstr(residual_vars[i].item() == prediction - Y[i], name=f"fit_{i}")
+        objective = (residual_vars @ residual_vars) / len(Y)
+        if regularization > 0:
+            objective = objective + regularization * (theta_vars @ theta_vars)
+        model.setObjective(objective, GRB.MINIMIZE)
+        if not solve_and_handle_errors(model, verbose=verbose):
+            raise RuntimeError("Value function regression failed to solve.")
+        self.coefficients = np.asarray(theta_vars.X).tolist()
+        training_mse = float(np.mean(np.square(np.asarray(residual_vars.X))))
+        model.dispose()
+        generating_function.set_coefficients(self.coefficients)
+        self.is_trained = True
+        # Invalidate any previously built decision model so it is rebuilt with
+        # the freshly trained coefficients.
+        self.decision_model, self.state_linking_constraints, self.action_var = None, None, None
+        return self.coefficients, training_mse
     
     def train_master_builder_fn(self, coefficient_bound=GRB.INFINITY):
         master_model = gp.Model(f"SAA_train_Master", env=self.grb_env)

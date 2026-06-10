@@ -38,5 +38,9 @@ class GeneratingFunction:
     def calculate_expected_continuation_value(self, state, action, is_var=False, coefficients=None):
         raise NotImplemented
     
+    def calculate_state_value(self, state, is_var=False, coefficients=None):
+        """Evaluate V_theta(s) = sum_k theta_k * phi_k(s) for a single state."""
+        raise NotImplemented
+    
     def get_coefficient_var(self, model, coefficient_bound):
         raise NotImplemented
