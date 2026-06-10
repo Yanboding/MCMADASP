@@ -275,36 +275,70 @@ class SimulateEvaluationResult:
         \quad Max penalty gap & \({self.penalized_gap[(opc_20, 'row_gen_alp')].confidence_interval()}\) & \({self.penalized_improvement[(opc_20, 'row_gen_alp')].confidence_interval()}\) & \({self.penalized_gap[(opc_50, 'row_gen_alp')].confidence_interval()}\) & \({self.penalized_improvement[(opc_50, 'row_gen_alp')].confidence_interval()}\) & \({self.penalized_gap[(opc_80, 'row_gen_alp')].confidence_interval()}\) & \({self.penalized_improvement[(opc_80, 'row_gen_alp')].confidence_interval()}\)\\\\"""
         print(table)
     
-    def format_table(self):
-        kys = self.waiting_time_target_ptc_by_type_day.keys()
-        policy_label = {
-            'myopic': 'Myopic',
-            'row_gen_alp': 'ALP',
-            'approx_hindsight': 'Penalized Hindsight',
-        }
-        for agent_name in kys:
-            table = defaultdict(list)
-            table2 = {}
-            for day in [1, 5, 10, 15, 20]:
-                total_mean = self.waiting_time_target_ptc_by_day[agent_name][day-1].mean
-                total_hw = self.waiting_time_target_ptc_by_day[agent_name][day-1].half_window(0.95)
-                table2[day] = (round(total_mean, 2), round(total_hw, 3))
-                for type in range(len(self.waiting_time_target_ptc_by_type_day[agent_name])):
-                    mean = self.waiting_time_target_ptc_by_type_day[agent_name][type][day-1].mean
-                    hw = self.waiting_time_target_ptc_by_type_day[agent_name][type][day-1].half_window(0.95)
-                    table[type+1].append((day, round(mean), round(hw)))
-            print(policy_label[agent_name])
-            for type in sorted(table.keys()):
-                line = f'{type} '
-                for (day, ptc, hw) in table[type]:
-                    line += f' & {ptc} $\pm$ {hw}'
-                line += r' \\'
-                print(line)
-            line = r'\textbf{Total} '
-            for day, (ptc, hw) in table2.items():
-                line += f' & {round(ptc)} $\pm$ {round(hw)}'
-            line += r' \\'
-            print(line)
+    def waiting_time_target_ptc_table(self, days=(1, 5, 10, 15, 20)):
+        policy_order = [
+            ('approx_hindsight', 'PH'),
+            ('row_gen_alp', 'ALP'),
+            ('myopic', 'M'),
+        ]
+        # Keep only the policies present in the loaded data.
+        policies = [(pid, label) for pid, label in policy_order
+                    if pid in self.waiting_time_target_ptc_by_type_day]
+        num_policies = len(policies)
+        num_types = max(len(self.waiting_time_target_ptc_by_type_day[pid])
+                        for pid, _ in policies)
+
+        def cell(stats):
+            return f'{round(stats.mean)}$\\pm${round(stats.half_window(0.95))}'
+
+        col_spec = 'l' + 'c' * (num_policies * len(days))
+        header_groups = '\n'.join(
+            f'& \\multicolumn{{{num_policies}}}{{c}}{{\\textbf{{{day} workday{"s" if day > 1 else ""}}}}}'
+            for day in days
+        )
+        cmidrules = '\n'.join(
+            f'\\cmidrule(lr){{{2 + i * num_policies}-{1 + (i + 1) * num_policies}}}'
+            for i in range(len(days))
+        )
+        policy_header = ' '.join(f'& {label}' for _ in days for _, label in policies)
+
+        body_lines = []
+        for type in range(num_types):
+            cells = ' '.join(
+                f'& {cell(self.waiting_time_target_ptc_by_type_day[pid][type][day - 1])}'
+                for day in days for pid, _ in policies
+            )
+            body_lines.append(f'{type + 1} {cells} \\\\')
+        total_cells = '\n'.join(
+            '& ' + ' & '.join(cell(self.waiting_time_target_ptc_by_day[pid][day - 1])
+                              for pid, _ in policies)
+            for day in days
+        )
+        body = '\n'.join(body_lines)
+
+        table = f"""\\begin{{table}}[!htbp]
+\\centering
+\\scriptsize
+\\setlength{{\\tabcolsep}}{{2.5pt}}
+\\renewcommand{{\\arraystretch}}{{1.05}}
+\\caption{{Percentage of cases initiated within given number of workdays under the Penalized Hindsight (PH), ALP, and Myopic (M) policies. $I=18$, $C_r=120$, $C_o=15$, $o=100$, $N=25$, $g_i=2000$, $\\lambda=8.25 \\text{{ with maximum }} 25$, and $\\gamma=0.95$. The waiting-time penalty, treatment patterns, and arrivals are shown in Tables~\\ref{{tab:treatment_pattern_case_study}} and~\\ref{{tab:wait_time_penalty_case_study}}, respectively.}}
+\\label{{tab:policy_performance_095_case_study}}
+\\resizebox{{\\textwidth}}{{!}}{{
+\\begin{{tabular}}{{{col_spec}}}
+\\toprule
+\\textbf{{Type}}
+{header_groups} \\\\
+{cmidrules}
+{policy_header} \\\\
+\\midrule
+{body}
+\\textbf{{Total}}
+{total_cells} \\\\
+\\bottomrule
+\\end{{tabular}}
+}}
+\\end{{table}}"""
+        return table
     
     def performance_summary_table(self):
         policy_label = {
@@ -406,7 +440,7 @@ if __name__ == "__main__":
             base_results_dir,
             file_pattern,
             env,
-            is_reuse=False,
+            is_reuse=True,
         )
     
     # print(ser.last_decision_period_distribution_table())
@@ -422,7 +456,7 @@ if __name__ == "__main__":
     pprint(ser.zero_penalized_information_relaxation_cost)
     print('ser.penalized_information_relaxation_cost')
     pprint(ser.penalized_information_relaxation_cost)
-    #print(ser.format_table())
+    print(ser.waiting_time_target_ptc_table())
     #pprint(ser.waiting_time_target_ptc_by_day)
     #pprint(ser.waiting_time_target_ptc_by_type_day)
     # print("Improvement")
