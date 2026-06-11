@@ -15,6 +15,7 @@ class ApproxQAgent(InfiniteRTAgent):
 
     def __init__(self, env, discount_factor, V=None, Q=None, 
                  sample_path_number=100, 
+                 paths_per_init_state=1,
                  current_decision_var_type='integer', 
                  future_decision_var_type='continuous',
                  penalty_ratio=1,
@@ -32,11 +33,22 @@ class ApproxQAgent(InfiniteRTAgent):
         self.sample_path_proposal = sample_path_proposal or ArrivalGeneratorSamplePathProposal()
         self.delta, self.period_likelihood_ratios = self._initialize_sample_paths(sample_path_number)
         self.sample_path_number = len(self.delta)
+        if paths_per_init_state < 1 or self.sample_path_number % paths_per_init_state != 0:
+            raise ValueError(
+                f"paths_per_init_state ({paths_per_init_state}) must be a positive divisor "
+                f"of sample_path_number ({self.sample_path_number}).")
+        # Number of (independent) sample paths sharing each random initial
+        # state. Scenario omega belongs to group omega // paths_per_init_state;
+        # the PO regression target for a group is the AVERAGE of its scenarios'
+        # information-relaxation costs, which estimates E[IR cost | s] and
+        # shrinks the target noise by 1/paths_per_init_state.
+        self.paths_per_init_state = paths_per_init_state
         self.penalty_ratio = penalty_ratio
         self.generating_function = generating_function
         self.decision_model, self.state_linking_constraints, self.action_t_var = None, None, None
         self.is_trained = is_trained
         self.coefficient_model, self.coefficients = None, None
+        self.train_init_states = {}
         self.workers = None
         self.solver_name = solver_name
         self.subproblem_grb_envs = subproblem_grb_envs
@@ -234,6 +246,14 @@ class ApproxQAgent(InfiniteRTAgent):
         self.generating_function.set_coefficients(solution=coefficient_vars)
         coefficient_linking_constraints = self.generating_function.build_coefficient_linking_constraints(sub_model, coefficient_vars)
         state = self.env.generate_initial_state() if init_state is None else init_state
+        # Scenarios in the same group (omega // paths_per_init_state) share one
+        # initial state: only the first scenario of a group draws a fresh
+        # random state, the rest reuse it. Recorded so that the PO regression
+        # dataset can be extracted on the SAME initial states.
+        if init_state is None and scenario_id % self.paths_per_init_state != 0:
+            group_anchor = scenario_id - scenario_id % self.paths_per_init_state
+            state = self.train_init_states[group_anchor]
+        self.train_init_states[scenario_id] = tuple(np.asarray(component, dtype=float) for component in state)
         state_var = self.get_state_var(sub_model)
         state_linking_constraints = self.build_state_linking_constraints(sub_model, state_var)
         flatten_state = flatten(state)
@@ -292,6 +312,101 @@ class ApproxQAgent(InfiniteRTAgent):
         generating_function = self._require_generating_function()
         generating_function.set_coefficients(self.coefficients)
         return upper_bound, self.coefficients, info
+    
+    def extract_po_regression_targets(self, verbose=False):
+        """Build the PO regression dataset, one sample per initial-state group.
+
+        The data is read DIRECTLY from the converged Benders training
+        subproblems — no model is re-solved. Scenarios are grouped by shared
+        initial state (``paths_per_init_state`` consecutive scenarios per
+        group). For each group g,
+
+            X[g] = the initial state s^0(g) shared by the group's training
+                   subproblems (recorded at build time),
+            Y[g] = the AVERAGE over the group of the subproblems' objective
+                   values at the converged coefficients, i.e. a Monte-Carlo
+                   estimate of E[ IR cost | s^0(g) ] with noise variance
+                   reduced by 1/paths_per_init_state.
+
+        At convergence the subproblems were last solved at the final master
+        coefficients, so ``|X| = |Y| = sample_path_number //
+        paths_per_init_state`` and ``mean(Y)`` equals the PO lower bound
+        returned by ``benders_decomposition_train``. Returns ``(X, Y)``.
+        """
+        if self.coefficient_model is None:
+            raise RuntimeError(
+                "No trained Benders model available. Call benders_decomposition_train first.")
+        if len(self.train_init_states) < self.sample_path_number:
+            raise RuntimeError(
+                "Training initial states are not recorded for all scenarios. "
+                "Call benders_decomposition_train first.")
+        objective_by_scenario = {}
+        for worker in self.coefficient_model.workers:
+            scenario_id = worker.subproblem_id
+            if worker.model.Status != GRB.OPTIMAL:
+                raise RuntimeError(
+                    f"Training subproblem {scenario_id} holds no optimal solution "
+                    f"(status {worker.model.Status}); run benders_decomposition_train to convergence first.")
+            objective_by_scenario[scenario_id] = float(worker.model.ObjVal)
+        X, Y = [], []
+        for group_anchor in range(0, self.sample_path_number, self.paths_per_init_state):
+            group_scenarios = range(group_anchor, group_anchor + self.paths_per_init_state)
+            X.append(self.train_init_states[group_anchor])
+            Y.append(float(np.mean([objective_by_scenario[omega] for omega in group_scenarios])))
+        return X, Y
+
+    def po_policy_train(self,
+                        value_generating_function,
+                        coefficient_bound=GRB.INFINITY,
+                        init_state=None,
+                        parallel=True,
+                        regularization=1e-8,
+                        value_coefficient_bound=GRB.INFINITY,
+                        verbose=False,
+                        checkpoint_path=None,
+                        resume_checkpoint_path=None):
+        """Train the PO-derived policy in three stages.
+
+        1. ``benders_decomposition_train`` solves the pathwise optimization
+           with the CURRENT generating function (the penalty basis, e.g.
+           ``MulticlassLinearPenaltyFunction``), yielding the optimal penalty
+           coefficients and the PO lower bound.
+        2. ``extract_po_regression_targets`` reads the dataset DIRECTLY from
+           the converged training subproblems (no re-solving): X = the
+           per-scenario initial states, Y = the per-scenario subproblem
+           objectives, i.e. the information-relaxation costs
+           (|X| = |Y| = sample_path_number).
+        3. ``value_generating_function`` (e.g. the quadratic
+           ``MulticlassQuadraticPenaltyFunction``) replaces the agent's
+           generating function and is fitted by ``regression_train``; the
+           greedy policy is then available through ``approx_Q_solve``.
+
+        Returns ``(po_lower_bound, value_coefficients, info)``.
+        """
+        po_lower_bound, penalty_coefficients, benders_info = self.benders_decomposition_train(
+            coefficient_bound=coefficient_bound,
+            init_state=init_state,
+            parallel=parallel,
+            verbose=verbose,
+            checkpoint_path=checkpoint_path,
+            resume_checkpoint_path=resume_checkpoint_path,
+        )
+        X, Y = self.extract_po_regression_targets(verbose=verbose)
+        self.generating_function = value_generating_function
+        value_coefficients, training_mse = self.regression_train(
+            X, Y,
+            regularization=regularization,
+            coefficient_bound=value_coefficient_bound,
+            verbose=verbose,
+        )
+        info = dict(benders_info or {})
+        info.update({
+            'po_lower_bound': po_lower_bound,
+            'penalty_coefficients': penalty_coefficients,
+            'regression_mse': training_mse,
+            'num_regression_samples': len(Y),
+        })
+        return po_lower_bound, value_coefficients, info
     
     def calculate_information_relaxation_cost(self, state, sample_path, verbose=False):
         model = gp.Model(f"IR_Model", env=self.grb_env)

@@ -416,7 +416,7 @@ class BendersDecompositionSolver:
         for idx, worker in enumerate(active_workers):
             start = time.time()
             results.append(solve_one(worker))
-            print(f"Iteration {global_iteration}, subproblem {idx} solved in {time.time() - start:.2f}s")
+            # print(f"Iteration {global_iteration}, subproblem {idx} solved in {time.time() - start:.2f}s")
         return results, executor
 
     def _build_cuts(self, results, active_workers, action):
