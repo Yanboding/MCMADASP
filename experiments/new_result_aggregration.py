@@ -426,7 +426,7 @@ if __name__ == "__main__":
     config = get_config_by_type('ejor')
     env = config.env
     waiting_time_targets = [env.holding_cost.get_waiting_target(i) for i in range(env.num_types)]
-    base_results_dir = os.path.join('.', 'experiments', 'results', 'case_study_095')
+    base_results_dir = os.path.join('.', 'experiments', 'results', 'case_study_new_095')
     file_pattern = '[0-9]*.jsonl'
     # group_ids = ['73d11360affe39305e7716cf5c42ac04', '841708e72300000ddfd948daf08d6805', 'a3202d39ed34711b47ecebb72aabad43']
     # run_improvement_plots(
