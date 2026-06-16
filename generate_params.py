@@ -350,6 +350,12 @@ EXPERIMENT_SPECS = {
             val_args=[0.98],
             mutate=_mutate_discount_factor,
         ),
+        ExperimentSpec(
+            name='case_study_099',
+            config_type='ejor',
+            val_args=[0.99],
+            mutate=_mutate_discount_factor,
+        ),
     ]
 }
 
@@ -631,7 +637,7 @@ if __name__ == '__main__':
     # for experiment_name in experiments:
     #     test_envs.update(build_variation_test_env(EXPERIMENT_SPECS[experiment_name]))
     # test_envs = build_variation_test_env(EXPERIMENT_SPECS['sample_path_length_proposal_fixed'])
-    test_envs = build_variation_test_env(EXPERIMENT_SPECS['case_study_098'])
+    test_envs = build_variation_test_env(EXPERIMENT_SPECS['case_study_099'])
     print(test_envs)
     results = generate_test_paths_and_init_state(
         test_envs=test_envs,
@@ -639,7 +645,7 @@ if __name__ == '__main__':
         warm_up_periods=750,
         num_periods=None,
         dat_file='table.dat',
-        num_groups=100,  # divide into N groups
+        num_groups=998,  # divide into N groups
         is_require_penalty_coefficients=False,
         policy_ids=['row_gen_alp', 'myopic'],
     )

@@ -152,9 +152,9 @@ class SimulateEvaluationResult:
             self._load_from_jsonl()
             self._save_cache(pickle_file)
         for (group_id, policy_id), stats in self.zero_penalized_gap.items():
-            self.zero_penalized_improvement[(group_id, policy_id)] = self.zero_penalized_gap[(group_id, policy_id)] / self.after_warmup_policy_costs[(group_id, policy_id)].mean / 0.01
+            self.zero_penalized_improvement[(group_id, policy_id)] = self.zero_penalized_gap[(group_id, policy_id)] / self.zero_penalized_information_relaxation_cost[(group_id, policy_id)].mean / 0.01
         for (group_id, policy_id), stats in self.penalized_gap.items():
-            self.penalized_improvement[(group_id, policy_id)] = self.penalized_gap[(group_id, policy_id)] / self.after_warmup_policy_costs[(group_id, policy_id)].mean / 0.01
+            self.penalized_improvement[(group_id, policy_id)] = self.penalized_gap[(group_id, policy_id)] / self.penalized_information_relaxation_cost[(group_id, policy_id)].mean / 0.01
         # for group_id, stats in self.gap_to_information_relaxation.items():
         #     self.improvement[group_id] = self.gap_to_information_relaxation[group_id] / self.policy_costs[(group_id, policy_id)].mean / 0.01
         # # for (group_id, mutate_val), stats in self.zero_penalized_gap.items():
@@ -182,13 +182,6 @@ class SimulateEvaluationResult:
         res = {key: getattr(self, key) for key in self._CACHE_KEYS}
         with open(pickle_file, 'wb') as f:
             pickle.dump(res, f)
-    
-    def lowerbound_load(self, data):
-        group_id = data['group_id']
-        mutate_val = data['mutate_val']
-        self.zero_penalized_information_relaxation_cost[(group_id, mutate_val)] += data['zero_penalized_lower_bound_objective']
-        self.penalized_information_relaxation_cost[(group_id, mutate_val)] += data['penalized_lower_bound_objective']
-        self.zero_penalized_gap[(group_id, mutate_val)] += data['gap_between_penalized_and_zero']
 
         
     def load(self, data):
@@ -250,30 +243,6 @@ class SimulateEvaluationResult:
             self.waiting_time_violation[(group_id, policy_id)] += patients_outside_target / total_scheduled_patients * 100
         
         self.solving_time_per_state[(group_id, policy_id)] += data.get('solving_time_per_state', 0)
-            
-
-    def generate_table(self):
-        opc_20 = self.group_ids[0]
-        opc_50 = self.group_ids[1]
-        opc_80 = self.group_ids[2]
-        table = f"""
-        Hindsight & & & & & & \\\\ 
-        \quad Policy cost & \({self.policy_costs[(opc_20, 'approx_hindsight')].confidence_interval()}\) & & \({self.policy_costs[(opc_50, 'approx_hindsight')].confidence_interval()}\) & &\({self.policy_costs[(opc_80, 'approx_hindsight')].confidence_interval()}\) & \\\\
-        \quad Zero penalty gap & \({self.zero_penalized_gap[(opc_20, 'approx_hindsight')].confidence_interval()}\) & \({self.zero_penalized_improvement[(opc_20, 'approx_hindsight')].confidence_interval()}\) & \({self.zero_penalized_gap[(opc_50, 'approx_hindsight')].confidence_interval()}\) & \({self.zero_penalized_improvement[(opc_50, 'approx_hindsight')].confidence_interval()}\) & \({self.zero_penalized_gap[(opc_80, 'approx_hindsight')].confidence_interval()}\) & \({self.zero_penalized_improvement[(opc_80, 'approx_hindsight')].confidence_interval()}\)\\\\
-        \quad Max penalty gap & \({self.penalized_gap[(opc_20, 'approx_hindsight')].confidence_interval()}\) & \({self.penalized_improvement[(opc_20, 'approx_hindsight')].confidence_interval()}\) & \({self.penalized_gap[(opc_50, 'approx_hindsight')].confidence_interval()}\) & \({self.penalized_improvement[(opc_50, 'approx_hindsight')].confidence_interval()}\) & \({self.penalized_gap[(opc_80, 'approx_hindsight')].confidence_interval()}\) & \({self.penalized_improvement[(opc_80, 'approx_hindsight')].confidence_interval()}\) \\\\
-        Penalized Hindsight & & & & & & \\\\
-        \quad Policy cost & \({self.policy_costs[(opc_20, 'approx_penalized_hindsight')].confidence_interval()}\) & & \({self.policy_costs[(opc_50, 'approx_penalized_hindsight')].confidence_interval()}\) & &\({self.policy_costs[(opc_80, 'approx_penalized_hindsight')].confidence_interval()}\) & \\\\
-        \quad Zero penalty gap & \({self.zero_penalized_gap[(opc_20, 'approx_penalized_hindsight')].confidence_interval()}\) & \({self.zero_penalized_improvement[(opc_20, 'approx_penalized_hindsight')].confidence_interval()}\) & \({self.zero_penalized_gap[(opc_50, 'approx_penalized_hindsight')].confidence_interval()}\) & \({self.zero_penalized_improvement[(opc_50, 'approx_penalized_hindsight')].confidence_interval()}\) & \({self.zero_penalized_gap[(opc_80, 'approx_penalized_hindsight')].confidence_interval()}\) & \({self.zero_penalized_improvement[(opc_80, 'approx_penalized_hindsight')].confidence_interval()}\)\\\\
-        \quad Max penalty gap & \({self.penalized_gap[(opc_20, 'approx_penalized_hindsight')].confidence_interval()}\) & \({self.penalized_improvement[(opc_20, 'approx_penalized_hindsight')].confidence_interval()}\) & \({self.penalized_gap[(opc_50, 'approx_penalized_hindsight')].confidence_interval()}\) & \({self.penalized_improvement[(opc_50, 'approx_penalized_hindsight')].confidence_interval()}\) & \({self.penalized_gap[(opc_80, 'approx_penalized_hindsight')].confidence_interval()}\) & \({self.penalized_improvement[(opc_80, 'approx_penalized_hindsight')].confidence_interval()}\)\\\\
-        Myopic & & & & & & \\\\
-        \quad Policy cost & \({self.policy_costs[(opc_20, 'myopic')].confidence_interval()}\) & & \({self.policy_costs[(opc_50, 'myopic')].confidence_interval()}\) & &\({self.policy_costs[(opc_80, 'myopic')].confidence_interval()}\) & \\\\
-        \quad Zero penalty gap & \({self.zero_penalized_gap[(opc_20, 'myopic')].confidence_interval()}\) & \({self.zero_penalized_improvement[(opc_20, 'myopic')].confidence_interval()}\) & \({self.zero_penalized_gap[(opc_50, 'myopic')].confidence_interval()}\) & \({self.zero_penalized_improvement[(opc_50, 'myopic')].confidence_interval()}\) & \({self.zero_penalized_gap[(opc_80, 'myopic')].confidence_interval()}\) & \({self.zero_penalized_improvement[(opc_80, 'myopic')].confidence_interval()}\)\\\\
-        \quad Max penalty gap & \({self.penalized_gap[(opc_20, 'myopic')].confidence_interval()}\) & \({self.penalized_improvement[(opc_20, 'myopic')].confidence_interval()}\) & \({self.penalized_gap[(opc_50, 'myopic')].confidence_interval()}\) & \({self.penalized_improvement[(opc_50, 'myopic')].confidence_interval()}\) & \({self.penalized_gap[(opc_80, 'myopic')].confidence_interval()}\) & \({self.penalized_improvement[(opc_80, 'myopic')].confidence_interval()}\)\\\\
-        ALP & & & & & & \\\\
-        \quad Policy cost & \({self.policy_costs[(opc_20, 'row_gen_alp')].confidence_interval()}\) & & \({self.policy_costs[(opc_50, 'row_gen_alp')].confidence_interval()}\) & &\({self.policy_costs[(opc_80, 'row_gen_alp')].confidence_interval()}\) & \\\\
-        \quad Zero penalty gap & \({self.zero_penalized_gap[(opc_20, 'row_gen_alp')].confidence_interval()}\) & \({self.zero_penalized_improvement[(opc_20, 'row_gen_alp')].confidence_interval()}\) & \({self.zero_penalized_gap[(opc_50, 'row_gen_alp')].confidence_interval()}\) & \({self.zero_penalized_improvement[(opc_50, 'row_gen_alp')].confidence_interval()}\) & \({self.zero_penalized_gap[(opc_80, 'row_gen_alp')].confidence_interval()}\) & \({self.zero_penalized_improvement[(opc_80, 'row_gen_alp')].confidence_interval()}\)\\\\
-        \quad Max penalty gap & \({self.penalized_gap[(opc_20, 'row_gen_alp')].confidence_interval()}\) & \({self.penalized_improvement[(opc_20, 'row_gen_alp')].confidence_interval()}\) & \({self.penalized_gap[(opc_50, 'row_gen_alp')].confidence_interval()}\) & \({self.penalized_improvement[(opc_50, 'row_gen_alp')].confidence_interval()}\) & \({self.penalized_gap[(opc_80, 'row_gen_alp')].confidence_interval()}\) & \({self.penalized_improvement[(opc_80, 'row_gen_alp')].confidence_interval()}\)\\\\"""
-        print(table)
     
     def waiting_time_target_ptc_table(self, days=(1, 5, 10, 15, 20)):
         policy_order = [
@@ -348,7 +317,7 @@ class SimulateEvaluationResult:
         }
         table = ''
         for (group_id, policy_id), stats in self.after_warmup_policy_costs.items():
-            table += f"{policy_label.get(policy_id, policy_id)} & ${stats.confidence_interval()}$ & ${self.waiting_time_violation[(group_id, policy_id)].confidence_interval()}$ & ${self.overtime_utilization[(group_id, policy_id)].confidence_interval()}$ & ${self.zero_penalized_improvement[(group_id, policy_id)].confidence_interval()}$ & ${self.penalized_improvement[(group_id, policy_id)].confidence_interval()}$\\\\\n"
+            table += f"{policy_label.get(policy_id, policy_id)} & ${stats.confidence_interval()}$ & ${self.waiting_time_violation[(group_id, policy_id)].confidence_interval()}$ & ${self.overtime_utilization[(group_id, policy_id)].confidence_interval()}$ & ${self.zero_penalized_information_relaxation_cost[(group_id, policy_id)].confidence_interval()}$ & ${self.penalized_information_relaxation_cost[(group_id, policy_id)].confidence_interval()}$ & ${self.zero_penalized_improvement[(group_id, policy_id)].confidence_interval()}$ & ${self.penalized_improvement[(group_id, policy_id)].confidence_interval()}$\\\\\n"
         return table
     
     def plot_percentage_improvement(self, scale, xlabel, ylabel, file_name):
@@ -363,45 +332,6 @@ class SimulateEvaluationResult:
                                                 title=None,
                                                 save_file=os.path.join(self.directory_path,
                                                                         file_name))
-    
-    def last_decision_period_distribution_table(self):
-        group_id ='3ce2a2f68baf077097e28e1f33c60462'
-        table = f"""
-        \quad $\gamma_q=0.99$ & ${self.after_warmup_policy_costs[(group_id, 'approx_penalized_hindsight_geometric_0_99')].confidence_interval()}$ & ${self.zero_penalized_gap[(group_id, 'approx_penalized_hindsight_geometric_0_99')].confidence_interval()}$ & ${self.zero_penalized_improvement[(group_id, 'approx_penalized_hindsight_geometric_0_99')].confidence_interval()}$ & ${self.penalized_gap[(group_id, 'approx_penalized_hindsight_geometric_0_99')].confidence_interval()}$ & ${self.penalized_improvement[(group_id, 'approx_penalized_hindsight_geometric_0_99')].confidence_interval()}$ \\
-        \quad $\gamma_q=0.98$ & ${self.after_warmup_policy_costs[(group_id, 'approx_penalized_hindsight_geometric_0_98')].confidence_interval()}$ & ${self.zero_penalized_gap[(group_id, 'approx_penalized_hindsight_geometric_0_98')].confidence_interval()}$ & ${self.zero_penalized_improvement[(group_id, 'approx_penalized_hindsight_geometric_0_98')].confidence_interval()}$ & ${self.penalized_gap[(group_id, 'approx_penalized_hindsight_geometric_0_98')].confidence_interval()}$ & ${self.penalized_improvement[(group_id, 'approx_penalized_hindsight_geometric_0_98')].confidence_interval()}$ \\
-        \quad $\gamma_q=0.96$ & ${self.after_warmup_policy_costs[(group_id, 'approx_penalized_hindsight_geometric_0_96')].confidence_interval()}$ & ${self.zero_penalized_gap[(group_id, 'approx_penalized_hindsight_geometric_0_96')].confidence_interval()}$ & ${self.zero_penalized_improvement[(group_id, 'approx_penalized_hindsight_geometric_0_96')].confidence_interval()}$ & ${self.penalized_gap[(group_id, 'approx_penalized_hindsight_geometric_0_96')].confidence_interval()}$ & ${self.penalized_improvement[(group_id, 'approx_penalized_hindsight_geometric_0_96')].confidence_interval()}$ \\
-        \quad $\gamma_q=0.95$ & ${self.after_warmup_policy_costs[(group_id, 'approx_penalized_hindsight_geometric_0_95')].confidence_interval()}$ & ${self.zero_penalized_gap[(group_id, 'approx_penalized_hindsight_geometric_0_95')].confidence_interval()}$ & ${self.zero_penalized_improvement[(group_id, 'approx_penalized_hindsight_geometric_0_95')].confidence_interval()}$ & ${self.penalized_gap[(group_id, 'approx_penalized_hindsight_geometric_0_95')].confidence_interval()}$ & ${self.penalized_improvement[(group_id, 'approx_penalized_hindsight_geometric_0_95')].confidence_interval()}$ \\
-        """
-        return table
-    
-    def solver_compare_table(self):
-        approx_penalized_hindsight_approx_penalized_hindsight = 'e654df848c9ae807dfbe799f66450025'
-        approx_penalized_hindsight_approx_Q = 'bb0efe73303985a5a64575177e78b6dd'
-        table = f"""
-        Penalized Hindsight & \({self.policy_costs[(approx_penalized_hindsight_approx_penalized_hindsight, 'approx_penalized_hindsight_approx_penalized_hindsight')].confidence_interval()}\) & \({self.zero_penalized_improvement[(approx_penalized_hindsight_approx_penalized_hindsight, 'approx_penalized_hindsight_approx_penalized_hindsight')].confidence_interval()}\) & \({self.penalized_improvement[(approx_penalized_hindsight_approx_penalized_hindsight, 'approx_penalized_hindsight_approx_penalized_hindsight')].confidence_interval()}\) & \({self.solving_time_per_state[(approx_penalized_hindsight_approx_penalized_hindsight, 'approx_penalized_hindsight_approx_penalized_hindsight')].mean}\) \\
-        Approximate Q Greedy & \({self.policy_costs[(approx_penalized_hindsight_approx_Q, 'approx_penalized_hindsight_approx_Q')].confidence_interval()}\) & \({self.zero_penalized_improvement[(approx_penalized_hindsight_approx_Q, 'approx_penalized_hindsight_approx_Q')].confidence_interval()}\) & \({self.penalized_improvement[(approx_penalized_hindsight_approx_Q, 'approx_penalized_hindsight_approx_Q')].confidence_interval()}\) & \({self.solving_time_per_state[(approx_penalized_hindsight_approx_Q, 'approx_penalized_hindsight_approx_Q')].mean}\) \\
-        ALP & \({self.policy_costs[(approx_penalized_hindsight_approx_penalized_hindsight, 'row_gen_alp')].confidence_interval()}\) & \({self.zero_penalized_improvement[(approx_penalized_hindsight_approx_penalized_hindsight, 'row_gen_alp')].confidence_interval()}\) & \({self.penalized_improvement[(approx_penalized_hindsight_approx_penalized_hindsight, 'row_gen_alp')].confidence_interval()}\) & \({self.solving_time_per_state[(approx_penalized_hindsight_approx_penalized_hindsight, 'row_gen_alp')].mean}\) \\
-        """
-        return table
-    
-    def initial_state_congestion_distribution_table(self):
-        opc_20 = '347989b0945decac3603070c5485b3f8'
-        opc_50 = 'd371745175d939eb1e1cb94afa2d0651'
-        opc_80 = '49a2d779c9d5c1c801c5a6f9fa26c0a3'
-        table = f"""
-        Penalized Hindsight & & & & & & \\\\
-        \quad Policy cost & \({self.policy_costs[(opc_20, 'approx_penalized_hindsight')].confidence_interval()}\) & & \({self.policy_costs[(opc_50, 'approx_penalized_hindsight')].confidence_interval()}\) & &\({self.policy_costs[(opc_80, 'approx_penalized_hindsight')].confidence_interval()}\) & \\\\
-        \quad Zero penalty gap & \({self.zero_penalized_gap[(opc_20, 'approx_penalized_hindsight')].confidence_interval()}\) & \({self.zero_penalized_improvement[(opc_20, 'approx_penalized_hindsight')].confidence_interval()}\) & \({self.zero_penalized_gap[(opc_50, 'approx_penalized_hindsight')].confidence_interval()}\) & \({self.zero_penalized_improvement[(opc_50, 'approx_penalized_hindsight')].confidence_interval()}\) & \({self.zero_penalized_gap[(opc_80, 'approx_penalized_hindsight')].confidence_interval()}\) & \({self.zero_penalized_improvement[(opc_80, 'approx_penalized_hindsight')].confidence_interval()}\)\\\\
-        \quad Max penalty gap & \({self.penalized_gap[(opc_20, 'approx_penalized_hindsight')].confidence_interval()}\) & \({self.penalized_improvement[(opc_20, 'approx_penalized_hindsight')].confidence_interval()}\) & \({self.penalized_gap[(opc_50, 'approx_penalized_hindsight')].confidence_interval()}\) & \({self.penalized_improvement[(opc_50, 'approx_penalized_hindsight')].confidence_interval()}\) & \({self.penalized_gap[(opc_80, 'approx_penalized_hindsight')].confidence_interval()}\) & \({self.penalized_improvement[(opc_80, 'approx_penalized_hindsight')].confidence_interval()}\)\\\\
-        Approximate Q Greedy & & & & & & \\\\
-        \quad Policy cost & \({self.policy_costs[(opc_20, 'approx_Q')].confidence_interval()}\) & & \({self.policy_costs[(opc_50, 'approx_Q')].confidence_interval()}\) & &\({self.policy_costs[(opc_80, 'approx_Q')].confidence_interval()}\) & \\\\
-        \quad Zero penalty gap & \({self.zero_penalized_gap[(opc_20, 'approx_Q')].confidence_interval()}\) & \({self.zero_penalized_improvement[(opc_20, 'approx_Q')].confidence_interval()}\) & \({self.zero_penalized_gap[(opc_50, 'approx_Q')].confidence_interval()}\) & \({self.zero_penalized_improvement[(opc_50, 'approx_Q')].confidence_interval()}\) & \({self.zero_penalized_gap[(opc_80, 'approx_Q')].confidence_interval()}\) & \({self.zero_penalized_improvement[(opc_80, 'approx_Q')].confidence_interval()}\)\\\\
-        \quad Max penalty gap & \({self.penalized_gap[(opc_20, 'approx_Q')].confidence_interval()}\) & \({self.penalized_improvement[(opc_20, 'approx_Q')].confidence_interval()}\) & \({self.penalized_gap[(opc_50, 'approx_Q')].confidence_interval()}\) & \({self.penalized_improvement[(opc_50, 'approx_Q')].confidence_interval()}\) & \({self.penalized_gap[(opc_80, 'approx_Q')].confidence_interval()}\) & \({self.penalized_improvement[(opc_80, 'approx_Q')].confidence_interval()}\)\\\\
-        ALP & & & & & & \\\\
-        \quad Policy cost & \({self.policy_costs[(opc_20, 'row_gen_alp')].confidence_interval()}\) & & \({self.policy_costs[(opc_50, 'row_gen_alp')].confidence_interval()}\) & &\({self.policy_costs[(opc_80, 'row_gen_alp')].confidence_interval()}\) & \\\\
-        \quad Zero penalty gap & \({self.zero_penalized_gap[(opc_20, 'row_gen_alp')].confidence_interval()}\) & \({self.zero_penalized_improvement[(opc_20, 'row_gen_alp')].confidence_interval()}\) & \({self.zero_penalized_gap[(opc_50, 'row_gen_alp')].confidence_interval()}\) & \({self.zero_penalized_improvement[(opc_50, 'row_gen_alp')].confidence_interval()}\) & \({self.zero_penalized_gap[(opc_80, 'row_gen_alp')].confidence_interval()}\) & \({self.zero_penalized_improvement[(opc_80, 'row_gen_alp')].confidence_interval()}\)\\\\
-        \quad Max penalty gap & \({self.penalized_gap[(opc_20, 'row_gen_alp')].confidence_interval()}\) & \({self.penalized_improvement[(opc_20, 'row_gen_alp')].confidence_interval()}\) & \({self.penalized_gap[(opc_50, 'row_gen_alp')].confidence_interval()}\) & \({self.penalized_improvement[(opc_50, 'row_gen_alp')].confidence_interval()}\) & \({self.penalized_gap[(opc_80, 'row_gen_alp')].confidence_interval()}\) & \({self.penalized_improvement[(opc_80, 'row_gen_alp')].confidence_interval()}\)\\\\"""
-        return table
 
 
 def run_improvement_plots(base_results_dir, file_pattern, env_info, group_ids, is_reuse=False):
@@ -426,7 +356,7 @@ if __name__ == "__main__":
     config = get_config_by_type('ejor')
     env = config.env
     waiting_time_targets = [env.holding_cost.get_waiting_target(i) for i in range(env.num_types)]
-    base_results_dir = os.path.join('.', 'experiments', 'results', 'case_study_new_095')
+    base_results_dir = os.path.join('.', 'experiments', 'results', 'case_study_099')
     file_pattern = '[0-9]*.jsonl'
     # group_ids = ['73d11360affe39305e7716cf5c42ac04', '841708e72300000ddfd948daf08d6805', 'a3202d39ed34711b47ecebb72aabad43']
     # run_improvement_plots(
@@ -444,8 +374,6 @@ if __name__ == "__main__":
         )
     
     # print(ser.last_decision_period_distribution_table())
-    print('Summary table')
-    print(ser.performance_summary_table())
     print('ser.zero_penalized_gap')
     pprint(ser.zero_penalized_gap)
     print('ser.penalized_gap')
@@ -457,46 +385,6 @@ if __name__ == "__main__":
     print('ser.penalized_information_relaxation_cost')
     pprint(ser.penalized_information_relaxation_cost)
     print(ser.waiting_time_target_ptc_table())
-    #pprint(ser.waiting_time_target_ptc_by_day)
-    #pprint(ser.waiting_time_target_ptc_by_type_day)
-    # print("Improvement")
-    # pprint(ser.improvement)
-
-    # print('waiting_time_target_ptc_by_day_type')
-    # pprint(ser.waiting_time_target_ptc_by_type_day)
-    # print('waiting_time_target_ptc_by_day')
-    # pprint(ser.waiting_time_target_ptc_by_day)
-
-    # ser.generate_table()
-    # print('self.policy_costs')
-    # print(ser.policy_costs)
-    # print('penalized_improvement')
-    # print(ser.penalized_improvement)
-    # print('zero_improvement')
-    # print(ser.zero_penalized_improvement)
-    # print('Solving time per state')
-    # print(ser.solving_time_per_state)
-    # print(ser.group_ids)
-    # print(ser.initial_state_congestion_distribution_table())
-
-    # To inspect one experiment interactively, instantiate SimulateEvaluationResult
-    # with a specific directory and use the helper methods below.
-
-    # ser.format_table()
-    # pprint(ser.overtime_utilization)
-    # pprint(ser.waiting_time_violation)
-    # print(ser.summary_table())
-    # print(ser.one_time_cost_by_policy)
-    # approximate_value_plot_from_running_stats_dict(running_stats_dict=ser.one_time_cost_by_policy,
-    #                                                x_vals=None,
-    #                                                xticks=None,
-    #                                                xticklabels=None,
-    #                                                xlabel='Time step',
-    #                                                ylabel="One-time cost",
-    #                                                plot_labels={'approx_hindsight': "Hindsight", 'approx_penalized_hindsight': "Penalized Hindsight", 'myopic': "Myopic", 'row_gen_alp': "ALP"},
-    #                                                title=None,
-    #                                                save_file='one_time_cost_by_policy.svg',
-    #                                                is_show_text=False,
-    #                                                is_set_x_color=True)
-    print(geom.ppf(0.985, 0.01))
+    print('Summary table')
+    print(ser.performance_summary_table())
         
