@@ -222,6 +222,15 @@ def _mutate_overtime_cost(env_args, overtime_cost):
 def _mutate_discount_factor(env_args, discount_factor):
     env_args['discount_factor'] = discount_factor
 
+def _mutate_is_proposal_098_const(agent_args, val):
+    """Always set a geometric IS proposal with discount_factor_proposal=0.98.
+
+    Used together with a 0.99 target discount-factor env to importance-sample
+    longer paths from the cheaper 0.98 geometric distribution.
+    """
+    _mutate_discount_factor_for_sample_path_length_proposal(agent_args, 0.98)
+
+
 def _mutate_discount_factor_for_sample_path_length_proposal(agent_args, discount_factor):
     discount_factor_str = str(discount_factor).replace('.', '_')
     agent_args.update({
@@ -356,6 +365,13 @@ EXPERIMENT_SPECS = {
             val_args=[0.99],
             mutate=_mutate_discount_factor,
         ),
+        ExperimentSpec(
+            name='case_study_099_is_098',
+            config_type='ejor',
+            val_args=[0.99],
+            mutate=_mutate_discount_factor,
+            agent_mutate=_mutate_is_proposal_098_const,
+        ),
     ]
 }
 
@@ -373,23 +389,36 @@ def train_penalty_coefficients(env_args, experiment_name, agent_args=None):
     materialized into a SamplePathLengthProposal before constructing the agent.
     '''
     agent_args = dict(agent_args or {})
+    train_agent_args = {
+        'sample_path_number': agent_args['agent_args']['sample_path_number'],
+        'current_decision_var_type': agent_args['agent_args']['current_decision_var_type'],
+        'future_decision_var_type': agent_args['agent_args']['future_decision_var_type'],
+        'penalty_ratio': agent_args['agent_args']['penalty_ratio'],
+    }
+    # Include the IS proposal spec in the cache key so variants with different
+    # proposals are stored and retrieved independently.
+    for _key in ('sample_path_length_proposal', 'sample_path_proposal'):
+        if _key in agent_args.get('agent_args', {}):
+            train_agent_args['sample_path_length_proposal'] = agent_args['agent_args'][_key]
+            break
     train_params = {
-                    'agent_name': agent_args['agent_name'],
-                    'agent_args': {
-                        'sample_path_number': agent_args['agent_args']['sample_path_number'],
-                        'current_decision_var_type': agent_args['agent_args']['current_decision_var_type'],
-                        'future_decision_var_type': agent_args['agent_args']['future_decision_var_type'],
-                        'penalty_ratio': agent_args['agent_args']['penalty_ratio'],
-                    },
-                }
+        'agent_name': agent_args['agent_name'],
+        'agent_args': train_agent_args,
+    }
     cached = _load_cached_training_result(experiment_name, 'penalty_train.jsonl', env_args, agent_args=train_params)
     if cached is not None:
         cached_result = cached.get('result', {})
         cached_obj = cached_result.get('obj_val')
         cached_coefficients = cached_result.get('args', {}).get('coefficients', None)
         cached_info = cached_result.get('info', {})
-        print(f"Use cached penalty coefficients for uid={cached.get('uid')}")
-        return cached_obj, cached_coefficients, cached_info
+        if isinstance(cached_info, dict) and cached_info.get('debug'):
+            print(
+                f"Ignore cached failed penalty coefficients for uid={cached.get('uid')} "
+                f"(debug={cached_info.get('debug')}); retraining."
+            )
+        else:
+            print(f"Use cached penalty coefficients for uid={cached.get('uid')}")
+            return cached_obj, cached_coefficients, cached_info
 
     config_for_train = get_config_by_type('infinite_custom', args=env_args)
     env = config_for_train.env
@@ -397,9 +426,11 @@ def train_penalty_coefficients(env_args, experiment_name, agent_args=None):
     # generating_function = MulticlassLinearPenaltyFunction(env=env)
     inner = dict(agent_args.get('agent_args', {}))
     inner['generating_function'] = generating_function
-    if 'sample_path_length_proposal' in inner:
-        inner['sample_path_length_proposal'] = build_proposal(
-            inner['sample_path_length_proposal']
+    if 'sample_path_length_proposal' in inner and 'sample_path_proposal' not in inner:
+        inner['sample_path_proposal'] = inner.pop('sample_path_length_proposal')
+    if 'sample_path_proposal' in inner:
+        inner['sample_path_proposal'] = build_proposal(
+            inner['sample_path_proposal']
         )
     pprint(inner)
     agent = ApproxQAgent(env=env, discount_factor=env.discount_factor,
@@ -418,7 +449,7 @@ def train_penalty_coefficients(env_args, experiment_name, agent_args=None):
     init_state = (E_u_alpha, E_v_alpha, E_w_alpha)
     env.reset_random_seeds()  # Reset random seeds before training again to ensure the same sample paths
     print(init_state)
-    obj, direct_coefficients, info = agent.benders_decomposition_train(coefficient_bound=1e4, init_state=init_state, parallel=True, verbose=False)
+    obj, direct_coefficients, info = agent.benders_decomposition_train(coefficient_bound=GRB.INFINITY, init_state=init_state, parallel=True, verbose=False)
     print('Obejctive from Benders decomposition training:', obj)
     print('Coefficients from Benders decomposition training:', direct_coefficients)
     _save_training_result(
@@ -605,20 +636,81 @@ def generate_test_paths_and_init_state(test_envs, test_sample_path_num, warm_up_
 
     return results
 
-def generate_train_env(test_envs, dat_file=None):
-    # This function can be implemented to generate parameters for training the agents. The parameters can include different environment configurations, initial states, and sample paths.
+def generate_train_env(
+    test_envs,
+    dat_file=None,
+    num_init_states=256,
+    sample_path_number=256,
+    init_state_seed=12345,
+    sample_paths_seed=42,
+):
+    """Generate (X, Y) training-data commands for the tight penalized
+    information-relaxation lower bound.
+
+    For each variant in ``test_envs``:
+      * X = ``num_init_states`` initial states sampled i.i.d. from the
+        environment's ``generate_initial_state()`` distribution (total bookings
+        per day uniform on [0, regular_capacity + overtime_capacity]; waitlist
+        per type uniform on [0, maximum_arrival]). This covers the feasible
+        state space with stratified coverage of occupancy levels.
+      * Y (computed by ``run.py`` when each command runs) = the tight
+        penalized information-relaxation lower bound at that initial state,
+        obtained by Benders training on a *fixed* set of arrival sample paths.
+        We force the same sample paths across all initial states by pinning
+        ``arrival_random_seed`` (and the related env seeds) to a constant
+        value in every emitted ``env_args``; ``reset_random_seeds()`` is then
+        called inside the trainer before sampling, so every initial state
+        sees the identical Monte-Carlo set.
+
+    One command (one initial state) is written per line so the workload can be
+    farmed out to job-array schedulers.
+    """
     results = []
+    init_state_rng = np.random.default_rng(init_state_seed)
     for (env_uid, experiment_name, mutate_val), variant in test_envs.items():
-        env_args = variant['env_args']
-        agent_args = variant.get('agent_args', {})
-        save_params = {
-                "experiment_name": experiment_name,
-                "mutate_val": mutate_val,
-                "sample_path_number": 256,
-                'env_args': env_args,
+        base_env_args = copy.deepcopy(variant['env_args'])
+        agent_args = copy.deepcopy(variant.get('agent_args', {}))
+
+        # Pin the arrival/sampling seeds so every initial state for this
+        # variant trains against the *same* set of arrival sample paths.
+        # NOTE: in experiment_config.py the env's ``init_state_random_seed``
+        # is derived from ``env_random_seed``; we therefore use
+        # ``env_random_seed`` ONLY for arrival/sampling and override it on a
+        # *separate* sampler env (below) when drawing X.
+        base_env_args['arrival_random_seed'] = sample_paths_seed
+        base_env_args['stop_time_random_seed'] = sample_paths_seed
+        base_env_args['env_random_seed'] = sample_paths_seed
+
+        # Build a sampler env with a *different* env_random_seed so the
+        # initial-state RNG is independent of the (pinned) sample-path RNGs.
+        sampler_env_args = copy.deepcopy(base_env_args)
+        sampler_env_args['env_random_seed'] = int(init_state_rng.integers(0, 2**31 - 1))
+        sampler_env = get_config_by_type('infinite_custom', args=sampler_env_args).env
+
+        for k in range(num_init_states):
+            init_state = sampler_env.generate_initial_state()
+            init_state = tuple(np.array(item).tolist() for item in init_state)
+
+            env_args_k = copy.deepcopy(base_env_args)
+            env_args_k['reset_params'] = dict(env_args_k.get('reset_params', {}))
+            env_args_k['reset_params']['init_state'] = init_state
+
+            save_params = {
+                'experiment_name': experiment_name,
+                'mutate_val': mutate_val,
+                'sample_path_number': sample_path_number,
+                'init_state_index': k,
+                'init_state': init_state,
+                'env_args': env_args_k,
                 'agent_args': agent_args,
             }
-        results.append(save_params)
+            save_params['uid'] = get_uid({
+                'env_args': env_args_k,
+                'agent_args': agent_args,
+                'init_state': init_state,
+            })
+            results.append(save_params)
+
     if dat_file:
         lines_to_write = []
         for line_index, result in enumerate(results, start=1):
@@ -627,7 +719,7 @@ def generate_train_env(test_envs, dat_file=None):
             )
         with open(dat_file, 'w') as f:
             f.writelines(lines_to_write)
-        print(f"Saved {len(lines_to_write)} group commands to {dat_file}")
+        print(f"Saved {len(lines_to_write)} commands to {dat_file}")
     return results
 
 
@@ -637,23 +729,30 @@ if __name__ == '__main__':
     # for experiment_name in experiments:
     #     test_envs.update(build_variation_test_env(EXPERIMENT_SPECS[experiment_name]))
     # test_envs = build_variation_test_env(EXPERIMENT_SPECS['sample_path_length_proposal_fixed'])
-    test_envs = build_variation_test_env(EXPERIMENT_SPECS['case_study_099'])
-    print(test_envs)
-    results = generate_test_paths_and_init_state(
-        test_envs=test_envs,
-        test_sample_path_num=1000,
-        warm_up_periods=750,
-        num_periods=None,
-        dat_file='table.dat',
-        num_groups=998,  # divide into N groups
-        is_require_penalty_coefficients=False,
-        policy_ids=['row_gen_alp', 'myopic'],
-    )
-    # test_envs = build_variation_test_env(EXPERIMENT_SPECS['case_study'])
-    # results = generate_train_env(
+
+    # --- IS training: proposal gamma=0.98, target gamma=0.99 ---
+    # Builds env with discount_factor=0.99 and agent with geometric IS proposal 0.98.
+    # Calling generate_test_paths_and_init_state with is_require_penalty_coefficients=True
+    # will trigger train_penalty_coefficients for each variant, which constructs
+    # ApproxQAgent(sample_path_proposal=GeometricLengthProposal(0.98)) so every
+    # Benders subproblem objective is weighted by (0.99/0.98)^(t-1).
+    # test_envs = build_variation_test_env(EXPERIMENT_SPECS['case_study_099_is_098'])
+    # print(test_envs)
+    # results = generate_test_paths_and_init_state(
     #     test_envs=test_envs,
-    #     dat_file='table.dat'
+    #     test_sample_path_num=1000,
+    #     warm_up_periods=750,
+    #     num_periods=None,
+    #     dat_file='table.dat',
+    #     num_groups=998,  # divide into N groups
+    #     is_require_penalty_coefficients=True,
+    #     policy_ids=['row_gen_alp', 'myopic'],
     # )
+    test_envs = build_variation_test_env(EXPERIMENT_SPECS['case_study_099_is_098'])
+    results = generate_train_env(
+        test_envs=test_envs,
+        dat_file='table.dat'
+    )
 
 
 

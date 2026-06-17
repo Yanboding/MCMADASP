@@ -1,10 +1,12 @@
 import copy
+import gzip
 import json
 import os
 import time
 
 import numpy as np
 from gurobipy import GRB
+from tqdm.auto import tqdm
 
 from utils import solve_and_handle_errors, set_link_rhs
 from concurrent.futures import ThreadPoolExecutor
@@ -49,21 +51,29 @@ def _group_workers_by_env(workers):
     return [groups[key] for key in order]
 
 
-def _dispatch_subproblem_solves(env_groups, active_workers, solve_one, executor):
+def _dispatch_subproblem_solves(env_groups, active_workers, solve_one, executor, progress=None):
     """Solve every worker via ``solve_one(worker)``, respecting env grouping.
 
     Workers in the same env group are solved sequentially on a single thread,
     while different groups run concurrently on ``executor`` (a Gurobi ``Env`` is
     not thread-safe for concurrent optimization). When ``executor`` is ``None``
     the solves run sequentially. Results are returned in ``active_workers``
-    order. Any ``RuntimeError`` raised while starting worker threads propagates
-    to the caller so it can fall back to a sequential strategy.
+    order. If ``progress`` is provided, ``progress.update(1)`` is called after
+    each worker's solve completes (tqdm is thread-safe). Any ``RuntimeError``
+    raised while starting worker threads propagates to the caller so it can
+    fall back to a sequential strategy.
     """
+    def _solve_and_tick(worker):
+        result = solve_one(worker)
+        if progress is not None:
+            progress.update(1)
+        return result
+
     if executor is None:
-        result_by_worker = {id(w): solve_one(w) for group in env_groups for w in group}
+        result_by_worker = {id(w): _solve_and_tick(w) for group in env_groups for w in group}
     else:
         def run_group(group):
-            return [(w, solve_one(w)) for w in group]
+            return [(w, _solve_and_tick(w)) for w in group]
 
         result_by_worker = {}
         for future in [executor.submit(run_group, group) for group in env_groups]:
@@ -108,12 +118,28 @@ def benders_callback(model, where):
             solve_one = lambda w: w.solve(x_vals)
         try:
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                results = _dispatch_subproblem_solves(env_groups, active_workers, solve_one, executor)
+                with tqdm(
+                    total=len(active_workers),
+                    desc=f"Callback iter {k} subproblems",
+                    leave=False,
+                    dynamic_ncols=True,
+                ) as progress:
+                    results = _dispatch_subproblem_solves(
+                        env_groups, active_workers, solve_one, executor, progress=progress
+                    )
         except RuntimeError as exc:
             if "can't start new thread" not in str(exc):
                 raise
             print("Falling back to sequential Benders subproblem solves: unable to start worker threads.")
-            results = _dispatch_subproblem_solves(env_groups, active_workers, solve_one, None)
+            with tqdm(
+                total=len(active_workers),
+                desc=f"Callback iter {k} subproblems",
+                leave=False,
+                dynamic_ncols=True,
+            ) as progress:
+                results = _dispatch_subproblem_solves(
+                    env_groups, active_workers, solve_one, None, progress=progress
+                )
 
         # 4. Process results and add Lazy Constraints
         for i, (is_feasible, obj_val, duals) in enumerate(results):
@@ -307,22 +333,85 @@ class BendersDecompositionSolver:
         self.theta_vars = theta_vars
         self.action_vars = action_vars
 
+    @staticmethod
+    def _checkpoint_paths(checkpoint_path):
+        return f"{checkpoint_path}.meta.json", f"{checkpoint_path}.cuts.jsonl.gz"
+
+    @staticmethod
+    def _encode_vector(values, zero_tol=1e-12, sparse_density=0.35):
+        vector = np.asarray(values, dtype=float).ravel()
+        nonzero_idx = np.flatnonzero(np.abs(vector) > zero_tol)
+
+        if nonzero_idx.size == 0:
+            return {
+                'format': 'zero',
+                'size': int(vector.size),
+            }
+
+        if nonzero_idx.size <= sparse_density * vector.size:
+            return {
+                'format': 'sparse',
+                'size': int(vector.size),
+                'indices': nonzero_idx.tolist(),
+                'values': vector[nonzero_idx].tolist(),
+            }
+
+        return {
+            'format': 'dense',
+            'values': vector.tolist(),
+        }
+
+    @staticmethod
+    def _decode_vector(payload):
+        if isinstance(payload, list):
+            return np.asarray(payload, dtype=float)
+
+        vector_format = payload.get('format', 'dense')
+        if vector_format == 'zero':
+            return np.zeros(int(payload['size']), dtype=float)
+        if vector_format == 'sparse':
+            vector = np.zeros(int(payload['size']), dtype=float)
+            indices = np.asarray(payload['indices'], dtype=int)
+            values = np.asarray(payload['values'], dtype=float)
+            vector[indices] = values
+            return vector
+        if vector_format == 'dense':
+            return np.asarray(payload['values'], dtype=float)
+
+        raise ValueError(f"Unsupported vector format: {vector_format}")
+
+    def _normalize_cut_record(self, record):
+        coefficients = self._decode_vector(record['coefficients'])
+        if 'intercept' in record:
+            intercept = float(record['intercept'])
+        else:
+            action_values = self._decode_vector(record['action_values'])
+            intercept = float(record['rhs_value']) - float(np.dot(coefficients, action_values))
+
+        return {
+            'kind': record['kind'],
+            'scenario_id': int(record['scenario_id']),
+            'sense': record.get('sense', 'ge'),
+            'intercept': intercept,
+            'coefficients': self._encode_vector(coefficients),
+        }
+
     def _cut_to_record(self, kind, scenario_id, coefficients, rhs_value, action_values, sense='ge'):
-        coefficients = np.asarray(coefficients, dtype=float).tolist()
-        action_values = np.asarray(action_values, dtype=float).tolist()
+        coefficients = np.asarray(coefficients, dtype=float)
+        action_values = np.asarray(action_values, dtype=float)
+        intercept = float(rhs_value) - float(np.dot(coefficients, action_values))
         return {
             'kind': kind,
             'scenario_id': int(scenario_id),
             'sense': sense,
-            'rhs_value': float(rhs_value),
-            'coefficients': coefficients,
-            'action_values': action_values,
+            'intercept': intercept,
+            'coefficients': self._encode_vector(coefficients),
         }
 
     def _cut_record_to_constraint(self, record):
-        coefficients = np.asarray(record['coefficients'], dtype=float)
-        action_values = np.asarray(record['action_values'], dtype=float)
-        intercept = float(record['rhs_value']) - float(np.dot(coefficients, action_values))
+        record = self._normalize_cut_record(record)
+        coefficients = self._decode_vector(record['coefficients'])
+        intercept = float(record['intercept'])
         cut_expr = intercept + sum(coefficients[j] * self.action_vars[j] for j in range(len(coefficients)))
 
         if record['kind'] == 'optimality':
@@ -338,28 +427,111 @@ class BendersDecompositionSolver:
 
         raise ValueError(f"Unsupported cut kind: {record['kind']}")
 
-    def _load_cut_checkpoint(self, checkpoint_path):
-        if not checkpoint_path or not os.path.exists(checkpoint_path):
-            return {'cuts': [], 'core_point': None, 'lower_bound': None, 'upper_bound': None, 'iteration': 0}
-
-        with open(checkpoint_path, 'r') as f:
-            state = json.load(f)
-
-        for record in state.get('cuts', []):
-            self.master_model.addConstr(
-                self._cut_record_to_constraint(record),
-                name=f"reloaded_{record['kind']}_cut_s{record['scenario_id']}",
-            )
-
-        return state
-
-    def _save_cut_checkpoint(self, checkpoint_path, state):
+    def _reset_checkpoint_store(self, checkpoint_path):
         if not checkpoint_path:
             return
-        tmp_path = f"{checkpoint_path}.tmp"
-        with open(tmp_path, 'w') as f:
-            json.dump(state, f)
-        os.replace(tmp_path, checkpoint_path)
+
+        meta_path, cuts_path = self._checkpoint_paths(checkpoint_path)
+        for path in (checkpoint_path, meta_path, cuts_path):
+            if os.path.exists(path):
+                os.remove(path)
+
+    @staticmethod
+    def _read_json_file(path):
+        try:
+            with gzip.open(path, 'rt', encoding='utf-8') as handle:
+                return json.load(handle)
+        except (OSError, gzip.BadGzipFile):
+            with open(path, 'r', encoding='utf-8') as handle:
+                return json.load(handle)
+
+    @staticmethod
+    def _iter_cut_records(path):
+        if not os.path.exists(path):
+            return
+
+        try:
+            with gzip.open(path, 'rt', encoding='utf-8') as handle:
+                for line in handle:
+                    if line.strip():
+                        yield json.loads(line)
+            return
+        except (OSError, gzip.BadGzipFile):
+            pass
+
+        with open(path, 'r', encoding='utf-8') as handle:
+            for line in handle:
+                if line.strip():
+                    yield json.loads(line)
+
+    def _load_cut_checkpoint(self, checkpoint_path):
+        empty_state = {
+            'cuts': [],
+            'cut_count': 0,
+            'core_point': None,
+            'lower_bound': None,
+            'upper_bound': None,
+            'iteration': 0,
+        }
+        if not checkpoint_path:
+            return empty_state
+
+        meta_path, cuts_path = self._checkpoint_paths(checkpoint_path)
+
+        if os.path.exists(meta_path):
+            state = self._read_json_file(meta_path)
+            cut_records = []
+            for cut_index, record in enumerate(self._iter_cut_records(cuts_path)):
+                normalized = self._normalize_cut_record(record)
+                cut_records.append(normalized)
+                self.master_model.addConstr(
+                    self._cut_record_to_constraint(normalized),
+                    name=f"reloaded_{normalized['kind']}_cut_{cut_index}",
+                )
+            state['cuts'] = cut_records
+            state['cut_count'] = len(cut_records)
+            return state
+
+        if not os.path.exists(checkpoint_path):
+            return empty_state
+
+        state = self._read_json_file(checkpoint_path)
+        normalized_records = []
+        for cut_index, record in enumerate(state.get('cuts', [])):
+            normalized = self._normalize_cut_record(record)
+            normalized_records.append(normalized)
+            self.master_model.addConstr(
+                self._cut_record_to_constraint(normalized),
+                name=f"reloaded_{normalized['kind']}_cut_{cut_index}",
+            )
+
+        state['cuts'] = normalized_records
+        state['cut_count'] = len(normalized_records)
+        return state
+
+    def _save_cut_checkpoint(self, checkpoint_path, state, new_cut_records=None):
+        if not checkpoint_path:
+            return
+
+        meta_path, cuts_path = self._checkpoint_paths(checkpoint_path)
+
+        if new_cut_records:
+            with gzip.open(cuts_path, 'at', encoding='utf-8') as handle:
+                for record in new_cut_records:
+                    handle.write(json.dumps(record, separators=(',', ':')))
+                    handle.write('\n')
+
+        metadata = {
+            'iteration': int(state.get('iteration', 0) or 0),
+            'lower_bound': state.get('lower_bound'),
+            'upper_bound': state.get('upper_bound'),
+            'core_point': state.get('core_point'),
+            'cut_count': int(state.get('cut_count', 0) or 0),
+        }
+        tmp_path = f"{meta_path}.tmp"
+        with open(tmp_path, 'w', encoding='utf-8') as handle:
+            json.dump(metadata, handle, separators=(',', ':'))
+        os.replace(tmp_path, meta_path)
 
     def update_core_point(self, core: np.ndarray, xk: np.ndarray, k: int, alpha: float | None = None) -> np.ndarray:
         xk = np.asarray(xk, dtype=float)
@@ -400,23 +572,38 @@ class BendersDecompositionSolver:
         transparently falls back to a sequential solve (with per-subproblem
         timing) if worker threads cannot be started. Returns the results aligned
         to ``active_workers`` together with the (possibly disabled) executor.
+        A tqdm progress bar tracks per-worker completion (with ETA) regardless
+        of which path is taken.
         """
+        progress_kwargs = dict(
+            total=len(active_workers),
+            desc=f"Iter {global_iteration} subproblems",
+            leave=False,
+            dynamic_ncols=True,
+        )
         if executor is not None:
             try:
-                results = _dispatch_subproblem_solves(env_groups, active_workers, solve_one, executor)
+                with tqdm(**progress_kwargs) as progress:
+                    results = _dispatch_subproblem_solves(
+                        env_groups, active_workers, solve_one, executor, progress=progress
+                    )
                 return results, executor
             except RuntimeError as exc:
                 if "can't start new thread" not in str(exc):
                     raise
-                print("Falling back to sequential Benders subproblem solves: unable to start worker threads.")
+                tqdm.write("Falling back to sequential Benders subproblem solves: unable to start worker threads.")
                 executor.shutdown(wait=True, cancel_futures=True)
                 executor = None
 
         results = []
-        for idx, worker in enumerate(active_workers):
-            start = time.time()
-            results.append(solve_one(worker))
-            print(f"Iteration {global_iteration}, subproblem {idx} solved in {time.time() - start:.2f}s")
+        with tqdm(**progress_kwargs) as progress:
+            for idx, worker in enumerate(active_workers):
+                start = time.time()
+                results.append(solve_one(worker))
+                progress.update(1)
+                tqdm.write(
+                    f"Iteration {global_iteration}, subproblem {idx} solved in {time.time() - start:.2f}s"
+                )
         return results, executor
 
     def _build_cuts(self, results, active_workers, action):
@@ -484,13 +671,16 @@ class BendersDecompositionSolver:
         resolved_max_workers = _resolve_parallel_workers(max_workers, len(env_groups))
         executor = ThreadPoolExecutor(max_workers=resolved_max_workers) if parallel else None
 
+        if checkpoint_path and not resume_checkpoint_path:
+            self._reset_checkpoint_store(checkpoint_path)
+
         checkpoint_state = self._load_cut_checkpoint(resume_checkpoint_path)
         if checkpoint_state.get('core_point') is not None:
             core_point = np.asarray(checkpoint_state['core_point'], dtype=float)
         lower_bound = checkpoint_state.get('lower_bound', lower_bound) or lower_bound
         upper_bound = checkpoint_state.get('upper_bound', upper_bound) or upper_bound
         iteration_offset = int(checkpoint_state.get('iteration', 0) or 0)
-        cut_records = list(checkpoint_state.get('cuts', []))
+        cut_count = int(checkpoint_state.get('cut_count', 0) or 0)
         try:
             for iteration in range(1, max_iter + 1):
                 global_iteration = iteration_offset + iteration
@@ -576,10 +766,10 @@ class BendersDecompositionSolver:
                     'lower_bound': None if np.isinf(lower_bound) else float(lower_bound),
                     'upper_bound': None if np.isinf(upper_bound) else float(upper_bound),
                     'core_point': None if core_point is None else np.asarray(core_point, dtype=float).tolist(),
-                    'cuts': cut_records + new_cut_records,
+                    'cut_count': cut_count + len(new_cut_records),
                 }
-                self._save_cut_checkpoint(checkpoint_path, checkpoint_state)
-                cut_records.extend(new_cut_records)
+                self._save_cut_checkpoint(checkpoint_path, checkpoint_state, new_cut_records=new_cut_records)
+                cut_count += len(new_cut_records)
 
                 if abs(upper_bound - lower_bound) < tol:
                     info = {}

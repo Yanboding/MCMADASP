@@ -16,7 +16,7 @@ from scipy.stats import geom
 from experiments.experiment_config import get_config_by_type
 from importance_sampling import build_proposal
 from utils import iter_to_tuple, get_uid, safe_open, RunningStats, encode, decode, get_solution_value, acquire_grb_env, read_lines_with_pattern
-from decision_maker import InfiniteSAAAgent, InfinitePenalizedSAAAgent, MyopicAgent, ALPRowGenerationAgent, ApproxQAgent
+from decision_maker import MyopicAgent, ALPRowGenerationAgent, ApproxQAgent
 from policy_evaluator import PolicyEvaluator
 from generating_function import MulticlassLinearPenaltyFunction, LinearPenaltyFunction
 
@@ -730,9 +730,11 @@ def train_penalty_coefficients(env_args, experiment_name, sample_path_number, mu
     generating_function = LinearPenaltyFunction(env=env)
     inner = dict(agent_args.get('agent_args', {}))
     inner['generating_function'] = generating_function
-    if 'sample_path_length_proposal' in inner:
-        inner['sample_path_length_proposal'] = build_proposal(
-            inner['sample_path_length_proposal']
+    if 'sample_path_length_proposal' in inner and 'sample_path_proposal' not in inner:
+        inner['sample_path_proposal'] = inner.pop('sample_path_length_proposal')
+    if 'sample_path_proposal' in inner:
+        inner['sample_path_proposal'] = build_proposal(
+            inner['sample_path_proposal']
         )
     pprint(inner)
     sample_path_number = agent_args['agent_args']['sample_path_number']
@@ -774,6 +776,117 @@ def train_penalty_coefficients(env_args, experiment_name, sample_path_number, mu
     )
 
     return obj, direct_coefficients, info
+
+
+def train_lowerbound_for_init_state(
+    uid,
+    experiment_name,
+    mutate_val,
+    sample_path_number,
+    init_state_index,
+    init_state,
+    env_args,
+    agent_args,
+    grb_env,
+    grb_sub_envs,
+    job_id,
+):
+    """Compute the tight penalized information-relaxation lower bound at a
+    single supplied initial state.
+
+    X = ``init_state`` (one of the states drawn by ``generate_train_env``).
+    Y = the Benders-trained tight penalized lower bound at X using the same
+    Monte-Carlo arrival sample paths for every command (forced by
+    ``env.reset_random_seeds()`` and the pinned arrival seeds in env_args).
+
+    One JSONL record per init_state is appended to
+    ``experiments/results/<experiment_name>/<job_id>.jsonl`` so the workload
+    can be split across a job array. Records that already exist (matched on
+    ``(uid, policy_id='tight_penalized_lower_bound')``) are skipped.
+    """
+    output_file = os.path.join(
+        'experiments', 'results', experiment_name, f'{job_id}.jsonl'
+    )
+    os.makedirs(os.path.dirname(output_file), exist_ok=True)
+    policy_id = 'tight_penalized_lower_bound'
+    if jsonl_result_exists(output_file, uid, policy_id):
+        print(
+            f"Skip duplicate training result: uid={uid}, "
+            f"init_state_index={init_state_index}"
+        )
+        return None
+
+    config = get_config_by_type('infinite_custom', args=env_args)
+    env = config.env
+    generating_function = LinearPenaltyFunction(env=env)
+
+    inner = dict((agent_args or {}).get('agent_args', {}))
+    inner['generating_function'] = generating_function
+    if 'sample_path_length_proposal' in inner and 'sample_path_proposal' not in inner:
+        inner['sample_path_proposal'] = inner.pop('sample_path_length_proposal')
+    if 'sample_path_proposal' in inner:
+        inner['sample_path_proposal'] = build_proposal(
+            inner['sample_path_proposal']
+        )
+    inner['sample_path_number'] = sample_path_number
+
+    agent = ApproxQAgent(
+        env=env,
+        discount_factor=env.discount_factor,
+        grb_env=grb_env,
+        subproblem_grb_envs=grb_sub_envs,
+        **inner,
+    )
+
+    init_state_tuple = tuple(np.array(item) for item in init_state)
+    # Reset RNGs so every command (every init_state) sees the *same*
+    # Monte-Carlo arrival sample paths. The pinned env_random_seed /
+    # arrival_random_seed in env_args (set by generate_train_env) ensures the
+    # underlying generators are identical across commands; this call rewinds
+    # them to the start before sampling.
+    env.reset_random_seeds()
+
+    print(
+        f"Training tight penalized lower bound for uid={uid}, "
+        f"init_state_index={init_state_index}, "
+        f"sample_path_number={sample_path_number}"
+    )
+    start = time.time()
+    obj, coefficients, info = agent.benders_decomposition_train(
+        coefficient_bound=GRB.INFINITY,
+        init_state=init_state_tuple,
+        parallel=True,
+        verbose=False,
+    )
+    elapsed = time.time() - start
+    print(
+        f"  obj={obj}, elapsed={elapsed:.1f}s"
+    )
+
+    init_state_jsonable = [np.asarray(item).tolist() for item in init_state]
+    if hasattr(coefficients, 'tolist'):
+        coefficients_jsonable = coefficients.tolist()
+    else:
+        coefficients_jsonable = list(coefficients)
+
+    record = {
+        'uid': uid,
+        'policy_id': policy_id,
+        'experiment_name': experiment_name,
+        'mutate_val': mutate_val,
+        'init_state_index': init_state_index,
+        'init_state': init_state_jsonable,
+        'sample_path_number': sample_path_number,
+        'tight_penalized_lower_bound': float(obj),
+        'coefficients': coefficients_jsonable,
+        'training_time_seconds': elapsed,
+    }
+
+    with open(output_file, 'a') as f:
+        f.write(json.dumps(record) + '\n')
+    return record
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Example of using argparse to pass in a list of lists.")
     parser.add_argument('--params', help='Input JSON-encoded list of lists', type=str)
@@ -799,10 +912,25 @@ if __name__ == '__main__':
     # sequentially (see SubproblemWorker grouping in the Benders solver), so we
     # only hold `min(sample_path_number, num_cpus)` tokens instead of one per
     # subproblem.
+    def _sample_path_number_for_param(param):
+        # 1) Evaluation records embed it under each policy_spec.agent_args.
+        for spec in param.get('policy_specs', []) or []:
+            n = spec.get('agent_args', {}).get('sample_path_number', 0)
+            if n:
+                return n
+        # 2) Training records (generate_train_env) put it at the top level
+        #    and / or under agent_args.agent_args.
+        n = param.get('sample_path_number', 0)
+        if n:
+            return n
+        return (
+            param.get('agent_args', {})
+            .get('agent_args', {})
+            .get('sample_path_number', 0)
+        )
+
     sample_path_number = max(
-        (spec.get('agent_args', {}).get('sample_path_number', 0)
-         for param in params
-         for spec in param.get('policy_specs', [])),
+        (_sample_path_number_for_param(param) for param in params),
         default=0,
     )
     slurm_cpus = os.environ.get("SLURM_CPUS_PER_TASK") or os.environ.get("SLURM_CPUS_ON_NODE")
@@ -816,4 +944,28 @@ if __name__ == '__main__':
         for _ in range(num_sub_envs)
     ]
     for param in params:
-        evaluate_policy_costs_with_information_relaxation(**param, grb_env=grb_env, grb_sub_envs=grb_sub_envs, job_id=args.job_id)
+        # Dispatch on the shape of the params record:
+        #   * generate_test_paths_and_init_state -> contains 'policy_specs'
+        #     -> evaluate policy costs against information-relaxation bounds.
+        #   * generate_train_env -> contains 'init_state_index' (and no
+        #     'policy_specs') -> train the tight penalized lower bound at a
+        #     single initial state and emit one (X, Y) record.
+        if 'policy_specs' in param:
+            evaluate_policy_costs_with_information_relaxation(
+                **param,
+                grb_env=grb_env,
+                grb_sub_envs=grb_sub_envs,
+                job_id=args.job_id,
+            )
+        elif 'init_state_index' in param:
+            train_lowerbound_for_init_state(
+                **param,
+                grb_env=grb_env,
+                grb_sub_envs=grb_sub_envs,
+                job_id=args.job_id,
+            )
+        else:
+            raise ValueError(
+                "Unrecognized params payload: expected either 'policy_specs' "
+                "(evaluation) or 'init_state_index' (training) in record."
+            )

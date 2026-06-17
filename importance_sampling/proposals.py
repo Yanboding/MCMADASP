@@ -70,7 +70,8 @@ class SamplePathLengthProposal(ABC):
                 raise ValueError(
                     "Proposal survival probability must be positive on every sampled period."
                 )
-            target_survival = target_discount_factor ** periods
+            # One-based period indexing: P(L >= t) = gamma ** (t - 1).
+            target_survival = target_discount_factor ** (periods - 1)
             period_weights.append(target_survival / proposal_survival)
         return period_weights
 
