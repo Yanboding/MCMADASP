@@ -11,7 +11,7 @@ from gurobipy import GRB
 from decision_maker import InfiniteRTAgent
 from importance_sampling.proposals import ArrivalGeneratorSamplePathProposal
 from metaheuristic_algorithm import SubproblemWorker, BendersDecompositionSolver
-from utils import solve_and_handle_errors, flatten, set_link_rhs, acquire_grb_env, encode
+from utils import solve_and_handle_errors, flatten, set_link_rhs, acquire_grb_env, encode, get_status_string
 
 class ApproxQAgent(InfiniteRTAgent):
 
@@ -367,7 +367,250 @@ class ApproxQAgent(InfiniteRTAgent):
         generating_function = self._require_generating_function()
         generating_function.set_coefficients(self.coefficients)
         return upper_bound, self.coefficients, info
-    
+
+    @staticmethod
+    def _expression_has_variables(expression):
+        """True when a built penalty-feature entry depends on decision variables.
+
+        Structural zeros (numeric 0 from coefficient blocks that have no penalty
+        feature, e.g. the state-only blocks of the quadratic penalty) and empty
+        linear expressions get no coupling row: their coefficient is not
+        identified by the lower bound and is fixed to 0.
+        """
+        if isinstance(expression, (int, float, np.floating, np.integer)):
+            return False
+        size_fn = getattr(expression, "size", None)
+        if callable(size_fn):
+            try:
+                return size_fn() > 0
+            except Exception:
+                return True
+        return True
+
+    def extensive_form_train(self,
+                             init_state=None,
+                             coefficient_bound=GRB.INFINITY,
+                             crossover=False,
+                             verbose=False):
+        """Train penalty coefficients by solving the deterministic-equivalent
+        (extensive-form) problem in one shot with an interior-point method.
+
+        ``benders_decomposition_train`` solves the saddle problem
+
+            max_kappa (1/N) sum_omega min_{d_omega}
+                [ Cost_omega(d_omega) + kappa . phi_omega(d_omega) ]
+
+        by decomposition. Because every inner minimisation is an LP (all
+        training decisions are continuous) and the penalty is linear in kappa,
+        minimax/LP duality gives the equivalent single minimisation
+
+            min_{d_1..d_N}  (1/N) sum_omega Cost_omega(d_omega)
+            s.t.            (1/N) sum_omega phi_omega(d_omega) = 0
+
+        with one coupling row per coefficient. Its optimal value equals the
+        penalized lower bound, and the dual multipliers on the coupling rows are
+        exactly the optimal coefficients kappa. This method builds that single
+        large model (all scenarios plus the shared coupling rows) and solves it
+        with the barrier method, so it can be benchmarked against parallel
+        Benders. ``phi_omega`` is the per-coefficient penalty feature returned by
+        ``generating_function.calculate_gradient``.
+
+        Coefficients whose penalty feature is identically zero (e.g. the
+        state-only blocks of the quadratic penalty) are unidentified by the
+        lower bound and are returned as 0, matching the Benders optimum (they do
+        not affect the bound). An unbounded coefficient box (the default) is
+        required: a finite bound would relax the coupling equalities into an L1
+        penalty, which is not handled here.
+        """
+        if coefficient_bound != GRB.INFINITY:
+            raise ValueError(
+                "extensive_form_train requires coefficient_bound=GRB.INFINITY; a finite "
+                "bound would relax the coupling equalities into an L1-penalized objective.")
+        overall_start = time.time()
+        generating_function = self._require_generating_function()
+        number_of_coefficients = generating_function.number_of_coefficients
+        sample_path_number = self.sample_path_number
+
+        model = gp.Model("ExtensiveForm_Train", env=self.grb_env)
+        # Interior-point (barrier) solve. The barrier solution already exposes
+        # the dual values (Pi) needed to recover the coefficients, so crossover
+        # is disabled by default for speed (enable it for a cleaner basis).
+        model.setParam("Method", 2)
+        model.setParam("Crossover", 1 if crossover else 0)
+        model.setParam("MultiObjPre", 0)
+        # DualReductions=0 stops presolve from collapsing a numerically hard but
+        # well-posed model into the ambiguous INF_OR_UNBD status (the usual cause
+        # of a barrier-without-crossover "could not solve" failure on the large
+        # monolithic LP). BarHomogeneous + NumericFocus make the barrier robust
+        # on the coupling-heavy system.
+        model.setParam("DualReductions", 0)
+        model.setParam("BarHomogeneous", 1)
+        model.setParam("NumericFocus", 2)
+        model.setParam("FeasibilityTol", 1e-9)
+        model.setParam("OptimalityTol", 1e-9)
+        if not verbose:
+            model.Params.OutputFlag = 0
+
+        build_start = time.time()
+        inv_n = 1.0 / sample_path_number
+        # ``gradient_coupling_blocks`` (when the generating function provides it)
+        # returns each active coefficient block as ONE Gurobi matrix expression,
+        # so an entire I*T block is built/accumulated with a single vectorised
+        # operation instead of I*T per-scalar Python calls. Generating functions
+        # without it fall back to the per-coefficient ``calculate_gradient`` path.
+        use_blocks = hasattr(generating_function, "gradient_coupling_blocks")
+        scenario_objectives = []
+        block_slices = None          # list of (start, stop) flat-index ranges
+        block_scenario_sums = None   # parallel list: per-scenario summed matrices
+        feature_partials = None
+        if not use_blocks:
+            feature_partials = [[] for _ in range(number_of_coefficients)]
+        for scenario_id in range(sample_path_number):
+            state = self.env.generate_initial_state() if init_state is None else init_state
+            state_var = self.get_state_var(model)
+            state_linking_constraints = self.build_state_linking_constraints(model, state_var)
+            set_link_rhs(state_linking_constraints, flatten(state))
+            action_var = self.get_action_var(model=model, advance_scheduling_type=self.future_decision_var_type)
+            self.add_action_space_constraints(model=model, state_var=state_var, action_var=action_var)
+            # Per-scenario term lists keep only ~horizon expressions alive at a
+            # time; one gp.quicksum at the scenario boundary avoids the
+            # O(periods^2) recopying of an incrementally grown gp expression.
+            objective_terms = [self.env.cost_fn(state_var, action_var, is_var=True)]
+            scenario_block_terms = None
+            scenario_feature = None
+            if not use_blocks:
+                scenario_feature = np.zeros(number_of_coefficients, dtype=object)
+            for period_index, new_arrival in enumerate(self.delta[scenario_id]):
+                likelihood_ratio = self._get_period_likelihood_ratio(scenario_id, period_index)
+                if use_blocks:
+                    blocks = generating_function.gradient_coupling_blocks(
+                        state_var, action_var, new_arrival, is_var=True,
+                        weight=likelihood_ratio)
+                    if block_slices is None:
+                        block_slices = [(start, stop) for (start, stop, _) in blocks]
+                        block_scenario_sums = [[] for _ in block_slices]
+                    if scenario_block_terms is None:
+                        scenario_block_terms = [[] for _ in blocks]
+                    for b, (_, _, matrix) in enumerate(blocks):
+                        # ``weight`` (the likelihood ratio) is already folded into
+                        # ``matrix`` by gradient_coupling_blocks, so no extra
+                        # scalar*matrix pass is needed here.
+                        scenario_block_terms[b].append(matrix)
+                else:
+                    feature = np.asarray(
+                        generating_function.calculate_gradient(state_var, action_var, new_arrival, is_var=True),
+                        dtype=object)
+                    scenario_feature = scenario_feature + likelihood_ratio * feature
+                state_var = self.get_next_state(model=model,
+                                                state=state_var,
+                                                action=action_var,
+                                                new_arrival=new_arrival)
+                action_var = self.get_action_var(model=model, advance_scheduling_type=self.future_decision_var_type)
+                self.add_action_space_constraints(model=model, state_var=state_var, action_var=action_var)
+                objective_terms.append(likelihood_ratio * self.env.cost_fn(state_var, action_var, is_var=True))
+            scenario_objectives.append(gp.quicksum(objective_terms))
+            if use_blocks:
+                if scenario_block_terms is not None:
+                    for b, terms in enumerate(scenario_block_terms):
+                        block_scenario_sums[b].append(gp.quicksum(terms))
+            else:
+                for k in range(number_of_coefficients):
+                    partial = scenario_feature[k]
+                    if self._expression_has_variables(partial):
+                        feature_partials[k].append(partial)
+
+        # Scaling BOTH the objective and every coupling row by the same constant
+        # N (i.e. dropping the shared 1/N factor) leaves the minimiser and the
+        # optimal duals kappa unchanged - the Lagrangian stationarity conditions
+        # are identical - while avoiding an expensive scalar*expression rescan of
+        # the full extensive-form objective and each I*T coupling matrix. We undo
+        # the N factor on the reported objective value only (ObjVal * inv_n).
+        objective = gp.quicksum(scenario_objectives)
+        model.setObjective(objective, GRB.MINIMIZE)
+
+        # Coupling rows enforce sum_omega sum_t likelihood * phi == 0 (the shared
+        # 1/N is dropped, see above). The block path adds one matrix equality
+        # (I*T rows) per active block; the generic path adds one scalar equality
+        # per identified coefficient.
+        coupling_constraints = [None] * number_of_coefficients
+        block_constraints = []
+        if use_blocks:
+            if block_slices is not None:
+                for b, (start, stop) in enumerate(block_slices):
+                    total = gp.quicksum(block_scenario_sums[b])
+                    constraint = model.addConstr(total == 0.0, name=f"couple_{start}_{stop}")
+                    block_constraints.append((start, stop, constraint))
+        else:
+            for k in range(number_of_coefficients):
+                if feature_partials[k]:
+                    expression = gp.quicksum(feature_partials[k])
+                    coupling_constraints[k] = model.addConstr(expression == 0.0, name=f"couple_{k}")
+        build_time = time.time() - build_start
+        print(f"[TIMING] Extensive-form model building: {build_time:.2f}s")
+
+        solver_start = time.time()
+        # A pure barrier (no crossover) returns OPTIMAL or SUBOPTIMAL with usable
+        # duals. If it still terminates in a non-solution status (NUMERIC, etc.)
+        # on this large coupling-heavy LP, fall back to a crossover pass, which
+        # also yields a clean basic optimum and reliable shadow prices.
+        acceptable = {GRB.OPTIMAL, GRB.SUBOPTIMAL}
+        model.optimize()
+        if model.Status not in acceptable and not crossover:
+            if verbose:
+                print(f"[WARN] Barrier terminated with status "
+                      f"{get_status_string(model.Status)} ({model.Status}); "
+                      f"retrying with crossover.")
+            model.setParam("Crossover", 1)
+            model.optimize()
+        solver_time = time.time() - solver_start
+        if model.Status not in acceptable or model.SolCount == 0:
+            raise RuntimeError(
+                "Extensive-form training model could not be solved to optimality "
+                f"(status: {get_status_string(model.Status)} [{model.Status}])")
+        if verbose:
+            print(f"[TIMING] Extensive-form solver execution: {solver_time:.2f}s")
+
+        # kappa = dual multiplier of the coupling row. The objective and every
+        # coupling row were scaled by the same constant N (the shared 1/N was
+        # dropped to avoid rescanning the full extensive-form expressions), which
+        # leaves both the minimiser and the optimal duals kappa unchanged. With
+        # min (1/N) sum Cost s.t. (1/N) sum phi == 0 the Lagrangian is
+        # (1/N) sum [Cost + kappa . phi], so kappa = -Pi under Gurobi's
+        # shadow-price sign convention for equality constraints (verified
+        # against benders_decomposition_train on the toy instance).
+        coefficients = np.zeros(number_of_coefficients, dtype=float)
+        if use_blocks:
+            # One matrix constraint per active block: its .Pi is an array whose
+            # C-order flattening matches the flat coefficient slice [start:stop]
+            # (same row-major (I, T) layout as the generating function's blocks).
+            for (start, stop, constraint) in block_constraints:
+                coefficients[start:stop] = -np.asarray(constraint.Pi, dtype=float).reshape(-1)
+        else:
+            for k in range(number_of_coefficients):
+                constraint = coupling_constraints[k]
+                if constraint is not None:
+                    coefficients[k] = -float(constraint.Pi)
+        coefficients = coefficients.tolist()
+
+        self.coefficients = coefficients
+        self.is_trained = True
+        generating_function.set_coefficients(self.coefficients)
+
+        overall_time = time.time() - overall_start
+        info = {
+            'importance_sampling': self._build_importance_sampling_info(),
+            'timing': {
+                'overall': overall_time,
+                'model_building': build_time,
+                'solver': solver_time,
+            },
+        }
+        if verbose:
+            print(f"[TIMING] Total extensive-form training time: {overall_time:.2f}s")
+        # ObjVal is for the N-scaled objective (sum, not mean); undo the factor
+        # to report the penalized-lower-bound mean (1/N) sum Cost.
+        return model.ObjVal * inv_n, self.coefficients, info
+
     def calculate_information_relaxation_cost(self, state, sample_path, verbose=False):
         model = gp.Model(f"IR_Model", env=self.grb_env)
         model.setParam("MultiObjPre", 0)
