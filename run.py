@@ -507,6 +507,15 @@ def train_lowerbound_for_init_state(
         crossover=False,
         verbose=False,
     )
+    # checkpoint_dir = os.path.join(
+    #     'experiments', 'results', experiment_name, 'benders_checkpoints'
+    # )    
+    # os.makedirs(checkpoint_dir, exist_ok=True)
+    # checkpoint_path = os.path.join(
+    #     checkpoint_dir,
+    #     f'{uid}-{init_state_index}-checkpoint.pickle'
+    # )
+    # obj, coefficients, info = agent.benders_decomposition_train(coefficient_bound=GRB.INFINITY, init_state=init_state_tuple, checkpoint_path=checkpoint_path, resume_checkpoint_path=checkpoint_path)
     elapsed = time.time() - start
     print(
         f"  obj={obj}, elapsed={elapsed:.1f}s"
@@ -576,21 +585,6 @@ if __name__ == '__main__':
             .get('agent_args', {})
             .get('sample_path_number', 0)
         )
-
-    sample_path_number = max(
-        (_sample_path_number_for_param(param) for param in params),
-        default=0,
-    )
-    slurm_cpus = os.environ.get("SLURM_CPUS_PER_TASK") or os.environ.get("SLURM_CPUS_ON_NODE")
-    try:
-        num_cpus = int(slurm_cpus) if slurm_cpus else (os.cpu_count() or 1)
-    except ValueError:
-        num_cpus = os.cpu_count() or 1
-    num_sub_envs = min(sample_path_number, num_cpus) if sample_path_number else 0
-    grb_sub_envs = [
-        acquire_grb_env({"Threads": 1}, verbose=False, wait=15)
-        for _ in range(num_sub_envs)
-    ]
     for param in params:
         # Dispatch on the shape of the params record:
         #   * generate_test_paths_and_init_state -> contains 'policy_specs'
@@ -600,6 +594,20 @@ if __name__ == '__main__':
         #     single initial state and emit one (X, Y) record.
         if 'policy_specs' in param:
             print('Wow, this is an evaluation record with policy_specs:')
+            sample_path_number = max(
+                (_sample_path_number_for_param(param) for param in params),
+                default=0,
+            )
+            slurm_cpus = os.environ.get("SLURM_CPUS_PER_TASK") or os.environ.get("SLURM_CPUS_ON_NODE")
+            try:
+                num_cpus = int(slurm_cpus) if slurm_cpus else (os.cpu_count() or 1)
+            except ValueError:
+                num_cpus = os.cpu_count() or 1
+            num_sub_envs = min(sample_path_number, num_cpus) if sample_path_number else 0
+            grb_sub_envs = [
+                acquire_grb_env({"Threads": 1}, verbose=False, wait=15)
+                for _ in range(num_sub_envs)
+            ]
             evaluate_policy_costs_with_information_relaxation(
                 **param,
                 grb_env=grb_env,
@@ -610,7 +618,7 @@ if __name__ == '__main__':
             train_lowerbound_for_init_state(
                 **param,
                 grb_env=grb_env,
-                grb_sub_envs=grb_sub_envs,
+                grb_sub_envs=None,
                 job_id=args.job_id,
             )
         else:

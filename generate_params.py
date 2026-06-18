@@ -428,6 +428,12 @@ EXPERIMENT_SPECS = {
             val_args=[0.95],
             agent_mutate=_mutate_discount_factor_for_sample_path_length_proposal,
         ),
+        ExperimentSpec(
+            name='toy_study_base_case',
+            config_type='toy',
+            val_args=[0.99],
+            agent_mutate=_mutate_discount_factor_for_sample_path_length_proposal,
+        ),
     ]
 }
 # [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 22.756075675673316, 5.894690591201279, 2.816597653273641, 1.50114430484255, 0.8218579465833417, -0.5004316436927129, 0.0, -4.156766115621662, -7.05872867959643, -7.485017207490414, -8.148766425983194, -8.146939862015877, -7.88218278691842, 0.0, 19.782585035499658, 3.5526319213952844, 2.0003054355612004, 0.8390483647272565, 0.9481841830252683, -0.8081045585832958, 0.0, -5.037070467540705, -7.35438894284113, -7.412090644464743, -8.375699506923448, -8.423755598372676, -8.146059498365254, 0.0, 358.9574271739, 192.65655887638724]
@@ -841,7 +847,7 @@ if __name__ == '__main__':
     #     is_require_penalty_coefficients=True,
     #     policy_ids=['approx_penalized_hindsight','row_gen_alp', 'myopic'],
     # )
-    test_envs = build_variation_test_env(EXPERIMENT_SPECS['case_study_099_importance_sampling_proposal_098'])
+    test_envs = build_variation_test_env(EXPERIMENT_SPECS['toy_study_base_case'])
     results = generate_train_env(
         test_envs=test_envs,
         dat_file='table.dat',
