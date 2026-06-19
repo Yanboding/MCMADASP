@@ -173,7 +173,7 @@ def build_variation_test_env(spec: ExperimentSpec):
                 'current_decision_var_type': 'integer',
                 'future_decision_var_type': 'continuous',
                 'penalty_ratio': 1,
-                'generating_function_spec': {'name': 'multiclass_quadratic_penalty'},
+                'generating_function_spec': {'name': 'linear_penalty'},
             },
         }
         if spec.mutate is not None:
@@ -405,9 +405,9 @@ EXPERIMENT_SPECS = {
             agent_mutate=_mutate_is_proposal_098_const,
         ),
         ExperimentSpec(
-            name='case_study_099_fixed_length_418',
-            config_type='toy',
-            val_args=[418],
+            name='case_study_099_fixed_length',
+            config_type='ejor',
+            val_args=[20, 40, 100, 160, 200],
             agent_mutate=_mutate_fixed_length_for_sample_path_length_proposal,
         ),
         ExperimentSpec(
@@ -744,11 +744,12 @@ def generate_train_env(
     information-relaxation lower bound.
 
     For each variant in ``test_envs``:
-      * X = ``num_init_states`` initial states sampled i.i.d. from the
-        environment's ``generate_initial_state()`` distribution (total bookings
-        per day uniform on [0, regular_capacity + overtime_capacity]; waitlist
-        per type uniform on [0, maximum_arrival]). This covers the feasible
-        state space with stratified coverage of occupancy levels.
+            * X = ``num_init_states`` initial states generated from the environment's
+                ``generate_initial_state()`` quasi-Monte Carlo reference distribution
+                (daily total bookings use inverse-binomial sampling with
+                horizon-decaying occupancy probability; waitlists use inverse sampling
+                from the one-period arrival distribution). This emphasizes
+                representative congestion levels for training.
       * Y (computed by ``run.py`` when each command runs) = the tight
         penalized information-relaxation lower bound at that initial state,
         obtained by Benders training on a *fixed* set of arrival sample paths.
@@ -762,8 +763,8 @@ def generate_train_env(
     farmed out to job-array schedulers.
     """
     results = []
-    init_state_rng = np.random.default_rng(init_state_seed)
     for (env_uid, experiment_name, mutate_val), variant in test_envs.items():
+        init_state_rng = np.random.default_rng(init_state_seed)
         base_env_args = copy.deepcopy(variant['env_args'])
         agent_args = copy.deepcopy(variant.get('agent_args', {}))
 
@@ -847,11 +848,11 @@ if __name__ == '__main__':
     #     is_require_penalty_coefficients=True,
     #     policy_ids=['approx_penalized_hindsight','row_gen_alp', 'myopic'],
     # )
-    test_envs = build_variation_test_env(EXPERIMENT_SPECS['toy_study_base_case'])
+    test_envs = build_variation_test_env(EXPERIMENT_SPECS['case_study_099_fixed_length'])
     results = generate_train_env(
         test_envs=test_envs,
         dat_file='table.dat',
-        num_init_states=256,
+        num_init_states=1,
         sample_path_number=256,
         init_state_seed=12345,
         sample_paths_seed=42,

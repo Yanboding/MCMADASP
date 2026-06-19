@@ -3,7 +3,7 @@ import itertools
 import random
 
 import numpy as np
-from scipy.stats import truncnorm, geom, qmc, randint
+from scipy.stats import truncnorm, geom, qmc, binom, rv_discrete
 
 from utils import numpy_shift, RunningStats, bounded_compositions
 import gurobipy as gp
@@ -40,6 +40,7 @@ class RTEnv:
         self.stop_time_rng = np.random.default_rng(stop_time_random_seed)
         self.num_sessions, self.num_types = self.treatment_pattern.shape
         self.planning_horizon = self.booking_window_size + self.num_sessions - 1
+        self._reset_initial_state_sampler()
 
         # Create the mapping matrix C of shape (H, N * K)
         self.booking_mapping_matrix = np.zeros((self.planning_horizon, self.booking_window_size * self.num_types))
@@ -80,12 +81,57 @@ class RTEnv:
     
     def reset_random_seeds(self):
         self.init_state_rng = np.random.default_rng(self.init_state_random_seed)
+        self._reset_initial_state_sampler()
         self.stop_time_rng = np.random.default_rng(self.stop_time_random_seed)
+
+    def _reset_initial_state_sampler(self):
+        self.init_state_qmc_dim = self.planning_horizon + self.num_types
+        self.init_state_qmc_sampler = qmc.Sobol(d=self.init_state_qmc_dim, scramble=True, seed=self.init_state_random_seed)
+        self._initial_waitlist_total_distribution = rv_discrete(
+            values=(
+                np.arange(self.arrival_generator.maximum_arrival + 1),
+                self.arrival_generator.truncate_poisson_pmf,
+            )
+        )
+        self._initial_waitlist_split_probabilities = []
+        remaining_probability = 1.0
+        for type_probability in self.arrival_generator.type_probs[:-1]:
+            self._initial_waitlist_split_probabilities.append(type_probability / remaining_probability)
+            remaining_probability -= type_probability
 
     def get_state(self, state, is_var=False):
         if not is_var:
             return copy.deepcopy(state)
         return state
+
+    @staticmethod
+    def _clip_ppf_quantiles(quantiles):
+        # Discrete SciPy ppf(0.0) returns one below the support.
+        return np.clip(quantiles, np.nextafter(0.0, 1.0), np.nextafter(1.0, 0.0))
+
+    def _sample_initial_total_bookings(self, booking_quantiles, decay_factor):
+        total_capacity = self.regular_capacity + self.overtime_capacity
+        booking_probabilities = decay_factor ** np.arange(self.planning_horizon)
+        booking_quantiles = self._clip_ppf_quantiles(booking_quantiles)
+        return np.asarray(
+            binom.ppf(booking_quantiles, total_capacity, booking_probabilities),
+            dtype=int,
+        )
+
+    def _sample_initial_waitlist(self, waitlist_quantiles):
+        waitlist_quantiles = self._clip_ppf_quantiles(waitlist_quantiles)
+        total_waitlist = int(self._initial_waitlist_total_distribution.ppf(waitlist_quantiles[0]))
+        waitlist = np.zeros(self.num_types, dtype=int)
+        remaining_waitlist = total_waitlist
+        for i in range(self.num_types - 1):
+            waitlist[i] = int(binom.ppf(
+                waitlist_quantiles[i + 1],
+                remaining_waitlist,
+                self._initial_waitlist_split_probabilities[i],
+            ))
+            remaining_waitlist -= waitlist[i]
+        waitlist[-1] = remaining_waitlist
+        return waitlist
     
     '''
     def convert_action_to_booking_slots(self, advance_scheduling_decision):
@@ -286,12 +332,17 @@ class RTEnv:
         overtimes = np.minimum(np.maximum(required_bookings - self.regular_capacity, 0), self.overtime_capacity)
         return (regular_bookings, overtimes, new_arrivals)
     
-    def generate_initial_state(self):
-        total_bookings = randint.rvs(0, self.regular_capacity + self.overtime_capacity + 1, size=self.planning_horizon-1, random_state=self.init_state_rng)
-        total_bookings = np.append(total_bookings, 0)
+    def generate_initial_state(self, decay_factor=0.95):
+        decay_factor = float(decay_factor)
+        if not 0 < decay_factor <= 1:
+            raise ValueError("decay_factor must be in (0, 1].")
+
+        qmc_sample = self.init_state_qmc_sampler.random(n=1)[0]
+        total_bookings = self._sample_initial_total_bookings(qmc_sample[:self.planning_horizon], decay_factor)
+        total_bookings[-1] = 0
         regular_bookings = np.minimum(total_bookings, self.regular_capacity)
         overtime_bookings = total_bookings - regular_bookings
-        waitlist = randint.rvs(0, self.arrival_generator.maximum_arrival + 1, size=self.num_types, random_state=self.init_state_rng)
+        waitlist = self._sample_initial_waitlist(qmc_sample[self.planning_horizon:])
         return (regular_bookings, overtime_bookings, waitlist)
     
     def generate_valid_action(self, state):
