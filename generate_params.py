@@ -396,7 +396,7 @@ EXPERIMENT_SPECS = {
         ExperimentSpec(
             name='case_study_099_fixed_length',
             config_type='ejor',
-            val_args=[20, 40, 100, 160, 200],
+            val_args=[20, 40, 100, 160, 200, 400],
             agent_mutate=_mutate_fixed_length_for_sample_path_length_proposal,
         ),
         ExperimentSpec(

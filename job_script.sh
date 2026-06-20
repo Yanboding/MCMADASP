@@ -4,8 +4,8 @@
 #SBATCH -t 48:00:00
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
-#SBATCH --cpus-per-task=16
-#SBATCH --mem=64G
+#SBATCH --cpus-per-task=64
+#SBATCH --mem=256G
 #  You have to replace Your_account_name below with the name of your account:
 #SBATCH -A def-sarhangi
 
@@ -16,5 +16,6 @@ module load scipy-stack
 module load gurobi/12.0.0
 echo "Threads ${SLURM_CPUS_PER_TASK:-1}" > gurobi.env
 source ~/env_gurobi/bin/activate
+python -c "import tqdm" >/dev/null 2>&1 || pip install tqdm
 # Don't change this line:
 task.run
