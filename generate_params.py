@@ -290,17 +290,6 @@ def _mutate_fixed_length_for_sample_path_length_proposal(agent_args, max_length)
                     }
                 })
 
-def _mutate_solver(agent_args, solver_name):
-    agent_args.update(
-        {
-            'policy_id': 'approx_penalized_hindsight_' + solver_name,
-            'agent_name': 'approx_penalized_hindsight',
-        }
-    )
-    agent_args['agent_args'].update({
-        'solver_name': solver_name,
-    })
-
 # ---------------------------------------------------------------------------
 # Registry of all experiments. Add new experiments here.
 # ---------------------------------------------------------------------------
@@ -407,7 +396,7 @@ EXPERIMENT_SPECS = {
         ExperimentSpec(
             name='case_study_099_fixed_length',
             config_type='ejor',
-            val_args=[20, 40, 100, 160, 200],
+            val_args=[20, 40, 100, 160, 200, 400],
             agent_mutate=_mutate_fixed_length_for_sample_path_length_proposal,
         ),
         ExperimentSpec(
@@ -822,6 +811,82 @@ def generate_train_env(
         print(f"Saved {len(lines_to_write)} commands to {dat_file}")
     return results
 
+def generate_policy_efficientcy_data(
+    test_envs,
+    is_require_penalty_coefficients=False,
+    dat_file=None,
+    num_init_states=256,
+    sample_path_number=256,
+    init_state_seed=12345,
+    sample_paths_seed=42,
+):
+    results = []
+    for (env_uid, experiment_name, mutate_val), variant in test_envs.items():
+        init_state_rng = np.random.default_rng(init_state_seed)
+        base_env_args = copy.deepcopy(variant['env_args'])
+        env = get_config_by_type('infinite_custom', args=base_env_args).env
+        agent_args = copy.deepcopy(variant.get('agent_args', {}))
+        direct_coefficients = _zero_penalty_coefficients(env)
+        if is_require_penalty_coefficients:
+            agent_args = copy.deepcopy(variant['agent_args'])
+            _, direct_coefficients, _ = train_penalty_coefficients(
+                env_args=base_env_args,
+                agent_args=agent_args,
+                experiment_name=experiment_name,
+            )
+        agent_args['agent_args']['generating_function_spec']['coefficients'] = direct_coefficients
+        agent_args['agent_args']['solver_name'] = 'approx_penalized_hindsight'
+        # Pin the arrival/sampling seeds so every initial state for this
+        # variant trains against the *same* set of arrival sample paths.
+        # NOTE: in experiment_config.py the env's ``init_state_random_seed``
+        # is derived from ``env_random_seed``; we therefore use
+        # ``env_random_seed`` ONLY for arrival/sampling and override it on a
+        # *separate* sampler env (below) when drawing X.
+        base_env_args['arrival_random_seed'] = sample_paths_seed
+        base_env_args['stop_time_random_seed'] = sample_paths_seed
+        base_env_args['env_random_seed'] = sample_paths_seed
+
+        # Build a sampler env with a *different* env_random_seed so the
+        # initial-state RNG is independent of the (pinned) sample-path RNGs.
+        sampler_env_args = copy.deepcopy(base_env_args)
+        sampler_env_args['env_random_seed'] = int(init_state_rng.integers(0, 2**31 - 1))
+        sampler_env = get_config_by_type('infinite_custom', args=sampler_env_args).env
+
+        for k in range(num_init_states):
+            init_state = sampler_env.generate_initial_state()
+            init_state = tuple(np.array(item).tolist() for item in init_state)
+
+            env_args_k = copy.deepcopy(base_env_args)
+            env_args_k['reset_params'] = dict(env_args_k.get('reset_params', {}))
+            env_args_k['reset_params']['init_state'] = init_state
+
+            save_params = {
+                'experiment_name': experiment_name,
+                'mutate_val': mutate_val,
+                'sample_path_number': sample_path_number,
+                'init_state_index': k,
+                'init_state': init_state,
+                'env_args': env_args_k,
+                'agent_args': agent_args
+            }
+            save_params['uid'] = get_uid({
+                'env_args': env_args_k,
+                'agent_args': agent_args,
+                'init_state': init_state,
+            })
+            results.append(save_params)
+
+    if dat_file:
+        lines_to_write = []
+        for line_index, result in enumerate(results, start=1):
+            lines_to_write.append(
+                f"{line_index} python run.py --params '" + json.dumps(result) + "'\n"
+            )
+        with open(dat_file, 'w') as f:
+            f.writelines(lines_to_write)
+        print(f"Saved {len(lines_to_write)} commands to {dat_file}")
+    return results
+
 
 if __name__ == '__main__':
     # test_envs = {}
@@ -849,8 +914,18 @@ if __name__ == '__main__':
     #     policy_ids=['approx_penalized_hindsight','row_gen_alp', 'myopic'],
     # )
     test_envs = build_variation_test_env(EXPERIMENT_SPECS['case_study_099_fixed_length'])
-    results = generate_train_env(
+    # results = generate_train_env(
+    #     test_envs=test_envs,
+    #     dat_file='table.dat',
+    #     num_init_states=1,
+    #     sample_path_number=256,
+    #     init_state_seed=12345,
+    #     sample_paths_seed=42,
+    # )
+
+    results = generate_policy_efficientcy_data(
         test_envs=test_envs,
+        is_require_penalty_coefficients=False,
         dat_file='table.dat',
         num_init_states=1,
         sample_path_number=256,

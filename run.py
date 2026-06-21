@@ -543,6 +543,72 @@ def train_lowerbound_for_init_state(
         f.write(json.dumps(record) + '\n')
     return record
 
+def evaluated_hindsight_policy_solving_time(uid,
+                                            experiment_name,
+                                            mutate_val,
+                                            sample_path_number,
+                                            init_state_index,
+                                            init_state,
+                                            env_args,
+                                            agent_args,
+                                            grb_env,
+                                            grb_sub_envs,
+                                            job_id):
+    output_file = os.path.join(
+        'experiments', 'results', experiment_name, f'{job_id}.jsonl'
+    )
+    os.makedirs(os.path.dirname(output_file), exist_ok=True)
+    if jsonl_uid_exists(output_file, uid):
+        print(
+            f"Skip duplicate training result: uid={uid}, "
+            f"init_state_index={init_state_index}"
+        )
+        return None
+    config = get_config_by_type(case_type='infinite_custom', args=env_args)
+    env = config.env
+    policy_spec = dict(agent_args or {})
+    agent_name = policy_spec.get('agent_name', 'approx_penalized_hindsight')
+    policy_id = policy_spec.get('policy_id', agent_name)
+    runtime_agent_args = dict(policy_spec.get('agent_args', {}))
+    policy_generating_function_spec = _normalize_generating_function_spec(
+        runtime_agent_args.pop('generating_function_spec', None)
+    )
+    runtime_agent_args['generating_function'] = _build_generating_function(
+            env=env,
+            spec=policy_generating_function_spec,
+        )
+    _set_sample_path_proposal(runtime_agent_args)
+    agent_instance = ApproxQAgent(env, discount_factor=env.discount_factor,
+                                    grb_env=grb_env,
+                                    subproblem_grb_envs=grb_sub_envs,
+                                    **runtime_agent_args
+                                )
+    obj, action_t, info = agent_instance.solve(tuple(np.array(item) for item in init_state), init_state_index)
+
+    start = time.time()
+    obj, action_t, info = agent_instance.solve(tuple(np.array(item) for item in init_state), init_state_index)
+    elapsed = time.time() - start
+
+    init_state_jsonable = [np.asarray(item).tolist() for item in init_state]
+
+    record = {
+        'uid': uid,
+        'experiment_name': experiment_name,
+        'mutate_val': mutate_val,
+        'policy_id': policy_id,
+        'agent_name': agent_name,
+        'objective': float(obj),
+        'init_state_index': init_state_index,
+        'init_state': init_state_jsonable,
+        'action': [np.asarray(part).tolist() for part in action_t],
+        'sample_path_number': sample_path_number,
+        'training_time_seconds': elapsed,
+    }
+    with open(output_file, 'a') as f:
+        f.write(json.dumps(record) + '\n')
+    return record
+    
+
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Example of using argparse to pass in a list of lists.")
@@ -599,6 +665,11 @@ if __name__ == '__main__':
         acquire_grb_env({"Threads": 1}, verbose=False, wait=15)
         for _ in range(num_sub_envs)
     ]
+
+    def _is_hindsight_timing_record(param):
+        spec = ((param.get('agent_args') or {}).get('agent_args') or {}).get('generating_function_spec')
+        return isinstance(spec, dict) and 'coefficients' in spec
+
     for param in params:
         # Dispatch on the shape of the params record:
         #   * generate_test_paths_and_init_state -> contains 'policy_specs'
@@ -609,6 +680,13 @@ if __name__ == '__main__':
         if 'policy_specs' in param:
             print('Wow, this is an evaluation record with policy_specs:')
             evaluate_policy_costs_with_information_relaxation(
+                **param,
+                grb_env=grb_env,
+                grb_sub_envs=grb_sub_envs,
+                job_id=args.job_id,
+            )
+        elif _is_hindsight_timing_record(param):
+            evaluated_hindsight_policy_solving_time(
                 **param,
                 grb_env=grb_env,
                 grb_sub_envs=grb_sub_envs,
