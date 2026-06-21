@@ -367,7 +367,8 @@ class ApproxQAgent(InfiniteRTAgent):
         generating_function = self._require_generating_function()
         generating_function.set_coefficients(self.coefficients)
         return upper_bound, self.coefficients, info
-
+    
+    # Optionally to keep
     @staticmethod
     def _expression_has_variables(expression):
         """True when a built penalty-feature entry depends on decision variables.
@@ -386,7 +387,8 @@ class ApproxQAgent(InfiniteRTAgent):
             except Exception:
                 return True
         return True
-
+    
+    # Optionally to keep
     def extensive_form_train(self,
                              init_state=None,
                              coefficient_bound=GRB.INFINITY,
