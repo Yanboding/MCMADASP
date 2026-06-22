@@ -995,7 +995,8 @@ if __name__ == '__main__':
     # experiments/results/toy_study_train (X=init_state,
     # Y=tight_penalized_lower_bound) and embed them in the approx_Q
     # policy_generating_function_spec before emitting the test cases. ---
-    test_envs = build_variation_test_env(EXPERIMENT_SPECS['toy_study_base_case'])
+    folder_path = 'toy_study_base_case'
+    test_envs = build_variation_test_env(EXPERIMENT_SPECS[folder_path])
     print(test_envs)
     results = generate_test_paths_and_init_state(
         test_envs=test_envs,
@@ -1003,11 +1004,11 @@ if __name__ == '__main__':
         warm_up_periods=0,
         num_periods=None,
         dat_file='table.dat',
-        num_groups=5000,  # divide into N groups
-        is_require_penalty_coefficients=True,
+        num_groups=100,  # divide into N groups
+        is_require_penalty_coefficients=False,
         is_random_initial_state=True,
         policy_ids=["approx_Q","row_gen_alp", "myopic"],
-        train_data_dir='experiments/results/toy_study_train',
+        train_data_dir= os.path.join('experiments','results', folder_path),
     )
     # --- Previous run: IS training, proposal gamma=0.98, target gamma=0.99 ---
     # test_envs = build_variation_test_env(EXPERIMENT_SPECS['case_study_099_is_098'])
@@ -1021,11 +1022,11 @@ if __name__ == '__main__':
     #     is_require_penalty_coefficients=True,
     #     policy_ids=['approx_Q','row_gen_alp', 'myopic'],
     # )
-    # test_envs = build_variation_test_env(EXPERIMENT_SPECS['case_study_099_fixed_length'])
+    # test_envs = build_variation_test_env(EXPERIMENT_SPECS['toy_study_base_case'])
     # results = generate_train_env(
     #     test_envs=test_envs,
     #     dat_file='table.dat',
-    #     num_init_states=1,
+    #     num_init_states=256,
     #     sample_path_number=256,
     #     init_state_seed=12345,
     #     sample_paths_seed=42,
