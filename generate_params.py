@@ -173,7 +173,7 @@ def build_variation_test_env(spec: ExperimentSpec):
                 'current_decision_var_type': 'integer',
                 'future_decision_var_type': 'continuous',
                 'penalty_ratio': 1,
-                'generating_function_spec': {'name': 'linear_penalty'},
+                'generating_function_spec': {'name': 'multiclass_quadratic_penalty'},
             },
         }
         if spec.mutate is not None:
@@ -483,6 +483,7 @@ def train_penalty_coefficients(env_args, experiment_name, agent_args=None):
     # generating_function = MulticlassLinearPenaltyFunction(env=env)
     inner = dict(agent_args.get('agent_args', {}))
     for key in (
+        'generating_function_spec',
         'policy_generating_function_spec',
         'zero_lowerbound_generating_function_spec',
         'penalized_lowerbound_generating_function_spec',
@@ -591,7 +592,67 @@ def _build_penalty_policy(base_agent_args, policy_id, solver_name, penalty_coeff
     return policy
 
 
-def generate_test_paths_and_init_state(test_envs, test_sample_path_num, warm_up_periods=0, num_periods=None, dat_file=None, num_groups=None, is_require_penalty_coefficients=True, policy_ids=None):
+def _load_regression_training_data(train_data_dir):
+    """Load (X, Y) value-function regression data from a folder of JSONL files.
+
+    Each record contributes one (state, target) pair: the state ``X`` is the
+    record's ``init_state`` (a 3-block ``(regular_bookings, overtimes,
+    waitlist)`` state) and the target ``Y`` is its
+    ``tight_penalized_lower_bound``. Records are de-duplicated by ``uid`` and
+    records without a usable target are skipped.
+
+    Returns ``(X, Y)`` where ``X`` is a list of ``(np.ndarray, np.ndarray,
+    np.ndarray)`` states and ``Y`` is a 1-D ``np.ndarray`` of targets.
+    """
+    records = {}
+    for file_path in sorted(glob.glob(os.path.join(train_data_dir, '*.jsonl'))):
+        with open(file_path, 'r') as handle:
+            for line in handle:
+                line = line.strip()
+                if not line:
+                    continue
+                record = json.loads(line)
+                if record.get('tight_penalized_lower_bound') is None or 'init_state' not in record:
+                    continue
+                records[record.get('uid', len(records))] = record
+    X, Y = [], []
+    for record in records.values():
+        state = tuple(np.array(block, dtype=float) for block in record['init_state'])
+        X.append(state)
+        Y.append(float(record['tight_penalized_lower_bound']))
+    if not X:
+        raise ValueError(
+            "No training records with 'init_state' and 'tight_penalized_lower_bound' "
+            f"found in {train_data_dir}."
+        )
+    return X, np.asarray(Y, dtype=float)
+
+
+def _train_value_function_coefficients(env, generating_function_spec, X, Y, regularization=1e-6):
+    """Fit approx_Q value-function coefficients on (X, Y) via least squares.
+
+    Builds the basis named by ``generating_function_spec`` and fits its
+    coefficients with :meth:`ApproxQAgent.regression_train`. Returns the fitted
+    coefficients as a plain list (JSON-serializable).
+    """
+    spec = _normalize_generating_function_spec(generating_function_spec)
+    generating_function = _build_generating_function(env=env, spec={'name': spec['name']})
+    agent = ApproxQAgent(
+        env=env,
+        discount_factor=env.discount_factor,
+        sample_path_number=1,
+        generating_function=generating_function,
+        solver_name='approx_Q',
+    )
+    coefficients, training_mse = agent.regression_train(X, Y, regularization=regularization)
+    print(
+        f"approx_Q value-function regression on '{spec['name']}' basis: "
+        f"{len(X)} samples, training RMSE={np.sqrt(training_mse):.4f}"
+    )
+    return coefficients
+
+
+def generate_test_paths_and_init_state(test_envs, test_sample_path_num, warm_up_periods=0, num_periods=None, dat_file=None, num_groups=None, is_require_penalty_coefficients=True, is_random_initial_state=False, policy_ids=None, train_data_dir=None):
     '''
     Inital state is considered as period 1. sample path will start from period 2.
 
@@ -599,6 +660,13 @@ def generate_test_paths_and_init_state(test_envs, test_sample_path_num, warm_up_
     ``POLICY_SPECS``. The resolved policy spec dicts are embedded in every
     saved params record under the ``policies`` key so the runner knows which
     policies to evaluate against the corresponding sample path.
+
+    ``train_data_dir`` is an optional path to a folder of training-result JSONL
+    files holding (X, Y) = (``init_state``, ``tight_penalized_lower_bound``)
+    pairs. When provided and ``'approx_Q'`` is in ``policy_ids``, the approx_Q
+    value-function coefficients are fitted by least-squares regression on that
+    data (instead of the Benders ``direct_coefficients``) and written into the
+    approx_Q ``policy_generating_function_spec``.
     '''
     policy_ids = list(policy_ids or [])
     policy_id_set = set(policy_ids)
@@ -607,11 +675,17 @@ def generate_test_paths_and_init_state(test_envs, test_sample_path_num, warm_up_
         env_args = variant['env_args']
         env = get_config_by_type('infinite_custom', args=env_args).env
         print(f"Processing env_uid: {env_uid}, experiment_name: {experiment_name}, mutate_val: {mutate_val}")
+        inner_agent_args = variant.get('agent_args', {}).get('agent_args', {})
+        # Policy basis: prefer an explicit ``policy_generating_function_spec``;
+        # otherwise fall back to the agent's ``generating_function_spec`` so the
+        # spec configured in ``build_variation_test_env`` actually drives the
+        # approx_Q / hindsight policy basis.
         policy_generating_function_spec = _normalize_generating_function_spec(
-            variant.get('agent_args', {}).get('agent_args', {}).get('policy_generating_function_spec')
+            inner_agent_args.get('policy_generating_function_spec')
+            or inner_agent_args.get('generating_function_spec')
         )
         lowerbound_generating_function_spec = _normalize_generating_function_spec(
-            variant.get('agent_args', {}).get('agent_args', {}).get('penalized_lowerbound_generating_function_spec')
+            inner_agent_args.get('penalized_lowerbound_generating_function_spec')
         )
 
         policies = []
@@ -663,13 +737,28 @@ def generate_test_paths_and_init_state(test_envs, test_sample_path_num, warm_up_
                 )
             )
         if 'approx_Q' in policy_id_set:
+            approx_q_coefficients = direct_coefficients
+            approx_q_generating_function_spec = policy_generating_function_spec
+            if train_data_dir is not None:
+                X, Y = _load_regression_training_data(train_data_dir)
+                approx_q_coefficients = _train_value_function_coefficients(
+                    env=env,
+                    generating_function_spec=policy_generating_function_spec,
+                    X=X,
+                    Y=Y,
+                )
+                # Update coefficients in the approx_Q policy generating function spec.
+                approx_q_generating_function_spec = {
+                    **policy_generating_function_spec,
+                    'coefficients': approx_q_coefficients,
+                }
             policies.append(
                 _build_penalty_policy(
                     base_agent_args=variant['agent_args'],
                     policy_id='approx_Q',
                     solver_name='approx_Q',
-                    penalty_coefficients=direct_coefficients,
-                    generating_function_spec=policy_generating_function_spec,
+                    penalty_coefficients=approx_q_coefficients,
+                    generating_function_spec=approx_q_generating_function_spec,
                 )
             )
 
@@ -685,7 +774,7 @@ def generate_test_paths_and_init_state(test_envs, test_sample_path_num, warm_up_
         env_for_sample_path = config_for_sample_path.env
         average_sample_path_length = 0
         for _ in range(test_sample_path_num):
-            init_state = env_for_sample_path.generate_initial_state() if 'init_state' not in env_args.get('reset_params', {}) else env_args['reset_params']['init_state']
+            init_state = env_for_sample_path.generate_initial_state() if ('init_state' not in env_args.get('reset_params', {})) or is_random_initial_state else env_args['reset_params']['init_state']
             init_state = tuple(np.array(item).tolist() for item in init_state)
             if num_periods is None:
                 warm_up_path = env_for_sample_path.reset_arrivals(stop_time=warm_up_periods)
@@ -901,8 +990,27 @@ if __name__ == '__main__':
     # will trigger train_penalty_coefficients for each variant, which constructs
     # ApproxQAgent(sample_path_proposal=GeometricLengthProposal(0.98)) so every
     # Benders subproblem objective is weighted by (0.99/0.98)^(t-1).
+    # --- toy_study_base_case: fit approx_Q value-function coefficients by
+    # least-squares regression on the (X, Y) training data in
+    # experiments/results/toy_study_train (X=init_state,
+    # Y=tight_penalized_lower_bound) and embed them in the approx_Q
+    # policy_generating_function_spec before emitting the test cases. ---
+    test_envs = build_variation_test_env(EXPERIMENT_SPECS['toy_study_base_case'])
+    print(test_envs)
+    results = generate_test_paths_and_init_state(
+        test_envs=test_envs,
+        test_sample_path_num=5000,
+        warm_up_periods=0,
+        num_periods=None,
+        dat_file='table.dat',
+        num_groups=5000,  # divide into N groups
+        is_require_penalty_coefficients=True,
+        is_random_initial_state=True,
+        policy_ids=["approx_Q","row_gen_alp", "myopic"],
+        train_data_dir='experiments/results/toy_study_train',
+    )
+    # --- Previous run: IS training, proposal gamma=0.98, target gamma=0.99 ---
     # test_envs = build_variation_test_env(EXPERIMENT_SPECS['case_study_099_is_098'])
-    # print(test_envs)
     # results = generate_test_paths_and_init_state(
     #     test_envs=test_envs,
     #     test_sample_path_num=1,
@@ -911,9 +1019,9 @@ if __name__ == '__main__':
     #     dat_file='table.dat',
     #     num_groups=998,  # divide into N groups
     #     is_require_penalty_coefficients=True,
-    #     policy_ids=['approx_penalized_hindsight','row_gen_alp', 'myopic'],
+    #     policy_ids=['approx_Q','row_gen_alp', 'myopic'],
     # )
-    test_envs = build_variation_test_env(EXPERIMENT_SPECS['case_study_099_fixed_length'])
+    # test_envs = build_variation_test_env(EXPERIMENT_SPECS['case_study_099_fixed_length'])
     # results = generate_train_env(
     #     test_envs=test_envs,
     #     dat_file='table.dat',
@@ -923,15 +1031,15 @@ if __name__ == '__main__':
     #     sample_paths_seed=42,
     # )
 
-    results = generate_policy_efficientcy_data(
-        test_envs=test_envs,
-        is_require_penalty_coefficients=False,
-        dat_file='table.dat',
-        num_init_states=1,
-        sample_path_number=256,
-        init_state_seed=12345,
-        sample_paths_seed=42,
-    )
+    # results = generate_policy_efficientcy_data(
+    #     test_envs=test_envs,
+    #     is_require_penalty_coefficients=False,
+    #     dat_file='table.dat',
+    #     num_init_states=1,
+    #     sample_path_number=256,
+    #     init_state_seed=12345,
+    #     sample_paths_seed=42,
+    # )
     '''
     Iteration 65, master solved in 0.057006120681762695 seconds
     Iteration 65, master memory used: 0.0894 GB (peak 0.0894 GB)
