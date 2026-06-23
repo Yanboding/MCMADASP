@@ -155,8 +155,8 @@ class SimulateEvaluationResult:
             self.zero_penalized_improvement[(group_id, policy_id)] = self.zero_penalized_gap[(group_id, policy_id)] / self.zero_penalized_information_relaxation_cost[(group_id, policy_id)].mean / 0.01
         for (group_id, policy_id), stats in self.penalized_gap.items():
             self.penalized_improvement[(group_id, policy_id)] = self.penalized_gap[(group_id, policy_id)] / self.penalized_information_relaxation_cost[(group_id, policy_id)].mean / 0.01
-        # for group_id, stats in self.gap_to_information_relaxation.items():
-        #     self.improvement[group_id] = self.gap_to_information_relaxation[group_id] / self.policy_costs[(group_id, policy_id)].mean / 0.01
+        for (group_id, mutate_val), stats in self.gap_to_information_relaxation.items():
+            self.improvement[(group_id, mutate_val)] = self.gap_to_information_relaxation[(group_id, mutate_val)] / self.zero_penalized_information_relaxation_cost[(group_id, mutate_val)].mean / 0.01
         # # for (group_id, mutate_val), stats in self.zero_penalized_gap.items():
         #     self.zero_penalized_improvement[(group_id, mutate_val)] = self.zero_penalized_gap[(group_id, mutate_val)] / self.zero_penalized_information_relaxation_cost[(group_id, mutate_val)].mean / 0.01
     
@@ -187,6 +187,11 @@ class SimulateEvaluationResult:
     def load(self, data):
         policy_id = data['policy_id']
         group_id = data['group_id']
+        mutate_val = data['mutate_val']
+        if policy_id == 'information_relaxation_only':
+            self.gap_to_information_relaxation[(group_id, mutate_val)] += data['penalized_information_relaxation_cost'] - data['zero_information_relaxation_cost']
+            self.zero_penalized_information_relaxation_cost[(group_id, mutate_val)] += data['zero_information_relaxation_cost']
+            return
         if self.group_ids and group_id not in self.group_ids:
             self.group_ids.append(group_id)
         self.policy_costs[(group_id, policy_id)] += data['total_cost']
@@ -194,9 +199,9 @@ class SimulateEvaluationResult:
         self.information_relaxation_id = policy_id
         self.zero_penalized_information_relaxation_cost[(group_id, policy_id)] += data['zero_information_relaxation_cost']
         self.penalized_information_relaxation_cost[(group_id, policy_id)] += data['penalized_information_relaxation_cost']
-        self.gap_to_information_relaxation[(group_id, policy_id)] += data['penalized_information_relaxation_cost'] - data['zero_information_relaxation_cost']
         self.zero_penalized_gap[(group_id, policy_id)] += data['gap_to_zero_information_relaxation']
         self.penalized_gap[(group_id, policy_id)] += data['gap_to_penalized_information_relaxation']
+            
         if self.number_of_periods is None:
             self.number_of_periods = len(data['costs'])
         for t, cost in enumerate(data['costs']):
@@ -356,7 +361,7 @@ if __name__ == "__main__":
     config = get_config_by_type('ejor')
     env = config.env
     waiting_time_targets = [env.holding_cost.get_waiting_target(i) for i in range(env.num_types)]
-    base_results_dir = os.path.join('.', 'experiments', 'results', 'case_study_099')
+    base_results_dir = os.path.join('.', 'experiments', 'results', 'case_study_099_fixed_length')
     file_pattern = '[0-9]*.jsonl'
     # group_ids = ['73d11360affe39305e7716cf5c42ac04', '841708e72300000ddfd948daf08d6805', 'a3202d39ed34711b47ecebb72aabad43']
     # run_improvement_plots(
@@ -370,21 +375,24 @@ if __name__ == "__main__":
             base_results_dir,
             file_pattern,
             env,
-            is_reuse=True,
+            is_reuse=False,
         )
     
     # print(ser.last_decision_period_distribution_table())
-    print('ser.zero_penalized_gap')
-    pprint(ser.zero_penalized_gap)
-    print('ser.penalized_gap')
-    pprint(ser.penalized_gap)
-    print('ser.after_warmup_policy_costs')
-    pprint(ser.after_warmup_policy_costs)
-    print('ser.zero_penalized_information_relaxation_cost')
-    pprint(ser.zero_penalized_information_relaxation_cost)
-    print('ser.penalized_information_relaxation_cost')
-    pprint(ser.penalized_information_relaxation_cost)
-    print(ser.waiting_time_target_ptc_table())
-    print('Summary table')
-    print(ser.performance_summary_table())
-        
+    # print('ser.zero_penalized_gap')
+    # pprint(ser.zero_penalized_gap)
+    # print('ser.penalized_gap')
+    # pprint(ser.penalized_gap)
+    # print('ser.after_warmup_policy_costs')
+    # pprint(ser.after_warmup_policy_costs)
+    # print('ser.zero_penalized_information_relaxation_cost')
+    # pprint(ser.zero_penalized_information_relaxation_cost)
+    # print('ser.penalized_information_relaxation_cost')
+    # pprint(ser.penalized_information_relaxation_cost)
+    # print(ser.waiting_time_target_ptc_table())
+    # print('Summary table')
+    # print(ser.performance_summary_table())
+    print('gap_to_information_relaxation')
+    pprint(ser.gap_to_information_relaxation)
+    print('improvement')
+    pprint(ser.improvement)
