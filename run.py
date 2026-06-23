@@ -355,6 +355,51 @@ def evaluate_policy_costs_with_information_relaxation(uid,
     zero_lowerbound_instance = ApproxQAgent(env, discount_factor=env.discount_factor, **zero_lowerbound_args)
     penalized_lowerbound_instance = ApproxQAgent(env, discount_factor=env.discount_factor, **penalized_lowerbound_args)
 
+    sample_path_tail = sample_path[warm_up_periods:]
+
+    if not policy_specs:
+        start = time.time()
+        zero_information_relaxation_cost = zero_lowerbound_instance.calculate_information_relaxation_cost(
+            init_state,
+            sample_path=sample_path_tail,
+        )
+        print(
+            f"Zero information relaxation cost computed in {time.time() - start:.1f} seconds: "
+            f"{zero_information_relaxation_cost}"
+        )
+        start = time.time()
+        penalized_information_relaxation_cost = penalized_lowerbound_instance.calculate_information_relaxation_cost(
+            init_state,
+            sample_path=sample_path_tail,
+        )
+        print(
+            f"Penalized information relaxation cost computed in {time.time() - start:.1f} seconds: "
+            f"{penalized_information_relaxation_cost}"
+        )
+
+        record = {
+            'uid': uid,
+            'group_id': group_id,
+            'experiment_name': experiment_name,
+            'mutate_val': mutate_val,
+            'warm_up_periods': warm_up_periods,
+            'policy_id': 'information_relaxation_only',
+            'agent_name': 'information_relaxation_only',
+            'zero_information_relaxation_cost': float(zero_information_relaxation_cost),
+            'penalized_information_relaxation_cost': float(penalized_information_relaxation_cost),
+            'gap_to_zero_information_relaxation': 0.0,
+            'gap_to_penalized_information_relaxation': 0.0,
+            'warmup_state': tuple(np.array(item).tolist() for item in init_state),
+        }
+
+        if not jsonl_result_exists(output_file, uid, record['policy_id']):
+            with open(output_file, 'a') as f:
+                f.write(json.dumps(record) + '\n')
+        else:
+            print(f"Skip saving duplicate result: uid={uid}, policy_id={record['policy_id']}")
+
+        return [record]
+
     summary_rows = []
     for policy_spec in policy_specs:
         policy_result = calculate_policy_costs_with_penalty(
@@ -373,10 +418,10 @@ def evaluate_policy_costs_with_information_relaxation(uid,
         )
         warmup_sate = tuple(np.array(item) for item in policy_result.get('warmup_state', init_state))
         start = time.time()
-        zero_information_relaxation_cost = zero_lowerbound_instance.calculate_information_relaxation_cost(warmup_sate, sample_path=sample_path[warm_up_periods:])
+        zero_information_relaxation_cost = zero_lowerbound_instance.calculate_information_relaxation_cost(warmup_sate, sample_path=sample_path_tail)
         print(f"Zero information relaxation cost computed in {time.time() - start:.1f} seconds: {zero_information_relaxation_cost}")
         start = time.time()
-        penalized_information_relaxation_cost = penalized_lowerbound_instance.calculate_information_relaxation_cost(warmup_sate, sample_path=sample_path[warm_up_periods:])
+        penalized_information_relaxation_cost = penalized_lowerbound_instance.calculate_information_relaxation_cost(warmup_sate, sample_path=sample_path_tail)
         print(f"Penalized information relaxation cost computed in {time.time() - start:.1f} seconds: {penalized_information_relaxation_cost}")
         policy_result.update({
             'uid': uid,
@@ -665,7 +710,7 @@ if __name__ == '__main__':
         acquire_grb_env({"Threads": 1}, verbose=False, wait=15)
         for _ in range(num_sub_envs)
     ]
-
+    print('grb_sub_envs:',len(grb_sub_envs))
     def _is_hindsight_timing_record(param):
         spec = ((param.get('agent_args') or {}).get('agent_args') or {}).get('generating_function_spec')
         return isinstance(spec, dict) and 'coefficients' in spec

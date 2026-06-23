@@ -103,6 +103,59 @@ def _save_training_result(experiment_name, file_name, env_args, agent_name, obj_
         f.write(json.dumps(record) + '\n')
     return record
 
+
+def _load_trained_coefficients_from_folder(
+    experiment_name,
+    mutate_val=None,
+    sample_path_number=None,
+    folder_path=None,
+):
+    """Load one trained coefficient vector from JSONL training outputs.
+
+    The expected record format is the per-init-state output written by
+    ``run.py::train_lowerbound_for_init_state`` with keys like
+    ``tight_penalized_lower_bound`` and ``coefficients``.
+    """
+    search_dir = folder_path or os.path.join('experiments', 'results', experiment_name)
+    if not os.path.isdir(search_dir):
+        return None
+
+    candidates = []
+    for file_path in sorted(glob.glob(os.path.join(search_dir, '*.jsonl'))):
+        with open(file_path, 'r') as f:
+            for line_number, line in enumerate(f, start=1):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+
+                coefficients = record.get('coefficients')
+                if not isinstance(coefficients, list) or len(coefficients) == 0:
+                    continue
+                if 'tight_penalized_lower_bound' not in record:
+                    continue
+                if mutate_val is not None and record.get('mutate_val') != mutate_val:
+                    continue
+                if (
+                    sample_path_number is not None
+                    and 'sample_path_number' in record
+                    and record.get('sample_path_number') != sample_path_number
+                ):
+                    continue
+
+                init_state_index = record.get('init_state_index')
+                sort_index = init_state_index if isinstance(init_state_index, int) else 10**9
+                candidates.append((sort_index, file_path, line_number, coefficients))
+
+    if not candidates:
+        return None
+
+    candidates.sort(key=lambda x: (x[0], x[1], x[2]))
+    return candidates[0][3]
+
 def _split_list_into_groups(results, num_groups, dat_file=None):
     n = num_groups if num_groups and num_groups > 0 else len(results)
     # Split results into n groups as evenly as possible
@@ -396,7 +449,7 @@ EXPERIMENT_SPECS = {
         ExperimentSpec(
             name='case_study_099_fixed_length',
             config_type='ejor',
-            val_args=[20, 40, 100, 160, 200, 400],
+            val_args=[20, 40],
             agent_mutate=_mutate_fixed_length_for_sample_path_length_proposal,
         ),
         ExperimentSpec(
@@ -708,12 +761,25 @@ def generate_test_paths_and_init_state(test_envs, test_sample_path_num, warm_up_
 
         direct_coefficients = _zero_penalty_coefficients(env)
         if is_require_penalty_coefficients:
-            agent_args = copy.deepcopy(variant['agent_args'])
-            _, direct_coefficients, _ = train_penalty_coefficients(
-                env_args=env_args,
-                agent_args=agent_args,
+            sample_path_number = variant.get('agent_args', {}).get('agent_args', {}).get('sample_path_number')
+            loaded_coefficients = _load_trained_coefficients_from_folder(
                 experiment_name=experiment_name,
+                mutate_val=mutate_val,
+                sample_path_number=sample_path_number,
             )
+            if loaded_coefficients is not None:
+                direct_coefficients = loaded_coefficients
+                print(
+                    f"Loaded trained penalty coefficients from folder for "
+                    f"experiment={experiment_name}, mutate_val={mutate_val}."
+                )
+            else:
+                agent_args = copy.deepcopy(variant['agent_args'])
+                _, direct_coefficients, _ = train_penalty_coefficients(
+                    env_args=env_args,
+                    agent_args=agent_args,
+                    experiment_name=experiment_name,
+                )
 
         if 'approx_hindsight' in policy_id_set:
             policies.append(
@@ -995,7 +1061,7 @@ if __name__ == '__main__':
     # experiments/results/toy_study_train (X=init_state,
     # Y=tight_penalized_lower_bound) and embed them in the approx_Q
     # policy_generating_function_spec before emitting the test cases. ---
-    folder_path = 'toy_study_base_case'
+    folder_path = 'case_study_099_fixed_length'
     test_envs = build_variation_test_env(EXPERIMENT_SPECS[folder_path])
     print(test_envs)
     results = generate_test_paths_and_init_state(
@@ -1004,10 +1070,10 @@ if __name__ == '__main__':
         warm_up_periods=0,
         num_periods=None,
         dat_file='table.dat',
-        num_groups=100,  # divide into N groups
-        is_require_penalty_coefficients=False,
+        num_groups=998,  # divide into N groups
+        is_require_penalty_coefficients=True,
         is_random_initial_state=True,
-        policy_ids=["approx_Q","row_gen_alp", "myopic"],
+        policy_ids=[],
         train_data_dir= os.path.join('experiments','results', folder_path),
     )
     # --- Previous run: IS training, proposal gamma=0.98, target gamma=0.99 ---
