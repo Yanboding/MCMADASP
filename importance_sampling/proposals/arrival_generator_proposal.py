@@ -1,4 +1,3 @@
-from dataclasses import dataclass
 from typing import Optional
 
 import numpy as np
@@ -6,7 +5,6 @@ import numpy as np
 from .base import SamplePathLengthProposal
 
 
-@dataclass(frozen=True)
 class ArrivalGeneratorSamplePathProposal(SamplePathLengthProposal):
     """Sample paths with the environment arrival generator's path sampler.
 
@@ -15,8 +13,9 @@ class ArrivalGeneratorSamplePathProposal(SamplePathLengthProposal):
     ``arrival_generator.quasi_rvs``, and likelihood ratios are one.
     """
 
-    use_quasi_mc: Optional[bool] = None
-    is_positive_integer_support: bool = False
+    def __init__(self, use_quasi_mc: Optional[bool] = None, is_positive_integer_support: bool = False):
+        self.use_quasi_mc = use_quasi_mc
+        self.is_positive_integer_support = is_positive_integer_support
 
     def _use_quasi_mc(self, arrival_generator):
         if self.use_quasi_mc is not None:

@@ -1,5 +1,3 @@
-from dataclasses import dataclass
-
 import numpy as np
 
 from .base import (
@@ -9,7 +7,6 @@ from .base import (
 )
 
 
-@dataclass(frozen=True)
 class GeometricLengthProposal(SamplePathLengthProposal):
     """Geometric proposal with support {1, 2, ...}.
 
@@ -17,10 +14,9 @@ class GeometricLengthProposal(SamplePathLengthProposal):
     P(L >= t) = gamma_q ** (t - 1).
     """
 
-    discount_factor_proposal: float
-
-    def __post_init__(self):
-        _validate_discount_factor(self.discount_factor_proposal, 'discount_factor_proposal')
+    def __init__(self, discount_factor_proposal: float):
+        _validate_discount_factor(discount_factor_proposal, 'discount_factor_proposal')
+        self.discount_factor_proposal = discount_factor_proposal
 
     def sample_lengths(self, arrival_generator, size):
         return arrival_generator.rng.geometric(p=1 - self.discount_factor_proposal, size=size)
@@ -28,18 +24,13 @@ class GeometricLengthProposal(SamplePathLengthProposal):
     def survival_probability(self, periods):
         periods = np.asarray(periods, dtype=int)
         return self.discount_factor_proposal ** (periods - 1)
-
-
-@dataclass(frozen=True)
 class TruncatedGeometricLengthProposal(SamplePathLengthProposal):
     """Geometric proposal conditioned on L <= max_length."""
 
-    discount_factor_proposal: float
-    max_length: int
-
-    def __post_init__(self):
-        _validate_discount_factor(self.discount_factor_proposal, 'discount_factor_proposal')
-        object.__setattr__(self, 'max_length', _validate_max_length(self.max_length))
+    def __init__(self, discount_factor_proposal: float, max_length: int):
+        _validate_discount_factor(discount_factor_proposal, 'discount_factor_proposal')
+        self.discount_factor_proposal = discount_factor_proposal
+        self.max_length = _validate_max_length(max_length)
 
     def sample_lengths(self, arrival_generator, size):
         if self.discount_factor_proposal == 0:

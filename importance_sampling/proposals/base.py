@@ -60,8 +60,8 @@ class SamplePathLengthProposal(ABC):
 
     def period_likelihood_ratios(self, target_discount_factor, lengths):
         _validate_discount_factor(target_discount_factor, 'target_discount_factor')
-        period_weights = []
-        for length in lengths:
+
+        def weights_for(length):
             periods = np.arange(1, int(length) + 1)
             proposal_survival = self.survival_probability(periods)
             if np.any(proposal_survival <= 0):
@@ -70,5 +70,6 @@ class SamplePathLengthProposal(ABC):
                 )
             # One-based period indexing: P(L >= t) = gamma ** (t - 1).
             target_survival = target_discount_factor ** (periods - 1)
-            period_weights.append(target_survival / proposal_survival)
-        return period_weights
+            return target_survival / proposal_survival
+
+        return [weights_for(length) for length in lengths]

@@ -1,5 +1,4 @@
 import warnings
-from dataclasses import dataclass
 
 import numpy as np
 from scipy.stats import geom, qmc
@@ -7,7 +6,6 @@ from scipy.stats import geom, qmc
 from .base import SamplePathLengthProposal, _validate_discount_factor
 
 
-@dataclass(frozen=True)
 class MixtureGeometricStratifiedQMCProposal(SamplePathLengthProposal):
     """Two-component geometric mixture proposal for sample-path lengths.
 
@@ -42,24 +40,28 @@ class MixtureGeometricStratifiedQMCProposal(SamplePathLengthProposal):
     component's geometric CDF on a scrambled 1-D Sobol' sequence.
     """
 
-    target_discount_factor: float
-    discount_factor_proposal: float
-    lambda_0: float = 0.5
-
-    def __post_init__(self):
-        _validate_discount_factor(self.target_discount_factor, 'target_discount_factor')
-        _validate_discount_factor(self.discount_factor_proposal, 'discount_factor_proposal')
-        if not (self.discount_factor_proposal < self.target_discount_factor):
+    def __init__(
+        self,
+        target_discount_factor: float,
+        discount_factor_proposal: float,
+        lambda_0: float = 0.5,
+    ):
+        _validate_discount_factor(target_discount_factor, 'target_discount_factor')
+        _validate_discount_factor(discount_factor_proposal, 'discount_factor_proposal')
+        if not (discount_factor_proposal < target_discount_factor):
             raise ValueError(
                 "discount_factor_proposal (q) must be strictly less than "
-                f"target_discount_factor (gamma): got q={self.discount_factor_proposal}, "
-                f"gamma={self.target_discount_factor}."
+                f"target_discount_factor (gamma): got q={discount_factor_proposal}, "
+                f"gamma={target_discount_factor}."
             )
-        if not (0 < self.lambda_0 <= 1):
+        if not (0 < lambda_0 <= 1):
             raise ValueError(
                 f"lambda_0 (mass on the long component) must be in (0, 1]. "
-                f"Got {self.lambda_0}."
+                f"Got {lambda_0}."
             )
+        self.target_discount_factor = target_discount_factor
+        self.discount_factor_proposal = discount_factor_proposal
+        self.lambda_0 = lambda_0
 
     # -- sampling ---------------------------------------------------------
     @staticmethod
