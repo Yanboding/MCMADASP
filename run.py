@@ -4,6 +4,7 @@ import pickle
 import os
 import time
 import re
+import copy
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pprint import pprint
 
@@ -588,6 +589,160 @@ def train_lowerbound_for_init_state(
         f.write(json.dumps(record) + '\n')
     return record
 
+def _draw_per_scenario_init_states(env_args, init_state_seed, sample_path_number):
+    """Draw one reproducible initial state per scenario from a sampler env.
+
+    The sampler env is a copy of ``env_args`` with ``env_random_seed`` (and
+    hence the derived ``init_state_random_seed``) set to ``init_state_seed``, so
+    the per-scenario initial states are reproducible and independent of the
+    pinned arrival/sample-path seeds. States are drawn single-threaded here so
+    the subsequent parallel Benders worker build stays deterministic.
+    """
+    sampler_env_args = copy.deepcopy(env_args)
+    sampler_env_args['env_random_seed'] = init_state_seed
+    sampler_env = get_config_by_type('infinite_custom', args=sampler_env_args).env
+    sampler_env.reset_random_seeds()
+    return [
+        tuple(np.array(component) for component in sampler_env.generate_initial_state())
+        for _ in range(sample_path_number)
+    ]
+
+def train_penalty_coefficients_for_env(
+    uid,
+    experiment_name,
+    mutate_val,
+    sample_path_number,
+    init_state_mode,
+    init_state,
+    init_state_seed,
+    env_args,
+    agent_args,
+    training_generating_function_spec,
+    grb_env,
+    grb_sub_envs,
+    job_id,
+):
+    """Train one set of penalty coefficients for an env variant by Benders
+    decomposition over ``sample_path_number`` arrival sample paths.
+
+    Emitted by ``generate_penalty_coefficient_training_env``. ``init_state_mode``
+    selects how each scenario's starting state is chosen:
+
+      * ``'generate'``: draw one initial state per scenario from a sampler env
+        seeded by ``init_state_seed`` (reproducible); ``init_state`` is ``None``.
+      * ``'shared'``: every scenario starts from the single ``init_state``.
+      * ``'per_scenario'``: scenario ``i`` starts from ``init_state[i]`` and
+        ``len(init_state) == sample_path_number``.
+
+    Like ``train_lowerbound_for_init_state`` the penalty coefficients are the
+    Benders decision variables (NOT supplied): the generating function is built
+    from ``training_generating_function_spec`` with any coefficients stripped.
+    One JSONL record (uid, coefficients, objective) is appended to
+    ``experiments/results/<experiment_name>/<job_id>.jsonl``; duplicates
+    (matched on ``uid``) are skipped.
+    """
+    output_file = os.path.join(
+        'experiments', 'results', experiment_name, f'{job_id}.jsonl'
+    )
+    os.makedirs(os.path.dirname(output_file), exist_ok=True)
+    if jsonl_uid_exists(output_file, uid):
+        print(f"Skip duplicate penalty-training result: uid={uid}")
+        return None
+
+    config = get_config_by_type('infinite_custom', args=env_args)
+    env = config.env
+
+    # Build the generating function solely from the self-contained training
+    # spec; coefficients are trained, not given.
+    training_generating_function_spec = _normalize_generating_function_spec(
+        training_generating_function_spec
+    )
+    training_generating_function_spec.pop('coefficients', None)
+    generating_function = _build_generating_function(
+        env=env,
+        spec=training_generating_function_spec,
+    )
+
+    inner = dict((agent_args or {}).get('agent_args', {}))
+    for spec_key in _GENERATING_FUNCTION_SPEC_KEYS:
+        inner.pop(spec_key, None)
+    inner['generating_function'] = generating_function
+    _set_sample_path_proposal(inner)
+    inner['sample_path_number'] = sample_path_number
+
+    agent = ApproxQAgent(
+        env=env,
+        discount_factor=env.discount_factor,
+        grb_env=grb_env,
+        subproblem_grb_envs=grb_sub_envs,
+        **inner,
+    )
+
+    # Resolve the unified init_state argument from the init_state mode:
+    #   generate     -> one drawn state per scenario (list of length N)
+    #   per_scenario -> the supplied list of states, one per scenario
+    #   shared       -> a single state shared across all scenarios
+    if init_state_mode == 'generate':
+        resolved_init_state = _draw_per_scenario_init_states(
+            env_args=env_args,
+            init_state_seed=init_state_seed,
+            sample_path_number=sample_path_number,
+        )
+    elif init_state_mode == 'per_scenario':
+        resolved_init_state = [
+            tuple(np.array(component) for component in state) for state in init_state
+        ]
+    elif init_state_mode == 'shared':
+        resolved_init_state = tuple(np.array(component) for component in init_state)
+    else:
+        raise ValueError(f"Unknown init_state_mode: {init_state_mode!r}")
+
+    # Reset RNGs so every command sees the *same* Monte-Carlo arrival sample
+    # paths (the pinned arrival/env seeds in env_args make them identical).
+    env.reset_random_seeds()
+
+    print(
+        f"Training penalty coefficients for uid={uid}, mode={init_state_mode}, "
+        f"sample_path_number={sample_path_number}"
+    )
+    start = time.time()
+    checkpoint_dir = os.path.join(
+        'experiments', 'results', experiment_name, 'benders_checkpoints'
+    )
+    os.makedirs(checkpoint_dir, exist_ok=True)
+    checkpoint_path = os.path.join(
+        checkpoint_dir, f'{uid}-penalty-checkpoint.pickle'
+    )
+    obj, coefficients, info = agent.benders_decomposition_train(
+        coefficient_bound=GRB.INFINITY,
+        init_state=resolved_init_state,
+        checkpoint_path=checkpoint_path,
+        resume_checkpoint_path=checkpoint_path,
+    )
+    elapsed = time.time() - start
+    print(f"  obj={obj}, elapsed={elapsed:.1f}s")
+
+    if hasattr(coefficients, 'tolist'):
+        coefficients_jsonable = coefficients.tolist()
+    else:
+        coefficients_jsonable = list(coefficients)
+
+    record = {
+        'uid': uid,
+        'experiment_name': experiment_name,
+        'mutate_val': mutate_val,
+        'sample_path_number': sample_path_number,
+        'init_state_mode': init_state_mode,
+        'init_state_seed': init_state_seed,
+        'tight_penalized_lower_bound': float(obj),
+        'coefficients': coefficients_jsonable,
+        'training_time_seconds': elapsed,
+    }
+
+    with open(output_file, 'a') as f:
+        f.write(json.dumps(record) + '\n')
+    return record
+
 def evaluated_hindsight_policy_solving_time(uid,
                                             experiment_name,
                                             mutate_val,
@@ -719,6 +874,9 @@ if __name__ == '__main__':
         # Dispatch on the shape of the params record:
         #   * generate_test_paths_and_init_state -> contains 'policy_specs'
         #     -> evaluate policy costs against information-relaxation bounds.
+        #   * generate_penalty_coefficient_training_env -> contains
+        #     'init_state_mode' -> train one set of penalty coefficients per env
+        #     over sample_path_number scenarios.
         #   * generate_train_env -> contains 'init_state_index' (and no
         #     'policy_specs') -> train the tight penalized lower bound at a
         #     single initial state and emit one (X, Y) record.
@@ -737,6 +895,13 @@ if __name__ == '__main__':
                 grb_sub_envs=grb_sub_envs,
                 job_id=args.job_id,
             )
+        elif 'init_state_mode' in param:
+            train_penalty_coefficients_for_env(
+                **param,
+                grb_env=grb_env,
+                grb_sub_envs=grb_sub_envs,
+                job_id=args.job_id,
+            )
         elif 'init_state_index' in param:
             train_lowerbound_for_init_state(
                 **param,
@@ -746,6 +911,7 @@ if __name__ == '__main__':
             )
         else:
             raise ValueError(
-                "Unrecognized params payload: expected either 'policy_specs' "
-                "(evaluation) or 'init_state_index' (training) in record."
+                "Unrecognized params payload: expected 'policy_specs' "
+                "(evaluation), 'init_state_mode' (penalty-coefficient training), "
+                "or 'init_state_index' (lower-bound training) in record."
             )

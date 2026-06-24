@@ -46,6 +46,30 @@ def iter_to_list(obj):
         return type(obj)(iter_to_list(sub) for sub in obj)
     return obj
 
+def is_flat_numeric_vector(component):
+    """True when ``component`` is a 1-D sequence of numbers (no nesting)."""
+    if isinstance(component, np.ndarray):
+        return component.ndim == 1 and np.issubdtype(component.dtype, np.number)
+    if not isinstance(component, (list, tuple)):
+        return False
+    return len(component) > 0 and all(
+        isinstance(x, (int, float, np.integer, np.floating)) for x in component
+    )
+
+def is_single_init_state(candidate):
+    """True when ``candidate`` is one ``(regular, overtime, waitlist)`` initial
+    state: a length-3 sequence whose entries are flat numeric vectors.
+
+    A per-scenario *list* of states stays distinguishable from a single state
+    even when it happens to have length 3, because its entries are themselves
+    states (nested) rather than flat numeric vectors.
+    """
+    return (
+        isinstance(candidate, (list, tuple, np.ndarray))
+        and len(candidate) == 3
+        and all(is_flat_numeric_vector(component) for component in candidate)
+    )
+
 def convert_tuple_keys_to_str(d):
     """ Recursively convert tuple keys to strings. """
     if isinstance(d, dict):

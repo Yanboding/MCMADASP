@@ -11,7 +11,7 @@ from gurobipy import GRB
 from decision_maker import InfiniteRTAgent
 from importance_sampling.proposals import ArrivalGeneratorSamplePathProposal
 from metaheuristic_algorithm import SubproblemWorker, BendersDecompositionSolver
-from utils import solve_and_handle_errors, flatten, set_link_rhs, acquire_grb_env, encode, get_status_string
+from utils import solve_and_handle_errors, flatten, set_link_rhs, acquire_grb_env, encode, get_status_string, is_single_init_state
 
 class ApproxQAgent(InfiniteRTAgent):
 
@@ -303,6 +303,36 @@ class ApproxQAgent(InfiniteRTAgent):
 
         return sub_model, coefficient_linking_constraints
 
+    def _resolve_init_state_per_scenario(self, init_state):
+        """Return a resolver ``sid -> initial state (or None)`` for the workers.
+
+        ``init_state`` may be one of:
+          * ``None`` -- every scenario draws its own initial state from the env;
+          * a single ``(regular, overtime, waitlist)`` state -- shared by all
+            scenarios;
+          * a list with one state per sample path
+            (``len == sample_path_number``) -- scenario ``sid`` uses
+            ``init_state[sid]``.
+
+        A per-scenario list is told apart from a single shared state by
+        structure (a single state is a length-3 sequence of flat numeric
+        vectors), so the two forms stay unambiguous even when
+        ``sample_path_number == 3``.
+        """
+        is_per_scenario_list = (
+            isinstance(init_state, (list, tuple))
+            and not is_single_init_state(init_state)
+        )
+        if not is_per_scenario_list:
+            return lambda sid: init_state
+        if len(init_state) != self.sample_path_number:
+            raise ValueError(
+                "A per-scenario init_state list must have length "
+                f"sample_path_number ({self.sample_path_number}); got "
+                f"{len(init_state)}."
+            )
+        return lambda sid: init_state[sid]
+
     def _build_training_workers(self, init_state=None, parallel=True, verbose=False):
         """Build one ``SubproblemWorker`` per sample path for Benders training.
 
@@ -313,9 +343,16 @@ class ApproxQAgent(InfiniteRTAgent):
         assigned to the same env are built sequentially within a group while
         different env groups run concurrently. Workers are returned ordered by
         ``scenario_id``.
+
+        ``init_state`` selects each scenario's starting state -- shared
+        (``None`` or a single state) or one per sample path; see
+        :meth:`_resolve_init_state_per_scenario`. Resolving it up front keeps the
+        parallel build deterministic (no RNG calls during the threaded
+        construction).
         """
         envs = {sid: self._get_subproblem_env(sid, {"Threads": 1}, parallel)
                 for sid in range(self.sample_path_number)}
+        init_state_for = self._resolve_init_state_per_scenario(init_state)
 
         # Group scenarios by their Gurobi env (None -> own private group).
         groups = defaultdict(list)
@@ -325,7 +362,7 @@ class ApproxQAgent(InfiniteRTAgent):
         def build_one(sid):
             start = time.time()
             model, link_rows = self.train_subproblem_builder_fn(
-                env=envs[sid], scenario_id=sid, init_state=init_state)
+                env=envs[sid], scenario_id=sid, init_state=init_state_for(sid))
             worker = SubproblemWorker(
                 model=model, link_rows=link_rows, state_linking_constraints=None,
                 subproblem_id=sid, objective_builder_fn=None, cut_gradient_fn=None,
@@ -356,11 +393,14 @@ class ApproxQAgent(InfiniteRTAgent):
                                     checkpoint_path=None,
                                     resume_checkpoint_path=None):
         # This function can be implemented to train the coefficients using Benders decomposition, which can potentially handle larger sample sizes more efficiently.
+        # ``init_state`` may be None (each scenario draws its own state), a single
+        # shared state, or one state per sample path (a list of length
+        # sample_path_number); see ``_resolve_init_state_per_scenario``.
         overall_start = time.time()
         master_time = None
         workers_time = None
         coefficient_vars = None
-        
+
         if self.coefficient_model is None:
             # Time master model building
             master_start = time.time()

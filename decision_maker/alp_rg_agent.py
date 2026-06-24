@@ -8,7 +8,7 @@ from utils import get_solution_value, solve_and_handle_errors, clean_value
 
 class ALPRowGenerationAgent(InfiniteRTAgent):
 
-    def __init__(self, env, discount_factor, V=None, Q=None, coefficients=None, pretrain=False, decay_factor=0.999, grb_env=None):
+    def __init__(self, env, discount_factor, V=None, Q=None, coefficients=None, pretrain=False, decay_factor=0.95, grb_env=None):
         super().__init__(env, discount_factor, V, Q, grb_env=grb_env)
         self.is_trained = False
         self.decay_factor = decay_factor
