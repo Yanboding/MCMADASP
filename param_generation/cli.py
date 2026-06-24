@@ -129,10 +129,52 @@ def recipe_policy_efficiency():
         sample_paths_seed=42,
     )
 
+def recipe_toy_study_099_mixture_geometric_proposal_095():
+    """Train penalty coefficients on the case study with a mixture-geometric IS proposal.
+
+    Sweeps the mixture mass ``lambda_0 in {0.05, 0.1, 0.15}`` on the long
+    (target gamma=0.99) component; the short component uses proposal
+    discount factor q=0.95. Because ``is_require_penalty_coefficients=True``,
+    ``train_penalty_coefficients`` runs per variant and weights each Benders
+    subproblem by the mixture's per-period likelihood ratio (bounded in
+    ``[1, 1 / lambda_0]``), yielding cheaper-but-unbiased training paths.
+    """
+    test_envs = build_variation_test_env(
+        EXPERIMENT_SPECS['toy_study_099_mixture_geometric_proposal_095']
+    )
+    generate_penalty_coefficient_training_env(
+        test_envs,
+        dat_file='table.dat',
+        init_state=None,
+        sample_path_number=256,
+        init_state_seed=12345,
+        sample_paths_seed=42,
+    )
+
+def recipe_toy_study_099_mixture_geometric_proposal_095_policy_evaluation():
+    """IS training recipe: proposal gamma=0.98, target gamma=0.99.
+
+    Builds an env with ``discount_factor=0.99`` and an agent with a geometric IS
+    proposal of 0.98. Because ``is_require_penalty_coefficients=True``,
+    ``train_penalty_coefficients`` runs for each variant and constructs
+    ``ApproxQAgent(sample_path_proposal=GeometricLengthProposal(0.98))`` so every
+    Benders subproblem objective is weighted by ``(0.99/0.98)**(t-1)``.
+    """
+    test_envs = build_variation_test_env(EXPERIMENT_SPECS['toy_study_099_mixture_geometric_proposal_095'])
+    generate_test_paths_and_init_state(
+        test_envs=test_envs,
+        test_sample_path_num=5000,
+        warm_up_periods=None,
+        num_periods=None,
+        dat_file='table.dat',
+        num_groups=998,  # divide into N groups
+        is_require_penalty_coefficients=True,
+        policy_ids=['approx_penalized_hindsight', 'row_gen_alp', 'myopic'],
+    )
 
 def main():
     """Run the currently-active dataset-generation recipe."""
-    recipe_case_study_099_mixture_geometric_proposal_095()
+    recipe_toy_study_099_mixture_geometric_proposal_095_policy_evaluation()
 
 
 if __name__ == '__main__':
