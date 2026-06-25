@@ -174,7 +174,7 @@ def recipe_toy_study_099_mixture_geometric_proposal_095_policy_evaluation():
 
 def main():
     """Run the currently-active dataset-generation recipe."""
-    recipe_toy_study_099_mixture_geometric_proposal_095()
+    recipe_case_study_099_mixture_geometric_proposal_095()
 
 
 if __name__ == '__main__':
