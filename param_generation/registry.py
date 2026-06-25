@@ -158,7 +158,7 @@ EXPERIMENT_SPECS = {
             agent_mutate=mutate_discount_factor_for_sample_path_length_proposal,
         ),
         ExperimentSpec(
-            name='toy_study_099_mixture_geometric_proposal_095',
+            name='toy_study_099_mixture_geometric_proposal_095_test',
             config_type='toy',
             val_args=[0.05, 0.1, 0.15, 1],
             mutate=mutate_mixture_target_discount_factor,

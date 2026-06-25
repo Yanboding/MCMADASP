@@ -122,9 +122,36 @@ def jsonl_uid_exists(path, uid):
 def load_pickle_if_exists(path):
     """Return file contents if the file exists, otherwise return None."""
     if os.path.isfile(path):
-        with open(path, 'rb') as f:
-            return pickle.load(f)
+        try:
+            with open(path, 'rb') as f:
+                return pickle.load(f)
+        except (EOFError, pickle.UnpicklingError, OSError) as exc:
+            # A previous interrupted write can leave an empty/truncated pickle.
+            # Remove bad checkpoint/result so the caller can recompute safely.
+            print(f"Warning: ignoring corrupted pickle at {path}: {exc}")
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+            return None
     return None
+
+
+def atomic_pickle_dump(path, payload):
+    """Atomically persist a pickle payload to avoid truncated files."""
+    tmp_path = f"{path}.tmp.{os.getpid()}.{time.time_ns()}"
+    try:
+        with open(tmp_path, 'wb') as f:
+            pickle.dump(payload, f, protocol=pickle.HIGHEST_PROTOCOL)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, path)
+    finally:
+        if os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
 
 def calculate_policy_costs_with_penalty(uid,
                            experiment_name,
@@ -156,8 +183,19 @@ def calculate_policy_costs_with_penalty(uid,
 
     base_dir = os.path.join('experiments', 'results', experiment_name, 'pickles')
     os.makedirs(base_dir, exist_ok=True)
-    checkpoint_file = os.path.join(base_dir, f'{uid}-{policy_id}-checkpoint.pickle')
-    result_file = os.path.join(base_dir, f'{uid}-{policy_id}-result.pickle')
+    # The cache/checkpoint key must capture the policy's *actual settings*, not
+    # just (uid, policy_id). Several policies can share one policy_id (e.g.
+    # multiple "approx_penalized_hindsight" variants) while differing in
+    # agent_args (penalty coefficients, IS proposal, ...) and/or in the penalty
+    # used for cost accounting. Hashing those into the filename prevents a later
+    # policy from silently reusing an earlier policy's cached result.
+    policy_signature = get_uid({
+        'agent_name': agent_name,
+        'agent_args': _to_jsonable({k: v for k, v in dict(agent_args).items() if k != 'grb_env'}),
+        'penalty_coefficients': _to_jsonable(getattr(generating_function, 'coefficients', None)),
+    })
+    checkpoint_file = os.path.join(base_dir, f'{uid}-{policy_id}-{policy_signature}-checkpoint.pickle')
+    result_file = os.path.join(base_dir, f'{uid}-{policy_id}-{policy_signature}-result.pickle')
 
     cached_result = load_pickle_if_exists(result_file)
     if cached_result is not None:
@@ -238,8 +276,9 @@ def calculate_policy_costs_with_penalty(uid,
         s = next_state
 
         if current_t % 10 == 0:
-            with open(checkpoint_file, 'wb') as f:
-                pickle.dump({
+            atomic_pickle_dump(
+                checkpoint_file,
+                {
                     's': s,
                     't': current_t + 1,
                     'states': states,
@@ -247,12 +286,14 @@ def calculate_policy_costs_with_penalty(uid,
                     'costs': costs,
                     'penalties': penalties,
                     'solving_time_per_state': solving_time_per_state,
-                }, f)
+                },
+            )
         if done:
             break
 
-    with open(checkpoint_file, 'wb') as f:
-        pickle.dump({
+    atomic_pickle_dump(
+        checkpoint_file,
+        {
             's': s,
             't': len(costs) + 1,
             'states': states,
@@ -260,7 +301,8 @@ def calculate_policy_costs_with_penalty(uid,
             'costs': costs,
             'penalties': penalties,
             'solving_time_per_state': solving_time_per_state,
-        }, f)
+        },
+    )
 
     scheduled_patients = []
     overtime = np.zeros(len(sample_path) + env.planning_horizon)
@@ -294,8 +336,7 @@ def calculate_policy_costs_with_penalty(uid,
         'solving_time_per_state': solving_time_per_state.mean,
     }
 
-    with open(result_file, 'wb') as f:
-        pickle.dump(result, f)
+    atomic_pickle_dump(result_file, result)
 
     if os.path.exists(checkpoint_file):
         os.remove(checkpoint_file)

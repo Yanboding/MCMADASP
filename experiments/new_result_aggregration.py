@@ -238,7 +238,6 @@ class SimulateEvaluationResult:
             self.overtime_utilization[(group_id, policy_id)] += data["overtime"][day] / self.env.overtime_capacity * 100
         # calculate the waiting time violation rate
         # scheduled_patients is a 2D array of shape (num_days, num_types), where each entry represents the number of patients of a certain type scheduled on a certain day. We need to calculate the percentage of patients that are scheduled outside of their waiting time target. For each treatment type, we have a waiting time target (e.g., 1 day, 5 days, etc.). We can calculate the cumulative percentage of patients scheduled by each day and compare it to the waiting time target to determine the violation rate.
-        
         patients_outside_target = sum(
             total_scheduled_patients_by_type[t] - cum_scheduled_patients[self.waiting_time_targets[t] - 1][t]
             for t in range(self.env.num_types)
@@ -358,10 +357,10 @@ def run_improvement_plots(base_results_dir, file_pattern, env_info, group_ids, i
 # I want to plot discount improvement
 if __name__ == "__main__":
     from experiments import get_config_by_type
-    config = get_config_by_type('ejor')
+    config = get_config_by_type('toy')
     env = config.env
     waiting_time_targets = [env.holding_cost.get_waiting_target(i) for i in range(env.num_types)]
-    base_results_dir = os.path.join('.', 'experiments', 'results', 'case_study_099_fixed_length')
+    base_results_dir = os.path.join('.', 'experiments', 'results', 'toy_study_099_mixture_geometric_proposal_095')
     file_pattern = '[0-9]*.jsonl'
     # group_ids = ['73d11360affe39305e7716cf5c42ac04', '841708e72300000ddfd948daf08d6805', 'a3202d39ed34711b47ecebb72aabad43']
     # run_improvement_plots(
@@ -379,20 +378,20 @@ if __name__ == "__main__":
         )
     
     # print(ser.last_decision_period_distribution_table())
-    # print('ser.zero_penalized_gap')
-    # pprint(ser.zero_penalized_gap)
-    # print('ser.penalized_gap')
-    # pprint(ser.penalized_gap)
-    # print('ser.after_warmup_policy_costs')
-    # pprint(ser.after_warmup_policy_costs)
-    # print('ser.zero_penalized_information_relaxation_cost')
-    # pprint(ser.zero_penalized_information_relaxation_cost)
-    # print('ser.penalized_information_relaxation_cost')
-    # pprint(ser.penalized_information_relaxation_cost)
+    print('ser.zero_penalized_gap')
+    pprint(ser.zero_penalized_gap)
+    print('ser.penalized_gap')
+    pprint(ser.penalized_gap)
+    print('ser.after_warmup_policy_costs')
+    pprint(ser.after_warmup_policy_costs)
+    print('ser.zero_penalized_information_relaxation_cost')
+    pprint(ser.zero_penalized_information_relaxation_cost)
+    print('ser.penalized_information_relaxation_cost')
+    pprint(ser.penalized_information_relaxation_cost)
     # print(ser.waiting_time_target_ptc_table())
     # print('Summary table')
     # print(ser.performance_summary_table())
-    print('gap_to_information_relaxation')
-    pprint(ser.gap_to_information_relaxation)
-    print('improvement')
-    pprint(ser.improvement)
+    # print('gap_to_information_relaxation')
+    # pprint(ser.gap_to_information_relaxation)
+    # print('improvement')
+    # pprint(ser.improvement)

@@ -160,11 +160,11 @@ def recipe_toy_study_099_mixture_geometric_proposal_095_policy_evaluation():
     ``ApproxQAgent(sample_path_proposal=GeometricLengthProposal(0.98))`` so every
     Benders subproblem objective is weighted by ``(0.99/0.98)**(t-1)``.
     """
-    test_envs = build_variation_test_env(EXPERIMENT_SPECS['toy_study_099_mixture_geometric_proposal_095'])
+    test_envs = build_variation_test_env(EXPERIMENT_SPECS['toy_study_099_mixture_geometric_proposal_095_test'])
     generate_test_paths_and_init_state(
         test_envs=test_envs,
         test_sample_path_num=5000,
-        warm_up_periods=None,
+        warm_up_periods=0,
         num_periods=None,
         dat_file='table.dat',
         num_groups=998,  # divide into N groups
