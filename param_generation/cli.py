@@ -140,7 +140,7 @@ def recipe_toy_study_099_mixture_geometric_proposal_095():
     ``[1, 1 / lambda_0]``), yielding cheaper-but-unbiased training paths.
     """
     test_envs = build_variation_test_env(
-        EXPERIMENT_SPECS['toy_study_099_mixture_geometric_proposal_095']
+        EXPERIMENT_SPECS['toy_study_099_mixture_geometric_proposal_095_test']
     )
     generate_penalty_coefficient_training_env(
         test_envs,
@@ -174,7 +174,7 @@ def recipe_toy_study_099_mixture_geometric_proposal_095_policy_evaluation():
 
 def main():
     """Run the currently-active dataset-generation recipe."""
-    recipe_toy_study_099_mixture_geometric_proposal_095_policy_evaluation()
+    recipe_toy_study_099_mixture_geometric_proposal_095()
 
 
 if __name__ == '__main__':
