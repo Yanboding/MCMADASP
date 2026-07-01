@@ -51,7 +51,39 @@ class LinearPenaltyFunction(GeneratingFunction):
                                    total_arrival_difference * advance_scheduling_decision.reshape(-1),
                                    total_arrival_difference * overtime_decision])
         return gradient
-    
+
+    def gradient_coupling_blocks(self, state, action, new_arrival, is_var=False, weight=1.0):
+        """Vectorized penalty feature, one ``(start, stop, matrix)`` per
+        coefficient block, for the extensive-form coupling rows.
+
+        Same content as :meth:`calculate_gradient` (phi =
+        ``total_arrival_difference * [post-action regular bookings, overtimes,
+        waitlist, advance decision, overtime decision]``) but returned
+        block-by-block as Gurobi ``MLinExpr`` matrices so the extensive-form
+        trainer accumulates and constrains each block with a single matrix-level
+        operation instead of one ``scalar*MLinExpr`` pass per coefficient. This
+        also sidesteps the ``np.concatenate`` of ``np.float64 * MVar`` terms in
+        :meth:`calculate_gradient` (which produces zero-dimensional object arrays
+        for Gurobi decision variables). Every linear-penalty block is active
+        (no structural zeros). ``weight`` (the per-period likelihood ratio) is
+        folded into the scalar before the broadcast so the caller needs no
+        second pass. Each block's C-order flattening lines up with the flat
+        coefficient slice ``[start:stop]`` from :meth:`get_coefficients`.
+        """
+        T, K, W = self.env.planning_horizon, self.env.num_types, self.env.booking_window_size
+        (post_action_regular_bookings, post_action_overtimes, post_action_waitlist) = self.env.post_action_state(state, action, is_var)
+        (advance_scheduling_decision, overtime_decision) = action
+        scale = float(weight) * float(np.sum(self.env.arrival_generator.mean_by_type - new_arrival))
+        sizes = [T, T, K, W * K, T]
+        offsets = [0] + list(np.cumsum(sizes))
+        return [
+            (offsets[0], offsets[1], scale * post_action_regular_bookings),
+            (offsets[1], offsets[2], scale * post_action_overtimes),
+            (offsets[2], offsets[3], scale * post_action_waitlist),
+            (offsets[3], offsets[4], scale * advance_scheduling_decision.reshape(-1)),
+            (offsets[4], offsets[5], scale * overtime_decision),
+        ]
+
     def calculate_expected_continuation_value(self, state, action, is_var=False, coefficients=None):
         (post_action_regular_bookings, post_action_overtimes, post_action_waitlist) = self.env.post_action_state(state, action, is_var)
         (advance_scheduling_decision, overtime_decision) = action

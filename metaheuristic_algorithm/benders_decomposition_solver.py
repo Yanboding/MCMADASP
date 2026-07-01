@@ -86,13 +86,15 @@ def benders_callback(model, where):
     if where == GRB.Callback.MIPSOL:
         x_vars = model._action_vars
         theta_vars = model._theta_vars
-        workers = model._workers
         tol = model._tol
         use_pareto_cuts = model._use_pareto
         pareto_epsilon = model._pareto_epsilon
-        active_workers = workers[:len(theta_vars)]
-        env_groups = _group_workers_by_env(active_workers)
-        max_workers = _resolve_parallel_workers(model._max_workers, len(env_groups))
+        active_workers = model._workers[:len(theta_vars)]
+        # The worker set, their env grouping and the thread pool are fixed for
+        # the whole solve, so they were built ONCE in solve_with_callback and are
+        # reused here instead of being rebuilt at every incumbent.
+        env_groups = model._env_groups
+        executor = model._executor
 
         # 1. Get current candidate solution (xk)
         x_vals = np.array(model.cbGetSolution(x_vars))
@@ -109,39 +111,46 @@ def benders_callback(model, where):
 
         current_core = model._core_point
 
-        # 3. Solve subproblems. Workers sharing a Gurobi env are solved
-        # sequentially within one group task; different env groups run in
-        # parallel (Gurobi envs are not thread-safe for concurrent optimize).
+        # 3. Solve subproblems in parallel. Different env groups run concurrently
+        # on the persistent executor; workers sharing a Gurobi env are solved
+        # sequentially within their group (Gurobi envs are not thread-safe for
+        # concurrent optimize).
         if use_pareto_cuts:
             solve_one = lambda w: w.solve_pareto(x_vals, current_core, pareto_epsilon)
         else:
             solve_one = lambda w: w.solve(x_vals)
+        if model._verbose:
+            print(f"Callback iter {k}, action from incumbent: {x_vals.tolist()}")
+        progress = tqdm(
+            total=len(active_workers),
+            desc=f"Callback iter {k} subproblems",
+            leave=False,
+            dynamic_ncols=True,
+        ) if model._verbose else None
+        start_sub = time.time()
         try:
-            with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                with tqdm(
-                    total=len(active_workers),
-                    desc=f"Callback iter {k} subproblems",
-                    leave=False,
-                    dynamic_ncols=True,
-                ) as progress:
-                    results = _dispatch_subproblem_solves(
-                        env_groups, active_workers, solve_one, executor, progress=progress
-                    )
+            results = _dispatch_subproblem_solves(
+                env_groups, active_workers, solve_one, executor, progress=progress
+            )
         except RuntimeError as exc:
             if "can't start new thread" not in str(exc):
                 raise
+            # Threads exhausted: disable the pool for this and every subsequent
+            # callback in this solve and fall back to sequential solves.
             print("Falling back to sequential Benders subproblem solves: unable to start worker threads.")
-            with tqdm(
-                total=len(active_workers),
-                desc=f"Callback iter {k} subproblems",
-                leave=False,
-                dynamic_ncols=True,
-            ) as progress:
-                results = _dispatch_subproblem_solves(
-                    env_groups, active_workers, solve_one, None, progress=progress
-                )
+            model._executor = None
+            results = _dispatch_subproblem_solves(
+                env_groups, active_workers, solve_one, None, progress=progress
+            )
+        finally:
+            if progress is not None:
+                progress.close()
+        subproblem_time = time.time() - start_sub
 
         # 4. Process results and add Lazy Constraints
+        feasibility_cuts_added = 0
+        optimality_cuts_added = 0
+        cost_to_go = 0.0
         for i, (is_feasible, obj_val, duals) in enumerate(results):
             # Cut expression: theta[i] >= obj_val + duals^T * (x - x_vals)
             expr = obj_val + sum(duals[j] * (x_vars[j] - x_vals[j]) for j in range(len(x_vals)))
@@ -149,14 +158,39 @@ def benders_callback(model, where):
             if not is_feasible:
                 # Feasibility cut (Farkas Ray)
                 model.cbLazy(expr >= 0)
+                feasibility_cuts_added += 1
             else:
+                cost_to_go += obj_val
                 # Optimality cut
                 if model.ModelSense == GRB.MINIMIZE:
                     if theta_vals[i] < (obj_val - tol):
                         model.cbLazy(theta_vars[i] >= expr)
+                        optimality_cuts_added += 1
                 else:
                     if theta_vals[i] > (obj_val + tol):
                         model.cbLazy(theta_vars[i] <= expr)
+                        optimality_cuts_added += 1
+
+        # 5. Intermediate progress output (mirrors solve()'s per-iteration log).
+        # Each MIPSOL is one incumbent, so report the incumbent objective against
+        # Gurobi's best bound (their difference is the live MIP gap), the cuts
+        # injected for this incumbent, the evaluated objective at this action
+        # (first-stage cost + averaged subproblem cost-to-go -- a valid bound just
+        # like solve() reports), and the time spent solving subproblems.
+        worker_count = len(active_workers)
+        mean_theta = float(np.mean(theta_vals)) if worker_count else 0.0
+        mean_cost_to_go = cost_to_go / worker_count if worker_count else 0.0
+        incumbent_obj = model.cbGet(GRB.Callback.MIPSOL_OBJ)
+        best_bound = model.cbGet(GRB.Callback.MIPSOL_OBJBND)
+        first_stage_cost = incumbent_obj - mean_theta
+        evaluated_obj = first_stage_cost + mean_cost_to_go
+        print(
+            f"Callback iter {k}: incumbent {incumbent_obj:.4f}, best bound {best_bound:.4f}, "
+            f"MIP gap {abs(incumbent_obj - best_bound):.4f} | added {optimality_cuts_added} opt / "
+            f"{feasibility_cuts_added} feas cuts | first-stage {first_stage_cost:.4f}, "
+            f"cost-to-go {mean_cost_to_go:.4f}, evaluated obj {evaluated_obj:.4f} | "
+            f"subproblems {subproblem_time:.2f}s"
+        )
 
 class SubproblemWorker:
     """
@@ -876,6 +910,7 @@ class BendersDecompositionSolver:
                             use_pareto_cuts=False,
                             pareto_epsilon=1e-4,
                             max_workers=None,
+                            parallel=True,
                             verbose=False):
         # 1. Mandatory Parameter for Lazy Constraints
         self.master_model.Params.MIPGap = 0.0
@@ -887,11 +922,29 @@ class BendersDecompositionSolver:
         # initial_action = np.array([v.X for v in self.action_vars])
         # print('Initial action for Pareto cuts:', initial_action)
 
+        # 2b. Subproblem parallelism, set up ONCE for the whole solve. Env groups
+        # are the unit of parallelism -- workers sharing a Gurobi env must be
+        # solved sequentially (envs are not thread-safe for concurrent optimize)
+        # while different env groups run concurrently. A single persistent
+        # ThreadPoolExecutor is reused by every callback so incumbents don't each
+        # pay thread-pool build/teardown; it is sized to the number of env groups
+        # (capped by max_workers / SLURM CPUs / cpu_count).
+        active_workers = self.workers[:len(self.theta_vars)]
+        env_groups = _group_workers_by_env(active_workers)
+        resolved_max_workers = _resolve_parallel_workers(max_workers, len(env_groups))
+        executor = (
+            ThreadPoolExecutor(max_workers=resolved_max_workers)
+            if parallel and resolved_max_workers > 1
+            else None
+        )
+
         # 3. Attach variables/data to the model object for the callback to access
         # We use the underscore prefix (_) to avoid namespace collisions
         self.master_model._action_vars = self.action_vars
         self.master_model._theta_vars = self.theta_vars
         self.master_model._workers = self.workers
+        self.master_model._env_groups = env_groups
+        self.master_model._executor = executor
         self.master_model._max_iterations = max_iter
         self.master_model._tol = tol
         self.master_model._use_pareto = use_pareto_cuts
@@ -903,7 +956,11 @@ class BendersDecompositionSolver:
 
         # 4. Start the single optimization call
         print("Starting Benders with Lazy Constraint Callback...")
-        self.master_model.optimize(benders_callback)
+        try:
+            self.master_model.optimize(benders_callback)
+        finally:
+            if executor is not None:
+                executor.shutdown(wait=False)
         # if not solve_and_handle_errors(self.master_model, verbose=verbose):
         #     raise RuntimeError("Master model optimal solution not found")
         # 5. Extract results

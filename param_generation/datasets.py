@@ -15,6 +15,7 @@ import copy
 import numpy as np
 
 from experiments import get_config_by_type
+from importance_sampling import build_proposal
 from utils import get_uid, is_single_init_state
 
 from param_generation.caching import (
@@ -62,6 +63,31 @@ def _make_sampler_env(base_env_args, init_state_rng):
 def _state_to_jsonable(state):
     """Normalize a single initial state to a 3-list of plain Python lists."""
     return [np.asarray(component).tolist() for component in state]
+
+
+def _evaluation_period_weights(proposal, discount_factor, tail_length):
+    """Per-period importance-sampling weights for the post-warm-up evaluation
+    horizon, or ``None`` when no reweighting is needed.
+
+    When ``proposal`` is ``None`` the tail was drawn from the target geometric
+    horizon (proposal == target), so every weight is 1 and we return ``None`` to
+    keep the evaluation byte-identical to the non-importance-sampling path.
+
+    Otherwise the tail was drawn from ``proposal`` (a different length
+    distribution), so period ``t`` must be reweighted by
+    ``gamma ** (t - 1) / P_proposal(L >= t)``. Rolling the policy over
+    ``tail_length`` sampled arrivals visits ``tail_length + 1`` decision periods
+    (the trailing period carries a stage cost but no arrival), so we return one
+    weight per visited period.
+    """
+    if proposal is None:
+        return None
+    num_periods = tail_length + 1
+    weights = proposal.period_likelihood_ratios(
+        target_discount_factor=discount_factor,
+        lengths=[num_periods],
+    )[0]
+    return [float(w) for w in weights]
 
 
 def _normalize_penalty_training_init_state(init_state, sample_path_number):
@@ -237,16 +263,50 @@ def generate_test_paths_and_init_state(test_envs, test_sample_path_num, warm_up_
         sample_gen_args['stop_time_random_seed'] = env_args.get("stop_time_random_seed", 1) + 1001
         config_for_sample_path = get_config_by_type('infinite_custom', args=sample_gen_args)
         env_for_sample_path = config_for_sample_path.env
+        # Draw the post-warm-up evaluation tails from the SAME importance-sampling
+        # proposal used for penalty-coefficient training. Falls back to the
+        # target geometric horizon (``build_proposal(None) is None``) when no
+        # proposal is configured, keeping the legacy behaviour unchanged.
+        sample_path_proposal = build_proposal(
+            inner_agent_args.get('sample_path_length_proposal')
+            or inner_agent_args.get('sample_path_proposal')
+        )
+        # Generate the whole evaluation batch directly from the proposal in a
+        # single call. The proposal's stratified/QMC length sampling is defined
+        # over the FULL sample size (e.g. a mixture deterministically assigns a
+        # ``lambda_0`` fraction of the paths to the long/target component), so it
+        # must see all ``test_sample_path_num`` paths at once. Drawing one path at
+        # a time (the previous ``size=1`` call) rounds ``lambda_0 * 1`` down to
+        # zero long paths, collapsing the mixture onto its short component and
+        # shrinking the mean horizon. ``sample_arrival_paths`` draws from
+        # ``env_for_sample_path``'s arrival RNG, whose seed is offset by +1001
+        # from the training seed, so the evaluation paths stay independent of the
+        # training sample paths.
+        proposal_tails = None
+        if num_periods is None and sample_path_proposal is not None:
+            proposal_tails, _ = sample_path_proposal.sample_arrival_paths(
+                arrival_generator=env_for_sample_path.arrival_generator,
+                size=test_sample_path_num,
+            )
         average_sample_path_length = 0
-        for _ in range(test_sample_path_num):
+        for path_index in range(test_sample_path_num):
             init_state = env_for_sample_path.generate_initial_state() if ('init_state' not in env_args.get('reset_params', {})) or is_random_initial_state else env_args['reset_params']['init_state']
             init_state = tuple(np.array(item).tolist() for item in init_state)
             if num_periods is None:
                 warm_up_path = env_for_sample_path.reset_arrivals(stop_time=warm_up_periods)
-                sampled_path = env_for_sample_path.reset_arrivals()
+                if proposal_tails is not None:
+                    sampled_path = proposal_tails[path_index]
+                else:
+                    sampled_path = env_for_sample_path.reset_arrivals()
                 sample_path = np.concatenate((warm_up_path, sampled_path), axis=0) if len(warm_up_path) > 0 else sampled_path
+                period_weights = _evaluation_period_weights(
+                    sample_path_proposal,
+                    env_for_sample_path.discount_factor,
+                    len(sampled_path),
+                )
             else:
                 sample_path = env_for_sample_path.reset_arrivals(stop_time=num_periods)
+                period_weights = None
             sample_path = sample_path.tolist() if hasattr(sample_path, 'tolist') else sample_path
             max_length = max(max_length, len(sample_path))
             average_sample_path_length += len(sample_path)
@@ -262,6 +322,7 @@ def generate_test_paths_and_init_state(test_envs, test_sample_path_num, warm_up_
                 "experiment_name": experiment_name,
                 "mutate_val": mutate_val,
                 **params,
+                "period_weights": period_weights,
                 "generating_function_spec": {**lowerbound_generating_function_spec, 'coefficients': direct_coefficients},
                 "group_id": env_uid,
                 "policy_specs": policies,

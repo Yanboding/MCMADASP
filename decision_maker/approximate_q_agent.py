@@ -654,8 +654,14 @@ class ApproxQAgent(InfiniteRTAgent):
         feature_partials = None
         if not use_blocks:
             feature_partials = [[] for _ in range(number_of_coefficients)]
+        # Honor the unified init_state API (None -> each scenario draws its own;
+        # a single shared state; or one state per sample path) so the monolithic
+        # LP uses the SAME per-scenario initial states as the Benders solver,
+        # making the two solvers' optima directly comparable.
+        init_state_for = self._resolve_init_state_per_scenario(init_state)
         for scenario_id in range(sample_path_number):
-            state = self.env.generate_initial_state() if init_state is None else init_state
+            resolved_state = init_state_for(scenario_id)
+            state = self.env.generate_initial_state() if resolved_state is None else resolved_state
             state_var = self.get_state_var(model)
             state_linking_constraints = self.build_state_linking_constraints(model, state_var)
             set_link_rhs(state_linking_constraints, flatten(state))
@@ -800,7 +806,7 @@ class ApproxQAgent(InfiniteRTAgent):
         # to report the penalized-lower-bound mean (1/N) sum Cost.
         return model.ObjVal * inv_n, self.coefficients, info
 
-    def calculate_information_relaxation_cost(self, state, sample_path, verbose=False):
+    def calculate_information_relaxation_cost(self, state, sample_path, verbose=False, period_weights=None):
         model = gp.Model(f"IR_Model", env=self.grb_env)
         model.setParam("MultiObjPre", 0)
         model.setParam("MIPGapAbs", 1e-9)         # Enforce extremely tight absolute gap
@@ -815,7 +821,18 @@ class ApproxQAgent(InfiniteRTAgent):
         # add action constraint
         self.add_action_space_constraints(model=model, state_var=state_var, action_var=action_var)
         # ---------- 1. objective ----------
-        imm_cost = self.env.cost_fn(state_var, action_var, is_var=True)
+        # Rolling the relaxation over ``sample_path`` visits ``len(sample_path) + 1``
+        # decision periods. ``period_weights[t - 1]`` reweights period ``t`` by
+        # ``gamma ** (t - 1) / P_proposal(L >= t)`` so this bound stays consistent
+        # with the (identically reweighted) executed-policy cost when the sample
+        # path was drawn from an importance-sampling proposal instead of the
+        # target geometric horizon. ``None`` leaves every weight at 1, recovering
+        # the plain relaxation.
+        if period_weights is None:
+            weights = np.ones(len(sample_path) + 1)
+        else:
+            weights = np.asarray(period_weights, dtype=float)
+        imm_cost = weights[0] * self.env.cost_fn(state_var, action_var, is_var=True)
         future_cost = 0
         generating_function = self._require_generating_function()
         # for every sample path
@@ -828,8 +845,7 @@ class ApproxQAgent(InfiniteRTAgent):
             action_var = self.get_action_var(model=model, advance_scheduling_type=self.future_decision_var_type)
             self.add_action_space_constraints(model=model, state_var=state_var, action_var=action_var)
             one_time_cost = self.env.cost_fn(state_var, action_var, is_var=True)
-            cost = one_time_cost + penalty
-            future_cost += cost
+            future_cost += weights[period_index] * penalty + weights[period_index + 1] * one_time_cost
         model.setObjective(imm_cost + future_cost, GRB.MINIMIZE)
         if not solve_and_handle_errors(model, verbose=verbose):
             raise RuntimeError("Direct model optimal solution not found")
@@ -939,16 +955,14 @@ class ApproxQAgent(InfiniteRTAgent):
             theta_vars=theta_vars,
             action_vars=flatten_action_vars,
         )
-        obj, info = benders_solver.solve(
-            init_solution=None,
+        obj, info = benders_solver.solve_with_callback(
             tol=tol,
             max_iter=max_iterations,
             use_pareto_cuts=use_pareto_cuts,
             pareto_epsilon=pareto_epsilon,
-            core_alpha=core_alpha,
-            verbose=verbose,
-            parallel=parallel,
             max_workers=max_workers,
+            parallel=parallel,
+            verbose=verbose,
         )
 
         action_t = self.get_solution(action_vars, is_final=True)

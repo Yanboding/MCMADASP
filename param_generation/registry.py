@@ -147,7 +147,7 @@ EXPERIMENT_SPECS = {
         ExperimentSpec(
             name='case_study_099_mixture_geometric_proposal_095',
             config_type='ejor',
-            val_args=[0.05, 0.1, 0.15],
+            val_args=[0.1],
             mutate=mutate_mixture_target_discount_factor,
             agent_mutate=mutate_mixture_geometric_proposal_lambda_0,
         ),
@@ -160,7 +160,7 @@ EXPERIMENT_SPECS = {
         ExperimentSpec(
             name='toy_study_099_mixture_geometric_proposal_095_test',
             config_type='toy',
-            val_args=[0.05, 0.1, 0.15, 1],
+            val_args=[0.1],
             mutate=mutate_mixture_target_discount_factor,
             agent_mutate=mutate_mixture_geometric_proposal_lambda_0,
         ),

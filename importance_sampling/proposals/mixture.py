@@ -115,3 +115,42 @@ class MixtureGeometricStratifiedQMCProposal(SamplePathLengthProposal):
                 "target_discount_factor equal to the environment discount factor."
             )
         return super().period_likelihood_ratios(target_discount_factor, lengths)
+
+if __name__ == '__main__':
+    # Quick sanity check: draw a large number of lengths and plot the empirical
+    # distribution against the mixture survival function.
+    import matplotlib.pyplot as plt
+    from environment.arrival_generator import MultiClassPoissonArrivalGenerator
+    
+    target_discount_factor = 0.99
+    discount_factor_proposal = 0.95
+    lambda_0 = 0.1
+    proposal = MixtureGeometricStratifiedQMCProposal(
+        target_discount_factor, discount_factor_proposal, lambda_0
+    )
+    # Initialize with QMC enabled
+    generator_qmc = MultiClassPoissonArrivalGenerator(
+        mean_arrival_rate=3,
+        maximum_arrival=9,
+        type_probs=[0.5, 0.3, 0.2],
+        random_seed=42,
+        is_precompute_state=False,
+        use_qmc=True,
+        max_periods=int(geom.ppf(0.9999, p=0.01)), # to ensure that the probability of generating more than max_periods arrivals is very small
+        geom_p=0.01
+    )
+    n_draws = 100
+    lengths = proposal.sample_lengths(arrival_generator=generator_qmc, size=n_draws)
+    print(lengths)
+    max_length = np.max(lengths)
+    empirical_survival = np.array(
+        [np.mean(lengths >= t) for t in range(1, max_length + 1)]
+    )
+    theoretical_survival = proposal.survival_probability(np.arange(1, max_length + 1))
+    plt.step(np.arange(1, max_length + 1), empirical_survival, label='Empirical')
+    plt.step(np.arange(1, max_length + 1), theoretical_survival, label='Theoretical')
+    plt.xlabel('Sample Path Length')
+    plt.ylabel('Survival Probability')
+    plt.title('Mixture Geometric Proposal Survival Function')
+    plt.legend()
+    plt.show()

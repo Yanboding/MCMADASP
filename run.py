@@ -85,6 +85,26 @@ def _set_sample_path_proposal(agent_args):
     return agent_args
 
 
+def _resolve_period_weights(period_weights, num_periods):
+    """Return a length-``num_periods`` array of per-period importance weights.
+
+    ``period_weights`` is the reweighting vector for the post-warm-up evaluation
+    horizon produced by the sampling proposal (see
+    ``generate_test_paths_and_init_state``). ``None`` means the horizon was drawn
+    from the target geometric distribution, so every period weight is 1 and the
+    estimator reduces to the plain (non-importance-sampling) sum.
+    """
+    if period_weights is None:
+        return np.ones(num_periods)
+    weights = np.asarray(period_weights, dtype=float)
+    if weights.shape[0] < num_periods:
+        raise ValueError(
+            f"period_weights has {weights.shape[0]} entries but {num_periods} "
+            "evaluation periods need weighting."
+        )
+    return weights[:num_periods]
+
+
 def jsonl_result_exists(path, uid, policy_id):
     """Return True if (uid, policy_id) already exists in JSONL output."""
     if not os.path.isfile(path):
@@ -164,7 +184,8 @@ def calculate_policy_costs_with_penalty(uid,
                            warm_up_periods,
                            generating_function,
                            grb_env=None,
-                           grb_sub_envs=None):
+                           grb_sub_envs=None,
+                           period_weights=None):
     def _to_float(v):
         if hasattr(v, "getValue"):
             return float(v.getValue())
@@ -315,8 +336,18 @@ def calculate_policy_costs_with_penalty(uid,
         postponing_decisions.append(waitlist - advance_scheduling_decision.sum(axis=0))
 
     postponing_decisions = np.array(postponing_decisions).sum(axis=0) if postponing_decisions else np.zeros(env.num_types)
-    total_cost = float(sum(costs[warm_up_periods:]))
-    total_penalty = float(sum(penalties[warm_up_periods:]))
+    # Reweight each post-warm-up period by its importance-sampling weight so the
+    # estimator stays unbiased when the sample path was drawn from a proposal
+    # whose length distribution differs from the target geometric horizon. With
+    # no proposal (period_weights is None) the weights are all 1 and this reduces
+    # to the plain sum. costs[warm_up:] has one more entry than penalties[warm_up:]
+    # (the trailing period carries a stage cost but no arrival/penalty).
+    tail_costs = costs[warm_up_periods:]
+    tail_penalties = penalties[warm_up_periods:]
+    cost_weights = _resolve_period_weights(period_weights, len(tail_costs))
+    penalty_weights = _resolve_period_weights(period_weights, len(tail_penalties))
+    total_cost = float(np.dot(cost_weights, tail_costs))
+    total_penalty = float(np.dot(penalty_weights, tail_penalties))
     penalized_cost = total_cost + total_penalty
     warmup_state = tuple(np.array(item).tolist() for item in states[warm_up_periods])
 
@@ -355,7 +386,8 @@ def evaluate_policy_costs_with_information_relaxation(uid,
                                                       grb_env,
                                                       grb_sub_envs,
                                                       job_id,
-                                                      generating_function_spec):
+                                                      generating_function_spec,
+                                                      period_weights=None):
     '''
     This function evaluates the costs of different policies and their gaps to the information relaxation lower bounds.
     '''
@@ -404,6 +436,7 @@ def evaluate_policy_costs_with_information_relaxation(uid,
         zero_information_relaxation_cost = zero_lowerbound_instance.calculate_information_relaxation_cost(
             init_state,
             sample_path=sample_path_tail,
+            period_weights=period_weights,
         )
         print(
             f"Zero information relaxation cost computed in {time.time() - start:.1f} seconds: "
@@ -413,6 +446,7 @@ def evaluate_policy_costs_with_information_relaxation(uid,
         penalized_information_relaxation_cost = penalized_lowerbound_instance.calculate_information_relaxation_cost(
             init_state,
             sample_path=sample_path_tail,
+            period_weights=period_weights,
         )
         print(
             f"Penalized information relaxation cost computed in {time.time() - start:.1f} seconds: "
@@ -457,13 +491,14 @@ def evaluate_policy_costs_with_information_relaxation(uid,
             generating_function=policy_costs_generating_function,
             grb_env=grb_env,
             grb_sub_envs=grb_sub_envs,
+            period_weights=period_weights,
         )
         warmup_sate = tuple(np.array(item) for item in policy_result.get('warmup_state', init_state))
         start = time.time()
-        zero_information_relaxation_cost = zero_lowerbound_instance.calculate_information_relaxation_cost(warmup_sate, sample_path=sample_path_tail)
+        zero_information_relaxation_cost = zero_lowerbound_instance.calculate_information_relaxation_cost(warmup_sate, sample_path=sample_path_tail, period_weights=period_weights)
         print(f"Zero information relaxation cost computed in {time.time() - start:.1f} seconds: {zero_information_relaxation_cost}")
         start = time.time()
-        penalized_information_relaxation_cost = penalized_lowerbound_instance.calculate_information_relaxation_cost(warmup_sate, sample_path=sample_path_tail)
+        penalized_information_relaxation_cost = penalized_lowerbound_instance.calculate_information_relaxation_cost(warmup_sate, sample_path=sample_path_tail, period_weights=period_weights)
         print(f"Penalized information relaxation cost computed in {time.time() - start:.1f} seconds: {penalized_information_relaxation_cost}")
         policy_result.update({
             'uid': uid,
@@ -747,21 +782,39 @@ def train_penalty_coefficients_for_env(
         f"sample_path_number={sample_path_number}"
     )
     start = time.time()
-    checkpoint_dir = os.path.join(
-        'experiments', 'results', experiment_name, 'benders_checkpoints'
-    )
-    os.makedirs(checkpoint_dir, exist_ok=True)
-    checkpoint_path = os.path.join(
-        checkpoint_dir, f'{uid}-penalty-checkpoint.pickle'
-    )
-    obj, coefficients, info = agent.benders_decomposition_train(
-        coefficient_bound=GRB.INFINITY,
-        init_state=resolved_init_state,
-        checkpoint_path=checkpoint_path,
-        resume_checkpoint_path=checkpoint_path,
-    )
+    # Solver selection (default: Benders cutting plane). Set
+    # PENALTY_TRAIN_SOLVER=extensive to solve the monolithic extensive-form LP
+    # instead.
+    solver_choice = os.environ.get('PENALTY_TRAIN_SOLVER', 'benders').lower()
+    if solver_choice in ('extensive', 'extensive_form', 'ef', 'deterministic_equivalent'):
+        # Deterministic-equivalent / extensive-form LP: build the whole
+        # monolithic LP once and solve it in a single barrier pass. Exact
+        # optimum + exact kappa (coupling-row shadow prices); no cut iteration,
+        # no growing master re-solved O(iters) times like Benders. No checkpoint
+        # needed (one shot).
+        ef_crossover = os.environ.get('PENALTY_EF_CROSSOVER', '0') == '1'
+        obj, coefficients, info = agent.extensive_form_train(
+            coefficient_bound=GRB.INFINITY,
+            init_state=resolved_init_state,
+            crossover=ef_crossover,
+            verbose=True,
+        )
+    else:
+        checkpoint_dir = os.path.join(
+            'experiments', 'results', experiment_name, 'benders_checkpoints'
+        )
+        os.makedirs(checkpoint_dir, exist_ok=True)
+        checkpoint_path = os.path.join(
+            checkpoint_dir, f'{uid}-penalty-checkpoint.pickle'
+        )
+        obj, coefficients, info = agent.benders_decomposition_train(
+            coefficient_bound=GRB.INFINITY,
+            init_state=resolved_init_state,
+            checkpoint_path=checkpoint_path,
+            resume_checkpoint_path=checkpoint_path,
+        )
     elapsed = time.time() - start
-    print(f"  obj={obj}, elapsed={elapsed:.1f}s")
+    print(f"  solver={solver_choice}, obj={obj}, elapsed={elapsed:.1f}s")
 
     if hasattr(coefficients, 'tolist'):
         coefficients_jsonable = coefficients.tolist()
