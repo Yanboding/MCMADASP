@@ -165,7 +165,7 @@ class SubproblemWorker:
     """
 
     def __init__(self, model, link_rows, state_linking_constraints, subproblem_id, verbose: bool = True,
-                 objective_builder_fn=None, cut_gradient_fn=None, grb_env=None):
+                 objective_builder_fn=None, cut_gradient_fn=None, grb_env=None, initial_cut=None):
         # Build the model and linking constraints inside THIS env.
         self.model = model
         # The Gurobi environment this worker's model lives in. Workers that
@@ -197,6 +197,11 @@ class SubproblemWorker:
         # in subproblem objective and return custom cut gradients.
         self.objective_builder_fn = objective_builder_fn
         self.cut_gradient_fn = cut_gradient_fn
+        # Build-time Benders cut (v0, g0) obtained by solving this subproblem at
+        # action a = 0 during construction (v0 = Q_s(0), g0 = subgradient at 0).
+        # The solver uses it to seed the master with one valid optimality cut per
+        # scenario before the first master solve. ``None`` for classical workers.
+        self.initial_cut = initial_cut
 
     def _set_output_flag(self, model, verbose: bool):
         model.Params.OutputFlag = 1 if verbose else 0
@@ -642,6 +647,53 @@ class BendersDecompositionSolver:
                     )
         return all_feasible, feasibility_cuts, optimality_cuts, cut_records, cost_to_go
 
+    def _seed_initial_cuts(self, active_workers):
+        """Seed the master with each worker's build-time (a=0) optimality cut.
+
+        Every subproblem was solved once at coefficients ``a = 0`` while it was
+        built, producing ``Q_s(0)`` and the subgradient ``g_s = phi_s(x*(0))``.
+        Since ``Q_s`` is concave in ``a``, ``theta_s <= Q_s(0) + g_s . a`` is a
+        globally valid optimality cut (a tangent that upper-bounds the concave
+        ``Q_s`` for the maximization master; the inequality flips for a
+        minimization master). Injecting all available cuts BEFORE the first
+        master solve means the solver starts from the approximation it would
+        otherwise spend a full iteration (re-)deriving at ``a = 0`` -- so it
+        converges in fewer iterations and the first master action is
+        gradient-informed rather than an arbitrary extreme point.
+
+        The value at ``a = 0``, ``(1/N) sum_s Q_s(0)``, is also a valid bound on
+        the optimum (the optimum is no worse than all-zero coefficients); it is
+        returned so the caller can initialize the incumbent bound. Returns
+        ``(bound_at_zero, cut_records)`` -- ``(None, [])`` when no worker carries
+        a build-time cut, and ``bound_at_zero is None`` when only some workers do
+        (a partial average is not a valid bound on the full-scenario objective).
+        """
+        seeded_workers, seeded_results = [], []
+        for worker in active_workers:
+            initial_cut = getattr(worker, "initial_cut", None)
+            if initial_cut is None:
+                continue
+            v0, g0 = initial_cut
+            seeded_workers.append(worker)
+            seeded_results.append((True, float(v0), np.asarray(g0, dtype=float)))
+        if not seeded_workers:
+            return None, []
+
+        zero_action = np.zeros(self.action_vars.shape[0], dtype=float)
+        _, _, optimality_cuts, cut_records, cost_to_go = self._build_cuts(
+            seeded_results, seeded_workers, zero_action)
+        self.master_model.addConstrs(
+            (optimality_cuts[i] for i in range(len(optimality_cuts))),
+            name="benders_seed_cut_",
+        )
+        self.master_model.update()
+
+        all_seeded = len(seeded_workers) == len(active_workers)
+        bound_at_zero = (cost_to_go / len(active_workers)) if all_seeded else None
+        print(f"Seeded master with {len(optimality_cuts)} build-time (a=0) cuts"
+              + (f"; bound at zero coefficients = {bound_at_zero}" if bound_at_zero is not None else ""))
+        return bound_at_zero, cut_records
+
     def solve(self, 
               init_solution=None,
               is_hard_bound=False,
@@ -681,6 +733,35 @@ class BendersDecompositionSolver:
         upper_bound = checkpoint_state.get('upper_bound', upper_bound) or upper_bound
         iteration_offset = int(checkpoint_state.get('iteration', 0) or 0)
         cut_count = int(checkpoint_state.get('cut_count', 0) or 0)
+
+        # Seed the master with the build-time (a=0) Benders cuts -- one per
+        # scenario -- before the first master solve. They were produced for free
+        # by each subproblem's cold solve during construction, so injecting them
+        # lets the solver skip the iteration that would otherwise just re-derive
+        # them and starts the master from a gradient-informed approximation.
+        # Skipped on resume (the reloaded checkpoint already contains them).
+        if not resume_checkpoint_path:
+            bound_at_zero, seed_records = self._seed_initial_cuts(active_workers)
+            if bound_at_zero is not None:
+                # The optimum is at least as good as all-zero coefficients, so
+                # the a=0 value is a valid incumbent bound to start the gap from.
+                if is_min:
+                    upper_bound = min(upper_bound, bound_at_zero)
+                else:
+                    lower_bound = max(lower_bound, bound_at_zero)
+            if seed_records and checkpoint_path:
+                cut_count += len(seed_records)
+                self._save_cut_checkpoint(
+                    checkpoint_path,
+                    {
+                        'iteration': iteration_offset,
+                        'lower_bound': None if np.isinf(lower_bound) else float(lower_bound),
+                        'upper_bound': None if np.isinf(upper_bound) else float(upper_bound),
+                        'core_point': None if core_point is None else np.asarray(core_point, dtype=float).tolist(),
+                        'cut_count': cut_count,
+                    },
+                    new_cut_records=seed_records,
+                )
         try:
             for iteration in range(1, max_iter + 1):
                 global_iteration = iteration_offset + iteration
@@ -739,10 +820,14 @@ class BendersDecompositionSolver:
                 )
                 cost_to_go_estimation /= scenario_count  # Average cost-to-go across scenarios for reporting.
                 first_stage_cost = self.imm_cost.getValue() if hasattr(self.imm_cost, 'getValue') else float(self.imm_cost or 0.0)
+                # Keep the incumbent (subproblem-evaluated) bound monotone so the
+                # build-time a=0 seed bound is never lost and the gap shrinks
+                # monotonically: the evaluated value at any action is a valid
+                # lower bound (maximization) / upper bound (minimization).
                 if is_min:
-                    upper_bound = first_stage_cost + cost_to_go_estimation
+                    upper_bound = min(upper_bound, first_stage_cost + cost_to_go_estimation)
                 else:
-                    lower_bound = first_stage_cost + cost_to_go_estimation
+                    lower_bound = max(lower_bound, first_stage_cost + cost_to_go_estimation)
 
                 # If an init_solution was supplied, its evaluated cost is a valid
                 # bound on the master's optimum. Add it once as a hard constraint

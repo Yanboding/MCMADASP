@@ -44,6 +44,9 @@ class ApproxQAgent(InfiniteRTAgent):
         self.subproblem_grb_envs = subproblem_grb_envs
         self.verbose = verbose
         self.subproblem_cold_solve_seconds = {}
+        # Per-scenario build-time Benders cut (v0, g0) from the cold solve at
+        # coefficients a = 0; consumed by the solver to seed the master.
+        self.subproblem_initial_cuts = {}
     
     def _require_generating_function(self):
         if self.generating_function is None:
@@ -372,6 +375,21 @@ class ApproxQAgent(InfiniteRTAgent):
         cold_solve_seconds = time.time() - cold_solve_start
         self.subproblem_cold_solve_seconds[scenario_id] = cold_solve_seconds
 
+        # The cold solve ran at coefficients a = 0 (penalty == 0), so it already
+        # yields this scenario's build-time Benders data for FREE:
+        #   v0 = Q_s(0) = min cost             (subproblem value at a = 0)
+        #   g0 = phi_s(x*(0)) = feature_var.X  (subgradient dQ_s/da at a = 0)
+        # Because Q_s is concave in a, theta_s <= v0 + g0 . a is a globally valid
+        # optimality cut. Caching it lets benders_decomposition_train SEED the
+        # master with one cut per scenario before the first master solve, so the
+        # solver never spends an iteration re-deriving the a = 0 cuts and the
+        # first master action is gradient-informed rather than arbitrary.
+        if sub_model.Status == GRB.OPTIMAL:
+            self.subproblem_initial_cuts[scenario_id] = (
+                float(sub_model.ObjVal),
+                cut_gradient_fn(sub_model, np.zeros(number_of_coefficients)),
+            )
+
         # Switch to primal simplex for all subsequent Benders re-solves. Each
         # iteration changes only the objective, so the retained crossover basis
         # is still primal-feasible and primal simplex warm-starts in a handful of
@@ -448,7 +466,8 @@ class ApproxQAgent(InfiniteRTAgent):
             worker = SubproblemWorker(
                 model=model, link_rows=link_rows, state_linking_constraints=None,
                 subproblem_id=sid, objective_builder_fn=objective_builder_fn,
-                cut_gradient_fn=cut_gradient_fn, verbose=verbose, grb_env=envs[sid])
+                cut_gradient_fn=cut_gradient_fn, verbose=verbose, grb_env=envs[sid],
+                initial_cut=self.subproblem_initial_cuts.get(sid))
             print(f'Finished build {sid} with sample path length '
                   f'{len(self.delta[sid])} in {time.time() - start} seconds')
             return worker
