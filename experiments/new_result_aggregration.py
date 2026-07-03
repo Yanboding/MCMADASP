@@ -360,7 +360,7 @@ if __name__ == "__main__":
     config = get_config_by_type('toy')
     env = config.env
     waiting_time_targets = [env.holding_cost.get_waiting_target(i) for i in range(env.num_types)]
-    base_results_dir = os.path.join('.', 'experiments', 'results', 'toy_study_099_mixture_geometric_proposal_095')
+    base_results_dir = os.path.join('.', 'experiments', 'results', 'toy_study_099_mixture_geometric_proposal_095_test')
     file_pattern = '[0-9]*.jsonl'
     # group_ids = ['73d11360affe39305e7716cf5c42ac04', '841708e72300000ddfd948daf08d6805', 'a3202d39ed34711b47ecebb72aabad43']
     # run_improvement_plots(
@@ -388,6 +388,10 @@ if __name__ == "__main__":
     pprint(ser.zero_penalized_information_relaxation_cost)
     print('ser.penalized_information_relaxation_cost')
     pprint(ser.penalized_information_relaxation_cost)
+    print('ser.zero_penalized_improvement')
+    pprint(ser.zero_penalized_improvement)
+    print('ser.penalized_improvement')
+    pprint(ser.penalized_improvement)
     # print(ser.waiting_time_target_ptc_table())
     # print('Summary table')
     # print(ser.performance_summary_table())

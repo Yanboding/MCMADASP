@@ -185,7 +185,7 @@ def recipe_case_study_099_mixture_geometric_proposal_095_policy_evaluation():
         warm_up_periods=0,
         num_periods=None,
         dat_file='table.dat',
-        num_groups=998,  # divide into N groups
+        num_groups=500,  # divide into N groups
         is_require_penalty_coefficients=True,
         is_random_initial_state=True,
         policy_ids=['approx_penalized_hindsight', 'row_gen_alp', 'myopic'],
