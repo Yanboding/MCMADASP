@@ -181,14 +181,14 @@ def recipe_case_study_099_mixture_geometric_proposal_095_policy_evaluation():
     test_envs = build_variation_test_env(EXPERIMENT_SPECS['case_study_099_mixture_geometric_proposal_095'])
     generate_test_paths_and_init_state(
         test_envs=test_envs,
-        test_sample_path_num=1000,
-        warm_up_periods=1500,
-        num_periods=1500,
+        test_sample_path_num=128,
+        warm_up_periods=300,
+        num_periods=None,
         dat_file='table.dat',
         num_groups=500,  # divide into N groups
-        is_require_penalty_coefficients=False,
+        is_require_penalty_coefficients=True,
         is_random_initial_state=True,
-        policy_ids=['row_gen_alp', 'myopic'],
+        policy_ids=['approx_penalized_hindsight','row_gen_alp', 'myopic'],
     )
 
 def main():

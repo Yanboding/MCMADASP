@@ -89,16 +89,18 @@ def benders_callback(model, where):
         tol = model._tol
         use_pareto_cuts = model._use_pareto
         pareto_epsilon = model._pareto_epsilon
-        active_workers = model._workers[:len(theta_vars)]
+        active_workers = model._workers[:theta_vars.shape[0]]
         # The worker set, their env grouping and the thread pool are fixed for
         # the whole solve, so they were built ONCE in solve_with_callback and are
         # reused here instead of being rebuilt at every incumbent.
         env_groups = model._env_groups
         executor = model._executor
 
-        # 1. Get current candidate solution (xk)
-        x_vals = np.array(model.cbGetSolution(x_vars))
-        theta_vals = np.array(model.cbGetSolution(theta_vars))
+        # 1. Get current candidate solution (xk). ``x_vars``/``theta_vars`` are
+        # MVars (see flatten/hindsight_master_builder_fn), so cbGetSolution
+        # already returns ndarrays -- no extra conversion needed.
+        x_vals = model.cbGetSolution(x_vars)
+        theta_vals = model.cbGetSolution(theta_vars)
 
         # 2. Update the core point with diminishing step size: alpha = 1 / (k + 1)
         model._cb_iter += 1
@@ -151,9 +153,12 @@ def benders_callback(model, where):
         feasibility_cuts_added = 0
         optimality_cuts_added = 0
         cost_to_go = 0.0
+        # Shared affine term (x - x_k) as a single MLinExpr; each cut is then one
+        # vectorized dot product instead of a per-coefficient Python loop.
+        action_delta = x_vars - x_vals
         for i, (is_feasible, obj_val, duals) in enumerate(results):
             # Cut expression: theta[i] >= obj_val + duals^T * (x - x_vals)
-            expr = obj_val + sum(duals[j] * (x_vars[j] - x_vals[j]) for j in range(len(x_vals)))
+            expr = obj_val + duals @ action_delta
 
             if not is_feasible:
                 # Feasibility cut (Farkas Ray)
@@ -181,12 +186,11 @@ def benders_callback(model, where):
         mean_theta = float(np.mean(theta_vals)) if worker_count else 0.0
         mean_cost_to_go = cost_to_go / worker_count if worker_count else 0.0
         incumbent_obj = model.cbGet(GRB.Callback.MIPSOL_OBJ)
-        best_bound = model.cbGet(GRB.Callback.MIPSOL_OBJBND)
         first_stage_cost = incumbent_obj - mean_theta
         evaluated_obj = first_stage_cost + mean_cost_to_go
         print(
-            f"Callback iter {k}: incumbent {incumbent_obj:.4f}, best bound {best_bound:.4f}, "
-            f"MIP gap {abs(incumbent_obj - best_bound):.4f} | added {optimality_cuts_added} opt / "
+            f"Callback iter {k}: master {incumbent_obj:.4f} "
+            f"MIP gap {abs(incumbent_obj - evaluated_obj):.4f} | added {optimality_cuts_added} opt / "
             f"{feasibility_cuts_added} feas cuts | first-stage {first_stage_cost:.4f}, "
             f"cost-to-go {mean_cost_to_go:.4f}, evaluated obj {evaluated_obj:.4f} | "
             f"subproblems {subproblem_time:.2f}s"
@@ -249,7 +253,14 @@ class SubproblemWorker:
         relax_model = self.model.relax() if self.model.IsMIP else self.model
         try:
             self._set_output_flag(relax_model, verbose)
+            # Set every param the Farkas extraction needs HERE, lazily, so the
+            # workers can be built with fast IR-style defaults:
+            #   InfUnbdInfo=1    -> compute the FarkasDual ray;
+            #   DualReductions=0 -> unambiguous INFEASIBLE (never INF_OR_UNBD);
+            #   Method=1         -> FarkasDual requires a simplex solve.
             relax_model.Params.InfUnbdInfo = 1
+            relax_model.Params.DualReductions = 0
+            relax_model.Params.Method = 1
             relax_link_rows = self._get_link_rows_in_derived_model(relax_model)
             set_link_rhs(relax_link_rows, action_values)
             relax_model.optimize()
@@ -929,7 +940,7 @@ class BendersDecompositionSolver:
         # ThreadPoolExecutor is reused by every callback so incumbents don't each
         # pay thread-pool build/teardown; it is sized to the number of env groups
         # (capped by max_workers / SLURM CPUs / cpu_count).
-        active_workers = self.workers[:len(self.theta_vars)]
+        active_workers = self.workers[:self.theta_vars.shape[0]]
         env_groups = _group_workers_by_env(active_workers)
         resolved_max_workers = _resolve_parallel_workers(max_workers, len(env_groups))
         executor = (

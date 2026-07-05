@@ -283,7 +283,8 @@ def calculate_policy_costs_with_penalty(uid,
         current_t = t + tau
         start_time = time.time()
         _, action, _ = agent_instance.solve(s, current_t)
-        solving_time_per_state += time.time() - start_time
+        if tau > 0: # Skip the first period because it requires building the model.
+            solving_time_per_state += time.time() - start_time
         next_state, cost, done, _ = env.step(action)
 
         if current_t <= len(sample_path):
