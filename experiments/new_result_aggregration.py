@@ -100,7 +100,8 @@ class SimulateEvaluationResult:
         'waiting_time_target_ptc_by_type_day',
         'waiting_time_violation',
         'overtime_utilization',
-        'solving_time_per_state'
+        'solving_time_per_state',
+        'uids_by_policy',
     )
 
     def __init__(self,directory_path, file_pattern, env, group_ids=None, is_reuse=False):
@@ -139,6 +140,7 @@ class SimulateEvaluationResult:
 
         self.one_time_cost_by_policy = dd_dd_rs_factory()
         self.solving_time_per_state = defaultdict(RunningStats)
+        self.uids_by_policy = defaultdict(set)
         self.number_of_periods = None
         self.information_relaxation_id = None
 
@@ -185,7 +187,13 @@ class SimulateEvaluationResult:
 
         
     def load(self, data):
+        uid = data.get('uid')
         policy_id = data['policy_id']
+        if uid is not None and uid in self.uids_by_policy[policy_id]:
+            return
+        if uid is not None:
+            self.uids_by_policy[policy_id].add(uid)
+
         group_id = data['group_id']
         mutate_val = data['mutate_val']
         if policy_id == 'information_relaxation_only':
@@ -250,7 +258,7 @@ class SimulateEvaluationResult:
     
     def waiting_time_target_ptc_table(self, days=(1, 5, 10, 15, 20)):
         policy_order = [
-            ('approx_hindsight', 'PH'),
+            ('approx_penalized_hindsight', 'PH'),
             ('row_gen_alp', 'ALP'),
             ('myopic', 'M'),
         ]
@@ -317,11 +325,11 @@ class SimulateEvaluationResult:
         policy_label = {
             'myopic': 'Myopic',
             'row_gen_alp': 'ALP',
-            'approx_hindsight': 'Penalized Hindsight',
+            'approx_penalized_hindsight': 'Penalized Hindsight',
         }
         table = ''
         for (group_id, policy_id), stats in self.after_warmup_policy_costs.items():
-            table += f"{policy_label.get(policy_id, policy_id)} & ${stats.confidence_interval()}$ & ${self.waiting_time_violation[(group_id, policy_id)].confidence_interval()}$ & ${self.overtime_utilization[(group_id, policy_id)].confidence_interval()}$ & ${self.zero_penalized_information_relaxation_cost[(group_id, policy_id)].confidence_interval()}$ & ${self.penalized_information_relaxation_cost[(group_id, policy_id)].confidence_interval()}$ & ${self.zero_penalized_improvement[(group_id, policy_id)].confidence_interval()}$ & ${self.penalized_improvement[(group_id, policy_id)].confidence_interval()}$\\\\\n"
+            table += f"{policy_label.get(policy_id, policy_id)} & ${stats.confidence_interval(0.8)}$ & ${self.waiting_time_violation[(group_id, policy_id)].confidence_interval()}$ & ${self.overtime_utilization[(group_id, policy_id)].confidence_interval()}$\\\\\n"
         return table
     
     def plot_percentage_improvement(self, scale, xlabel, ylabel, file_name):
@@ -357,10 +365,10 @@ def run_improvement_plots(base_results_dir, file_pattern, env_info, group_ids, i
 # I want to plot discount improvement
 if __name__ == "__main__":
     from experiments import get_config_by_type
-    config = get_config_by_type('toy')
+    config = get_config_by_type('ejor')
     env = config.env
     waiting_time_targets = [env.holding_cost.get_waiting_target(i) for i in range(env.num_types)]
-    base_results_dir = os.path.join('.', 'experiments', 'results', 'toy_study_099_mixture_geometric_proposal_095_test')
+    base_results_dir = os.path.join('.', 'experiments', 'results', 'case_study_099_mixture_geometric_proposal_095')
     file_pattern = '[0-9]*.jsonl'
     # group_ids = ['73d11360affe39305e7716cf5c42ac04', '841708e72300000ddfd948daf08d6805', 'a3202d39ed34711b47ecebb72aabad43']
     # run_improvement_plots(
@@ -374,7 +382,7 @@ if __name__ == "__main__":
             base_results_dir,
             file_pattern,
             env,
-            is_reuse=False,
+            is_reuse=True,
         )
     
     # print(ser.last_decision_period_distribution_table())
@@ -392,9 +400,9 @@ if __name__ == "__main__":
     pprint(ser.zero_penalized_improvement)
     print('ser.penalized_improvement')
     pprint(ser.penalized_improvement)
-    # print(ser.waiting_time_target_ptc_table())
-    # print('Summary table')
-    # print(ser.performance_summary_table())
+    print(ser.waiting_time_target_ptc_table())
+    print('Summary table')
+    print(ser.performance_summary_table())
     # print('gap_to_information_relaxation')
     # pprint(ser.gap_to_information_relaxation)
     # print('improvement')

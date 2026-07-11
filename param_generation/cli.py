@@ -181,7 +181,7 @@ def recipe_case_study_099_mixture_geometric_proposal_095_policy_evaluation():
     test_envs = build_variation_test_env(EXPERIMENT_SPECS['case_study_099_mixture_geometric_proposal_095'])
     generate_test_paths_and_init_state(
         test_envs=test_envs,
-        test_sample_path_num=128,
+        test_sample_path_num=1024,
         warm_up_periods=300,
         num_periods=None,
         dat_file='table.dat',
