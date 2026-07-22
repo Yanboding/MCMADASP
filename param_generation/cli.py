@@ -158,7 +158,7 @@ def recipe_case_study_099_mixture_geometric_proposal_095():
     ``[1, 1 / lambda_0]``), yielding cheaper-but-unbiased training paths.
     """
     test_envs = build_variation_test_env(
-        EXPERIMENT_SPECS['case_study_099_mixture_geometric_proposal_095']
+        EXPERIMENT_SPECS['case_study_099_mixture_geometric_proposal_095_overtime_50']
     )
     generate_penalty_coefficient_training_env(
         test_envs,

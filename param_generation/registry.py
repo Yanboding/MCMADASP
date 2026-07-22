@@ -164,7 +164,13 @@ EXPERIMENT_SPECS = {
             mutate=mutate_mixture_target_discount_factor,
             agent_mutate=mutate_mixture_geometric_proposal_lambda_0,
         ),
-        
+        ExperimentSpec(
+            name='case_study_099_mixture_geometric_proposal_095_overtime_50',
+            config_type='ejor',
+            val_args=[0.1],
+            mutate=mutate_mixture_target_discount_factor,
+            agent_mutate=mutate_mixture_geometric_proposal_lambda_0,
+        ),
     ]
 }
 
