@@ -252,7 +252,7 @@ class ExperimentConfig:
             'arrival_rates': arrival_rates,
             'patterns': patterns,
             'holding_cost_by_day_by_type': holding_cost[:, :class_num].tolist(),
-            'overtime_cost_by_day': 100,
+            'overtime_cost_by_day': 50,
             "postponing_cost": 2000,
             'duration': 1,
             'regular_capacity': 120,
