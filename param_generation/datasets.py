@@ -130,7 +130,7 @@ def _normalize_penalty_training_init_state(init_state, sample_path_number):
 
 
 
-def generate_test_paths_and_init_state(test_envs, test_sample_path_num, warm_up_periods=0, num_periods=None, dat_file=None, num_groups=None, is_require_penalty_coefficients=True, is_random_initial_state=False, policy_ids=None, train_data_dir=None):
+def generate_test_paths_and_init_state(test_envs, test_sample_path_num, warm_up_periods=0, num_periods=None, dat_file=None, num_groups=None, is_require_penalty_coefficients=True, is_random_initial_state=False, policy_ids=None, train_data_dir=None, warm_up_policy_id=None):
     '''
     Inital state is considered as period 1. sample path will start from period 2.
 
@@ -145,9 +145,23 @@ def generate_test_paths_and_init_state(test_envs, test_sample_path_num, warm_up_
     value-function coefficients are fitted by least-squares regression on that
     data (instead of the Benders ``direct_coefficients``) and written into the
     approx_Q ``policy_generating_function_spec``.
+
+    ``warm_up_policy_id`` optionally names one of ``policy_ids`` (e.g.
+    ``'row_gen_alp'``) as the shared warm-up policy. By default every policy
+    warms itself up over the first ``warm_up_periods`` periods of its sample
+    path before costs are counted. With ``warm_up_policy_id`` set, the runner
+    instead rolls ONLY that policy over the warm-up prefix of each sample path
+    and starts every other policy from the resulting per-path warm-up state,
+    evaluating them on the post-warm-up tail only. This makes all policies
+    start from the warm-up policy's steady state.
     '''
     policy_ids = list(policy_ids or [])
     policy_id_set = set(policy_ids)
+    if warm_up_policy_id is not None and warm_up_policy_id not in policy_id_set:
+        raise ValueError(
+            f"warm_up_policy_id '{warm_up_policy_id}' must be one of the "
+            f"evaluated policy_ids {policy_ids}."
+        )
     results = []
     for (env_uid, experiment_name, mutate_val), variant in test_envs.items():
         env_args = variant['env_args']
@@ -327,6 +341,8 @@ def generate_test_paths_and_init_state(test_envs, test_sample_path_num, warm_up_
                 "group_id": env_uid,
                 "policy_specs": policies,
             }
+            if warm_up_policy_id is not None:
+                save_params['warm_up_policy_id'] = warm_up_policy_id
             results.append(save_params)
         print("max sample path length:", max_length)
         print("average sample path length:", average_sample_path_length / test_sample_path_num)

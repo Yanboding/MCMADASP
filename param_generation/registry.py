@@ -183,6 +183,12 @@ EXPERIMENT_SPECS = {
             val_args=[0.5],
             mutate=mutate_initial_state_congestion,
         ),
+        ExperimentSpec(
+            name='alp_steady_state_toy_study',
+            config_type='toy',
+            val_args=[0.5],
+            mutate=mutate_initial_state_congestion,
+        ),
     ]
 }
 

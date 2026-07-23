@@ -185,7 +185,24 @@ def calculate_policy_costs_with_penalty(uid,
                            generating_function,
                            grb_env=None,
                            grb_sub_envs=None,
-                           period_weights=None):
+                           period_weights=None,
+                           warm_up_trajectory=None,
+                           return_warm_up_trajectory=False):
+    """Roll ``policy_id`` over ``sample_path`` and account costs after warm-up.
+
+    ``warm_up_trajectory`` optionally supplies the already-executed warm-up
+    prefix of a SHARED warm-up policy (states/actions/costs/penalties plus the
+    ``end_state`` it reached). When given, this policy is NOT rolled over the
+    warm-up periods itself: the rollout is seeded with the prefix and starts at
+    period ``warm_up_periods + 1`` from ``end_state``. The returned record then
+    carries the full-length trajectory (shared warm-up prefix + this policy's
+    tail), so downstream aggregation can slice by ``warm_up_periods`` uniformly,
+    while the cost totals still only count the post-warm-up tail.
+
+    ``return_warm_up_trajectory=True`` adds this run's own warm-up prefix to the
+    result under ``'warm_up_trajectory'`` so the caller can seed other policies
+    with it.
+    """
     def _to_float(v):
         if hasattr(v, "getValue"):
             return float(v.getValue())
@@ -210,16 +227,24 @@ def calculate_policy_costs_with_penalty(uid,
     # agent_args (penalty coefficients, IS proposal, ...) and/or in the penalty
     # used for cost accounting. Hashing those into the filename prevents a later
     # policy from silently reusing an earlier policy's cached result.
-    policy_signature = get_uid({
+    signature_payload = {
         'agent_name': agent_name,
         'agent_args': _to_jsonable({k: v for k, v in dict(agent_args).items() if k != 'grb_env'}),
         'penalty_coefficients': _to_jsonable(getattr(generating_function, 'coefficients', None)),
-    })
+    }
+    if warm_up_trajectory is not None:
+        # Only added when seeding so legacy cache filenames stay unchanged.
+        signature_payload['warm_up_trajectory'] = get_uid(warm_up_trajectory)
+    policy_signature = get_uid(signature_payload)
     checkpoint_file = os.path.join(base_dir, f'{uid}-{policy_id}-{policy_signature}-checkpoint.pickle')
     result_file = os.path.join(base_dir, f'{uid}-{policy_id}-{policy_signature}-result.pickle')
 
     cached_result = load_pickle_if_exists(result_file)
-    if cached_result is not None:
+    # A cached result is only reusable if it already carries the warm-up
+    # trajectory when the caller asks for one.
+    if cached_result is not None and not (
+        return_warm_up_trajectory and 'warm_up_trajectory' not in cached_result
+    ):
         if os.path.exists(checkpoint_file):
             os.remove(checkpoint_file)
         return cached_result
@@ -275,6 +300,23 @@ def calculate_policy_costs_with_penalty(uid,
         s = checkpoint['s']
         solving_time_per_state = checkpoint.get('solving_time_per_state', RunningStats())
         s, _ = env.reset(init_state=s, t=t, new_arrivals=sample_path)
+    elif warm_up_trajectory is not None:
+        if len(warm_up_trajectory['states']) != warm_up_periods:
+            raise ValueError(
+                f"warm_up_trajectory has {len(warm_up_trajectory['states'])} periods "
+                f"but warm_up_periods={warm_up_periods}."
+            )
+        # Seed the rollout with the shared warm-up policy's executed prefix
+        # (like resuming from a checkpoint at the end of the warm-up), so this
+        # policy only simulates the tail but its record carries the full path.
+        states = [tuple(np.array(component) for component in state) for state in warm_up_trajectory['states']]
+        actions = [tuple(np.array(component) for component in action) for action in warm_up_trajectory['actions']]
+        costs = list(warm_up_trajectory['costs'])
+        penalties = list(warm_up_trajectory['penalties'])
+        t = warm_up_periods + 1
+        end_state = tuple(np.array(component) for component in warm_up_trajectory['end_state'])
+        s, _ = env.reset(init_state=end_state, t=t, new_arrivals=sample_path)
+        solving_time_per_state = RunningStats()
     else:
         t = 1
         s, _ = env.reset(init_state=init_state, t=t, new_arrivals=sample_path)
@@ -368,12 +410,77 @@ def calculate_policy_costs_with_penalty(uid,
         'solving_time_per_state': solving_time_per_state.mean,
     }
 
+    if return_warm_up_trajectory:
+        result['warm_up_trajectory'] = {
+            'states': [_to_jsonable(state) for state in states[:warm_up_periods]],
+            'actions': [_to_jsonable(action) for action in actions[:warm_up_periods]],
+            'costs': [float(v) for v in costs[:warm_up_periods]],
+            'penalties': [float(v) for v in penalties[:warm_up_periods]],
+            'end_state': warmup_state,
+        }
+
     atomic_pickle_dump(result_file, result)
 
     if os.path.exists(checkpoint_file):
         os.remove(checkpoint_file)
 
     return result
+
+def _build_lowerbound_instances(env, generating_function_spec, grb_env, grb_sub_envs):
+    """Build the zero-penalty and unit-penalty information-relaxation solvers.
+
+    Each solver gets its OWN generating-function instance built from the shared
+    spec (type + coefficients), because instances are stateful.
+    """
+    return tuple(
+        ApproxQAgent(
+            env,
+            discount_factor=env.discount_factor,
+            current_decision_var_type='integer',
+            future_decision_var_type='continuous',
+            generating_function=_build_generating_function(env=env, spec=generating_function_spec),
+            penalty_ratio=penalty_ratio,
+            grb_env=grb_env,
+            subproblem_grb_envs=grb_sub_envs,
+        )
+        for penalty_ratio in (0, 1)
+    )
+
+
+def _information_relaxation_bounds(zero_instance, penalized_instance, state, sample_path_tail, period_weights):
+    """Solve the zero and penalized lower bounds at ``state`` over the tail."""
+    start = time.time()
+    zero_cost = zero_instance.calculate_information_relaxation_cost(
+        state, sample_path=sample_path_tail, period_weights=period_weights)
+    print(f"Zero information relaxation cost computed in {time.time() - start:.1f} seconds: {zero_cost}")
+    start = time.time()
+    penalized_cost = penalized_instance.calculate_information_relaxation_cost(
+        state, sample_path=sample_path_tail, period_weights=period_weights)
+    print(f"Penalized information relaxation cost computed in {time.time() - start:.1f} seconds: {penalized_cost}")
+    return zero_cost, penalized_cost
+
+
+def _append_jsonl_record(output_file, record):
+    """Append ``record`` unless a (uid, policy_id) duplicate already exists."""
+    if jsonl_result_exists(output_file, record['uid'], record['policy_id']):
+        print(f"Skip saving duplicate result: uid={record['uid']}, policy_id={record['policy_id']}")
+        return
+    with open(output_file, 'a') as f:
+        f.write(json.dumps(record) + '\n')
+
+
+def _order_policy_specs_for_warm_up(policy_specs, warm_up_policy_id):
+    """Put the warm-up policy first: its warm-up state seeds all later policies."""
+    if warm_up_policy_id is None:
+        return list(policy_specs)
+    warm_up_specs = [spec for spec in policy_specs if spec['policy_id'] == warm_up_policy_id]
+    if not warm_up_specs:
+        raise ValueError(
+            f"warm_up_policy_id '{warm_up_policy_id}' is not among the evaluated "
+            f"policies {[spec['policy_id'] for spec in policy_specs]}."
+        )
+    return warm_up_specs + [spec for spec in policy_specs if spec['policy_id'] != warm_up_policy_id]
+
 
 def evaluate_policy_costs_with_information_relaxation(uid,
                                                       experiment_name,
@@ -388,97 +495,82 @@ def evaluate_policy_costs_with_information_relaxation(uid,
                                                       grb_sub_envs,
                                                       job_id,
                                                       generating_function_spec,
-                                                      period_weights=None):
+                                                      period_weights=None,
+                                                      warm_up_policy_id=None):
     '''
     This function evaluates the costs of different policies and their gaps to the information relaxation lower bounds.
+
+    ``warm_up_policy_id`` optionally names one of the ``policy_specs`` (e.g.
+    ``'row_gen_alp'``) as the shared warm-up policy. When set, that policy is
+    evaluated first over the full sample path (its costs are still counted
+    from ``warm_up_periods`` onward, as usual) and its executed warm-up prefix
+    seeds EVERY other policy: they start from the state it reached after the
+    warm-up and only simulate the post-warm-up tail. This makes all policies
+    start from the warm-up policy's per-sample-path steady state instead of
+    each warming itself up. Every saved record still carries the full-length
+    ``costs``/``penalties``/``scheduled_patients``/``overtime`` trajectory
+    (shared warm-up prefix + the policy's own tail), so aggregation can slice
+    by ``warm_up_periods`` uniformly across all policies.
     '''
     init_state = tuple(np.array(item) for item in init_state)
     sample_path = np.array(sample_path)
+    sample_path_tail = sample_path[warm_up_periods:]
 
     output_file = os.path.join('experiments', 'results', experiment_name, f'{job_id}.jsonl')
     os.makedirs(os.path.dirname(output_file), exist_ok=True)
 
-    config = get_config_by_type(case_type='infinite_custom', args=env_args)
-    env = config.env
-
-    # One self-contained spec (type + coefficients) drives the zero lower
-    # bound, the penalized lower bound, and the penalty accounting on each
-    # policy. Build three SEPARATE instances that share this spec/coefficients.
+    env = get_config_by_type(case_type='infinite_custom', args=env_args).env
+    # One self-contained spec (type + coefficients) drives the two lower bounds
+    # and the penalty accounting on each executed trajectory.
     generating_function_spec = _normalize_generating_function_spec(generating_function_spec)
-    zero_lowerbound_generating_function = _build_generating_function(env=env, spec=generating_function_spec)
-    penalized_lowerbound_generating_function = _build_generating_function(env=env, spec=generating_function_spec)
     policy_costs_generating_function = _build_generating_function(env=env, spec=generating_function_spec)
+    zero_lowerbound_instance, penalized_lowerbound_instance = _build_lowerbound_instances(
+        env, generating_function_spec, grb_env, grb_sub_envs)
 
+    # With a shared warm-up state every policy evaluates the bounds at the same
+    # state, so memoize them instead of re-solving identical problems.
+    bounds_by_state = {}
+    def bounds_at(state):
+        key = iter_to_tuple(state)
+        if key not in bounds_by_state:
+            bounds_by_state[key] = _information_relaxation_bounds(
+                zero_lowerbound_instance, penalized_lowerbound_instance,
+                state, sample_path_tail, period_weights)
+        return bounds_by_state[key]
 
-    zero_lowerbound_args = {
-        'current_decision_var_type': 'integer',
-        'future_decision_var_type': 'continuous',
-        'generating_function': zero_lowerbound_generating_function,
-        'penalty_ratio': 0,
-        'grb_env': grb_env,
-        'subproblem_grb_envs': grb_sub_envs,
+    base_record = {
+        'uid': uid,
+        'group_id': group_id,
+        'experiment_name': experiment_name,
+        'mutate_val': mutate_val,
+        'warm_up_periods': warm_up_periods,
     }
-    penalized_lowerbound_args = {
-        'current_decision_var_type': 'integer',
-        'future_decision_var_type': 'continuous',
-        'generating_function': penalized_lowerbound_generating_function,
-        'penalty_ratio': 1,
-        'grb_env': grb_env,
-        'subproblem_grb_envs': grb_sub_envs,
-    }
 
-    zero_lowerbound_instance = ApproxQAgent(env, discount_factor=env.discount_factor, **zero_lowerbound_args)
-    penalized_lowerbound_instance = ApproxQAgent(env, discount_factor=env.discount_factor, **penalized_lowerbound_args)
+    ordered_policy_specs = _order_policy_specs_for_warm_up(policy_specs, warm_up_policy_id)
 
-    sample_path_tail = sample_path[warm_up_periods:]
-
-    if not policy_specs:
-        start = time.time()
-        zero_information_relaxation_cost = zero_lowerbound_instance.calculate_information_relaxation_cost(
-            init_state,
-            sample_path=sample_path_tail,
-            period_weights=period_weights,
-        )
-        print(
-            f"Zero information relaxation cost computed in {time.time() - start:.1f} seconds: "
-            f"{zero_information_relaxation_cost}"
-        )
-        start = time.time()
-        penalized_information_relaxation_cost = penalized_lowerbound_instance.calculate_information_relaxation_cost(
-            init_state,
-            sample_path=sample_path_tail,
-            period_weights=period_weights,
-        )
-        print(
-            f"Penalized information relaxation cost computed in {time.time() - start:.1f} seconds: "
-            f"{penalized_information_relaxation_cost}"
-        )
-
+    if not ordered_policy_specs:
+        zero_cost, penalized_cost = bounds_at(init_state)
         record = {
-            'uid': uid,
-            'group_id': group_id,
-            'experiment_name': experiment_name,
-            'mutate_val': mutate_val,
-            'warm_up_periods': warm_up_periods,
+            **base_record,
             'policy_id': 'information_relaxation_only',
             'agent_name': 'information_relaxation_only',
-            'zero_information_relaxation_cost': float(zero_information_relaxation_cost),
-            'penalized_information_relaxation_cost': float(penalized_information_relaxation_cost),
+            'zero_information_relaxation_cost': float(zero_cost),
+            'penalized_information_relaxation_cost': float(penalized_cost),
             'gap_to_zero_information_relaxation': 0.0,
             'gap_to_penalized_information_relaxation': 0.0,
             'warmup_state': tuple(np.array(item).tolist() for item in init_state),
         }
-
-        if not jsonl_result_exists(output_file, uid, record['policy_id']):
-            with open(output_file, 'a') as f:
-                f.write(json.dumps(record) + '\n')
-        else:
-            print(f"Skip saving duplicate result: uid={uid}, policy_id={record['policy_id']}")
-
+        _append_jsonl_record(output_file, record)
         return [record]
 
     summary_rows = []
-    for policy_spec in policy_specs:
+    shared_warm_up_trajectory = None
+    for policy_spec in ordered_policy_specs:
+        # With a warm-up policy configured, the first (warm-up) policy rolls the
+        # full path and hands its executed warm-up prefix to every later policy,
+        # which then simulates the tail only but still records the full-length
+        # trajectory (shared prefix + own tail) for uniform aggregation.
+        is_warm_up_policy = warm_up_policy_id is not None and policy_spec['policy_id'] == warm_up_policy_id
         policy_result = calculate_policy_costs_with_penalty(
             uid=uid,
             experiment_name=experiment_name,
@@ -486,50 +578,41 @@ def evaluate_policy_costs_with_information_relaxation(uid,
             agent_name=policy_spec['agent_name'],
             agent_args=policy_spec['agent_args'],
             env_args=env_args,
-            init_state=tuple(np.array(item) for item in init_state),
+            init_state=init_state,
             sample_path=sample_path,
             warm_up_periods=warm_up_periods,
             generating_function=policy_costs_generating_function,
             grb_env=grb_env,
             grb_sub_envs=grb_sub_envs,
             period_weights=period_weights,
+            warm_up_trajectory=shared_warm_up_trajectory,
+            return_warm_up_trajectory=is_warm_up_policy,
         )
-        warmup_sate = tuple(np.array(item) for item in policy_result.get('warmup_state', init_state))
-        start = time.time()
-        zero_information_relaxation_cost = zero_lowerbound_instance.calculate_information_relaxation_cost(warmup_sate, sample_path=sample_path_tail, period_weights=period_weights)
-        print(f"Zero information relaxation cost computed in {time.time() - start:.1f} seconds: {zero_information_relaxation_cost}")
-        start = time.time()
-        penalized_information_relaxation_cost = penalized_lowerbound_instance.calculate_information_relaxation_cost(warmup_sate, sample_path=sample_path_tail, period_weights=period_weights)
-        print(f"Penalized information relaxation cost computed in {time.time() - start:.1f} seconds: {penalized_information_relaxation_cost}")
+        if is_warm_up_policy:
+            shared_warm_up_trajectory = policy_result.pop('warm_up_trajectory')
+
+        warmup_state = tuple(np.array(item) for item in policy_result.get('warmup_state', init_state))
+        zero_cost, penalized_cost = bounds_at(warmup_state)
         policy_result.update({
-            'uid': uid,
-            'group_id': group_id,
-            'experiment_name': experiment_name,
-            'mutate_val': mutate_val,
-            'warm_up_periods': warm_up_periods,
-            'zero_information_relaxation_cost': float(zero_information_relaxation_cost),
-            'penalized_information_relaxation_cost': float(penalized_information_relaxation_cost),
-            'gap_to_zero_information_relaxation': float(policy_result['total_cost'] - zero_information_relaxation_cost),
-            'gap_to_penalized_information_relaxation': float(policy_result['penalized_cost'] - penalized_information_relaxation_cost),
+            **base_record,
+            'zero_information_relaxation_cost': float(zero_cost),
+            'penalized_information_relaxation_cost': float(penalized_cost),
+            'gap_to_zero_information_relaxation': float(policy_result['total_cost'] - zero_cost),
+            'gap_to_penalized_information_relaxation': float(policy_result['penalized_cost'] - penalized_cost),
         })
+        _append_jsonl_record(output_file, policy_result)
 
-        if not jsonl_result_exists(output_file, uid, policy_result['policy_id']):
-            with open(output_file, 'a') as f:
-                f.write(json.dumps(policy_result) + '\n')
-        else:
-            print(f"Skip saving duplicate result: uid={uid}, policy_id={policy_result['policy_id']}")
-
-        summary_rows.append({
-            'policy_id': policy_result['policy_id'],
-            'agent_name': policy_result['agent_name'],
-            'penalized_cost': policy_result['penalized_cost'],
-            'total_cost': policy_result['total_cost'],
-            'total_penalty': policy_result['total_penalty'],
-            'zero_information_relaxation_cost': float(zero_information_relaxation_cost),
-            'penalized_information_relaxation_cost': float(penalized_information_relaxation_cost),
-            'gap_to_zero_information_relaxation': policy_result['gap_to_zero_information_relaxation'],
-            'gap_to_penalized_information_relaxation': policy_result['gap_to_penalized_information_relaxation'],
-        })
+        summary_rows.append({key: policy_result[key] for key in (
+            'policy_id',
+            'agent_name',
+            'penalized_cost',
+            'total_cost',
+            'total_penalty',
+            'zero_information_relaxation_cost',
+            'penalized_information_relaxation_cost',
+            'gap_to_zero_information_relaxation',
+            'gap_to_penalized_information_relaxation',
+        )})
 
     return summary_rows
 

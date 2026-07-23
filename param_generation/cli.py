@@ -7,6 +7,7 @@ runs the recipe that is currently active for the project; switch the call in
 """
 
 import os
+import shutil
 from pprint import pprint
 
 from param_generation.datasets import (
@@ -262,9 +263,48 @@ def recipe_steady_state_toy_study_policy_evaluation():
             is_random_initial_state=False,
             policy_ids=['approx_penalized_hindsight','row_gen_alp', 'myopic'],
         )
+def recipe_alp_steady_state_toy_study_policy_evaluation():
+    """Evaluate all policies from the ALP per-sample-path steady state.
+
+    Same env as ``steady_state_toy_study`` (toy env, initial-state congestion
+    0.5), but with ``warm_up_policy_id='row_gen_alp'``: the runner rolls ONLY
+    the row-generation ALP policy over the first ``warm_up_periods`` periods of
+    each sample path, then starts every policy (including ALP itself) from the
+    resulting warm-up state and accumulates costs on the post-warm-up tail.
+    This isolates steady-state policy performance from the warm-up transient of
+    each individual policy.
+    """
+    experiment_name = 'alp_steady_state_toy_study'
+    # The env is identical to steady_state_toy_study, so its trained ALP and
+    # penalty coefficients apply verbatim; copy the caches over (if present) so
+    # generation does not retrain them from scratch.
+    source_dir = os.path.join('experiments', 'results', 'steady_state_toy_study')
+    target_dir = os.path.join('experiments', 'results', experiment_name)
+    os.makedirs(target_dir, exist_ok=True)
+    for cache_file in ('alp_train.jsonl', 'penalty_coefficients.jsonl'):
+        source_path = os.path.join(source_dir, cache_file)
+        target_path = os.path.join(target_dir, cache_file)
+        if os.path.isfile(source_path) and not os.path.isfile(target_path):
+            shutil.copyfile(source_path, target_path)
+
+    test_envs = build_variation_test_env(EXPERIMENT_SPECS[experiment_name])
+    generate_test_paths_and_init_state(
+            test_envs=test_envs,
+            test_sample_path_num=1,
+            warm_up_periods=100,
+            num_periods=102,
+            dat_file='table.dat',
+            num_groups=500,  # divide into N groups
+            is_require_penalty_coefficients=True,
+            is_random_initial_state=False,
+            policy_ids=['approx_penalized_hindsight', 'row_gen_alp', 'myopic'],
+            warm_up_policy_id='row_gen_alp',
+        )
+
+
 def main():
     """Run the currently-active dataset-generation recipe."""
-    recipe_steady_state_toy_study_policy_evaluation()
+    recipe_alp_steady_state_toy_study_policy_evaluation()
 
 
 if __name__ == '__main__':
