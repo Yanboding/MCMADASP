@@ -191,9 +191,80 @@ def recipe_case_study_099_mixture_geometric_proposal_095_policy_evaluation():
         policy_ids=['approx_penalized_hindsight','row_gen_alp', 'myopic'],
     )
 
+def recipe_toy_study_train_env():
+    """Train penalty coefficients on the case study with a mixture-geometric IS proposal.
+
+    Sweeps the mixture mass ``lambda_0 in {0.05, 0.1, 0.15}`` on the long
+    (target gamma=0.99) component; the short component uses proposal
+    discount factor q=0.95. Because ``is_require_penalty_coefficients=True``,
+    ``train_penalty_coefficients`` runs per variant and weights each Benders
+    subproblem by the mixture's per-period likelihood ratio (bounded in
+    ``[1, 1 / lambda_0]``), yielding cheaper-but-unbiased training paths.
+    """
+    test_envs = build_variation_test_env(
+        EXPERIMENT_SPECS['base_toy_study']
+    )
+    generate_penalty_coefficient_training_env(
+        test_envs,
+        dat_file='table.dat',
+        init_state=None,
+        sample_path_number=256,
+        init_state_seed=12345,
+        sample_paths_seed=42,
+    )
+
+def recipe_toy_study_policy_evaluation():
+    """Train penalty coefficients on the case study with a mixture-geometric IS proposal.
+
+    Sweeps the mixture mass ``lambda_0 in {0.05, 0.1, 0.15}`` on the long
+    (target gamma=0.99) component; the short component uses proposal
+    discount factor q=0.95. Because ``is_require_penalty_coefficients=True``,
+    ``train_penalty_coefficients`` runs per variant and weights each Benders
+    subproblem by the mixture's per-period likelihood ratio (bounded in
+    ``[1, 1 / lambda_0]``), yielding cheaper-but-unbiased training paths.
+    """
+    test_envs = build_variation_test_env(
+        EXPERIMENT_SPECS['base_toy_study']
+    )
+    generate_test_paths_and_init_state(
+            test_envs=test_envs,
+            test_sample_path_num=4096,
+            warm_up_periods=0,
+            num_periods=None,
+            dat_file='table.dat',
+            num_groups=500,  # divide into N groups
+            is_require_penalty_coefficients=True,
+            is_random_initial_state=False,
+            policy_ids=['approx_penalized_hindsight','row_gen_alp', 'myopic'],
+        )
+
+def recipe_steady_state_toy_study_policy_evaluation():
+    """Train penalty coefficients on the case study with a mixture-geometric IS proposal.
+
+    Sweeps the mixture mass ``lambda_0 in {0.05, 0.1, 0.15}`` on the long
+    (target gamma=0.99) component; the short component uses proposal
+    discount factor q=0.95. Because ``is_require_penalty_coefficients=True``,
+    ``train_penalty_coefficients`` runs per variant and weights each Benders
+    subproblem by the mixture's per-period likelihood ratio (bounded in
+    ``[1, 1 / lambda_0]``), yielding cheaper-but-unbiased training paths.
+    """
+    test_envs = build_variation_test_env(
+        EXPERIMENT_SPECS['steady_state_toy_study']
+    )
+    generate_test_paths_and_init_state(
+            test_envs=test_envs,
+            test_sample_path_num=4096,
+            warm_up_periods=100,
+            num_periods=None,
+            dat_file='table.dat',
+            num_groups=500,  # divide into N groups
+            is_require_penalty_coefficients=True,
+            is_random_initial_state=False,
+            policy_ids=['approx_penalized_hindsight','row_gen_alp', 'myopic'],
+        )
 def main():
     """Run the currently-active dataset-generation recipe."""
-    recipe_case_study_099_mixture_geometric_proposal_095()
+    recipe_steady_state_toy_study_policy_evaluation()
 
 
 if __name__ == '__main__':

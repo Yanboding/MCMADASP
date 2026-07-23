@@ -24,6 +24,12 @@ from param_generation.mutators import (
 EXPERIMENT_SPECS = {
     spec.name: spec for spec in [
         ExperimentSpec(
+            name='base_toy_study',
+            config_type='toy',
+            val_args=[0.5],
+            mutate=mutate_initial_state_congestion,
+        ),
+        ExperimentSpec(
             name='initial_state_congestion',
             config_type='toy',
             val_args=[0., 0.5, 1.],
@@ -170,6 +176,12 @@ EXPERIMENT_SPECS = {
             val_args=[0.1],
             mutate=mutate_mixture_target_discount_factor,
             agent_mutate=mutate_mixture_geometric_proposal_lambda_0,
+        ),
+        ExperimentSpec(
+            name='steady_state_toy_study',
+            config_type='toy',
+            val_args=[0.5],
+            mutate=mutate_initial_state_congestion,
         ),
     ]
 }

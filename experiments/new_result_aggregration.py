@@ -482,10 +482,10 @@ def run_improvement_plots(base_results_dir, file_pattern, env_info, group_ids, i
 # I want to plot discount improvement
 if __name__ == "__main__":
     from experiments import get_config_by_type
-    config = get_config_by_type('ejor')
+    config = get_config_by_type('toy')
     env = config.env
     waiting_time_targets = [env.holding_cost.get_waiting_target(i) for i in range(env.num_types)]
-    base_results_dir = os.path.join('.', 'experiments', 'results', 'case_study_099_mixture_geometric_proposal_095')
+    base_results_dir = os.path.join('.', 'experiments', 'results', 'base_toy_study')
     file_pattern = '[0-9]*.jsonl'
     # group_ids = ['73d11360affe39305e7716cf5c42ac04', '841708e72300000ddfd948daf08d6805', 'a3202d39ed34711b47ecebb72aabad43']
     # run_improvement_plots(
