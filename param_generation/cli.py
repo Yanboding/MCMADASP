@@ -182,14 +182,14 @@ def recipe_case_study_099_mixture_geometric_proposal_095_policy_evaluation():
     test_envs = build_variation_test_env(EXPERIMENT_SPECS['case_study_099_mixture_geometric_proposal_095'])
     generate_test_paths_and_init_state(
         test_envs=test_envs,
-        test_sample_path_num=1024,
+        test_sample_path_num=2,
         warm_up_periods=300,
         num_periods=None,
         dat_file='table.dat',
         num_groups=500,  # divide into N groups
         is_require_penalty_coefficients=True,
         is_random_initial_state=True,
-        policy_ids=['approx_penalized_hindsight','row_gen_alp', 'myopic'],
+        policy_ids=['approx_penalized_hindsight'],
     )
 
 def recipe_toy_study_train_env():
@@ -348,11 +348,39 @@ def recipe_mixture_probability_toy_study_policy_evaluation():
             policy_ids=['approx_penalized_hindsight'],
         )
 
+def recipe_case_study_099_mixture_geometric_proposal_095_overtime_50_train_env():
+    test_envs = build_variation_test_env(
+        EXPERIMENT_SPECS['case_study_099_mixture_geometric_proposal_095_overtime_50']
+    )
+    generate_penalty_coefficient_training_env(
+        test_envs,
+        dat_file='table.dat',
+        init_state=None,
+        sample_path_number=256,
+        init_state_seed=12345,
+        sample_paths_seed=42,
+    )
+
+def recipe_case_study_099_mixture_geometric_proposal_095_overtime_50_policy_evaluation():
+    test_envs = build_variation_test_env(
+        EXPERIMENT_SPECS['case_study_099_mixture_geometric_proposal_095_overtime_50']
+    )
+    generate_test_paths_and_init_state(
+        test_envs=test_envs,
+        test_sample_path_num=4096,
+        warm_up_periods=300,
+        num_periods=None,
+        dat_file='table.dat',
+        num_groups=500,  # divide into N groups
+        is_require_penalty_coefficients=True,
+        is_random_initial_state=True,
+        policy_ids=['approx_penalized_hindsight'],
+    )
 
 def main():
     """Run the currently-active dataset-generation recipe."""
-    #recipe_mixture_probability_toy_study_train_env()
-    recipe_mixture_probability_toy_study_policy_evaluation()
+    recipe_case_study_099_mixture_geometric_proposal_095_overtime_50_policy_evaluation()
+    #recipe_case_study_099_mixture_geometric_proposal_095_policy_evaluation()
 
 
 if __name__ == '__main__':
