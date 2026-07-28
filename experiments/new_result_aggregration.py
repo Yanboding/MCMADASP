@@ -192,13 +192,16 @@ class SimulateEvaluationResult:
     def load(self, data):
         uid = data.get('uid')
         policy_id = data['policy_id']
-        if uid is not None and uid in self.uids_by_policy[policy_id]:
-            return
-        if uid is not None:
-            self.uids_by_policy[policy_id].add(uid)
-
         group_id = data['group_id']
         mutate_val = data['mutate_val']
+        # Dedup by (uid, mutate_val): experiments that mutate only the agent
+        # (e.g. the mixing-probability sweep) can produce identical sample
+        # paths -- hence identical uids -- across variants, and those are
+        # distinct records, not duplicates.
+        if uid is not None and (uid, mutate_val) in self.uids_by_policy[policy_id]:
+            return
+        if uid is not None:
+            self.uids_by_policy[policy_id].add((uid, mutate_val))
         if policy_id == 'information_relaxation_only':
             self.gap_to_information_relaxation[(group_id, mutate_val)] += data['penalized_information_relaxation_cost'] - data['zero_information_relaxation_cost']
             self.zero_penalized_information_relaxation_cost[(group_id, mutate_val)] += data['zero_information_relaxation_cost']
@@ -448,7 +451,79 @@ Policy
 \\end{{threeparttable}}
 \\end{{table}}"""
         return table
-    
+
+    def group_id_to_mutate_val(self):
+        """Map each ``group_id`` (the env-variant uuid the aggregation dicts are
+        keyed by) to its ``mutate_val`` by scanning the result files once."""
+        mapping = {}
+        pattern = os.path.join(self.directory_path, self.file_pattern)
+        for file_path in sorted(glob.glob(pattern)):
+            with open(file_path, 'r') as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    record = json.loads(line)
+                    if 'group_id' in record and 'mutate_val' in record:
+                        mapping[record['group_id']] = record['mutate_val']
+        return mapping
+
+    def mixture_probability_table(self, policy_id='approx_penalized_hindsight', confidence=0.95):
+        """LaTeX table of policy-quality sensitivity to the defensive mixing
+        probability (``mixture_probability_toy_study``).
+
+        Each row is one variant (``group_id``, labelled by its ``mutate_val``,
+        the mixing probability epsilon). The two columns are the existing
+        ``zero_penalized_improvement`` / ``penalized_improvement`` statistics:
+        the policy's gap to the zero-penalty and penalized information-relaxation
+        lower bounds as a percentage of the respective bound's mean; the +- term
+        is the t-based half-window at ``confidence``.
+        """
+        group_id_by_mixing_probability = sorted(
+            (mutate_val, group_id)
+            for group_id, mutate_val in self.group_id_to_mutate_val().items()
+            if (group_id, policy_id) in self.zero_penalized_improvement
+        )
+        if not group_id_by_mixing_probability:
+            raise ValueError(f"No records loaded for policy_id '{policy_id}'.")
+
+        def cell(percentage_stats):
+            return f"\\({round(percentage_stats.mean)} \\pm {round(percentage_stats.half_window(confidence), 1)}\\)"
+
+        rows = []
+        for mixing_probability, group_id in group_id_by_mixing_probability:
+            key = (group_id, policy_id)
+            rows.append(
+                f"\\({mixing_probability:.2f}\\) "
+                f"& {cell(self.zero_penalized_improvement[key])} "
+                f"& {cell(self.penalized_improvement[key])} \\\\"
+            )
+        body = '\n'.join(rows)
+
+        return f"""\\begin{{table}}[H]
+\\centering
+\\begin{{threeparttable}}
+\\caption{{Policy-quality sensitivity to the defensive mixing probability.}}
+\\label{{tab:toy_importance_sampling}}
+\\small
+\\setlength{{\\tabcolsep}}{{8pt}}
+\\renewcommand{{\\arraystretch}}{{1.15}}
+\\begin{{tabular}}{{@{{}}ccc@{{}}}}
+\\toprule
+Defensive mixing probability \\(\\varepsilon\\)
+& \\(\\%\\) gap to zero-penalty LB
+& \\(\\%\\) gap to penalized LB \\\\
+\\midrule
+{body}
+\\bottomrule
+\\end{{tabular}}
+\\begin{{tablenotes}}[flushleft]
+\\footnotesize
+\\item \\textit{{Note.}} The instance uses 50\\% initial occupancy and 4,096 evaluation sample paths; other inputs are given in Table~\\ref{{tab:treatment_pattern_and_penalty_toy_study_1}}.
+\\end{{tablenotes}}
+\\end{{threeparttable}}
+\\end{{table}}"""
+
     def plot_percentage_improvement(self, scale, xlabel, ylabel, file_name):
         # Plot percentage improvement of myopic and ALP over the information relaxation benchmark
         plot_stats = {
@@ -607,51 +682,73 @@ def run_improvement_plots(base_results_dir, file_pattern, env_info, group_ids, i
             ylabel=IMPROVEMENT_YLABEL,
             file_name=f"{config['name']}_lower_bound_improvement.svg",
         )
-# I want to plot discount improvement
-if __name__ == "__main__":
+def run_mixture_probability_table(is_reuse=True, policy_id='approx_penalized_hindsight'):
+    """Load ``mixture_probability_toy_study`` results and print the LaTeX table
+    of policy-quality sensitivity to the defensive mixing probability."""
     from experiments import get_config_by_type
     config = get_config_by_type('toy')
-    env = config.env
-    waiting_time_targets = [env.holding_cost.get_waiting_target(i) for i in range(env.num_types)]
-    base_results_dir = os.path.join('.', 'experiments', 'results', 'alp_steady_state_toy_study')
-    file_pattern = '[0-9]*.jsonl'
-    # group_ids = ['73d11360affe39305e7716cf5c42ac04', '841708e72300000ddfd948daf08d6805', 'a3202d39ed34711b47ecebb72aabad43']
-    # run_improvement_plots(
-    #     base_results_dir=base_results_dir,
-    #     file_pattern=file_pattern,
-    #     env_info=env_info,
-    #     group_ids=group_ids,
-    #     is_reuse=False,
-    # )
     ser = SimulateEvaluationResult(
-            base_results_dir,
-            file_pattern,
-            env,
-            is_reuse=True,
-        )
+        os.path.join('.', 'experiments', 'results', 'mixture_probability_toy_study'),
+        '[0-9]*.jsonl',
+        config.env,
+        is_reuse=is_reuse,
+    )
+    for mutate_val, group_id in sorted((mv, gid) for gid, mv in ser.group_id_to_mutate_val().items()):
+        stats = ser.zero_penalized_gap.get((group_id, policy_id))
+        if stats is not None:
+            print(f"epsilon={mutate_val}, policy={policy_id}: {stats.n} sample paths")
+    table = ser.mixture_probability_table(policy_id=policy_id)
+    print(table)
+    return table
+
+
+# I want to plot discount improvement
+if __name__ == "__main__":
+    # from experiments import get_config_by_type
+    # config = get_config_by_type('toy')
+    # env = config.env
+    # waiting_time_targets = [env.holding_cost.get_waiting_target(i) for i in range(env.num_types)]
+    # base_results_dir = os.path.join('.', 'experiments', 'results', 'alp_steady_state_toy_study')
+    # file_pattern = '[0-9]*.jsonl'
+    # # group_ids = ['73d11360affe39305e7716cf5c42ac04', '841708e72300000ddfd948daf08d6805', 'a3202d39ed34711b47ecebb72aabad43']
+    # # run_improvement_plots(
+    # #     base_results_dir=base_results_dir,
+    # #     file_pattern=file_pattern,
+    # #     env_info=env_info,
+    # #     group_ids=group_ids,
+    # #     is_reuse=False,
+    # # )
+    # ser = SimulateEvaluationResult(
+    #         base_results_dir,
+    #         file_pattern,
+    #         env,
+    #         is_reuse=True,
+    #     )
     
-    # print(ser.last_decision_period_distribution_table())
-    print('ser.zero_penalized_gap')
-    pprint(ser.zero_penalized_gap)
-    print('ser.penalized_gap')
-    pprint(ser.penalized_gap)
-    print('ser.after_warmup_policy_costs')
-    pprint(ser.after_warmup_policy_costs)
-    print('ser.zero_penalized_information_relaxation_cost')
-    pprint(ser.zero_penalized_information_relaxation_cost)
-    print('ser.penalized_information_relaxation_cost')
-    pprint(ser.penalized_information_relaxation_cost)
-    print('ser.zero_penalized_improvement')
-    pprint(ser.zero_penalized_improvement)
-    print('ser.penalized_improvement')
-    pprint(ser.penalized_improvement)
-    print(ser.waiting_time_target_ptc_table())
-    print('Summary table')
-    print(ser.performance_summary_table())
-    print('Overall performance table')
-    print(ser.overall_performance_table(gamma='0.99'))
-    print('Policy performance comparison table')
-    print(policy_performance_comparison_table(env, is_reuse=True))
+    # # print(ser.last_decision_period_distribution_table())
+    # print('ser.zero_penalized_gap')
+    # pprint(ser.zero_penalized_gap)
+    # print('ser.penalized_gap')
+    # pprint(ser.penalized_gap)
+    # print('ser.after_warmup_policy_costs')
+    # pprint(ser.after_warmup_policy_costs)
+    # print('ser.zero_penalized_information_relaxation_cost')
+    # pprint(ser.zero_penalized_information_relaxation_cost)
+    # print('ser.penalized_information_relaxation_cost')
+    # pprint(ser.penalized_information_relaxation_cost)
+    # print('ser.zero_penalized_improvement')
+    # pprint(ser.zero_penalized_improvement)
+    # print('ser.penalized_improvement')
+    # pprint(ser.penalized_improvement)
+    # print(ser.waiting_time_target_ptc_table())
+    # print('Summary table')
+    # print(ser.performance_summary_table())
+    # print('Overall performance table')
+    # print(ser.overall_performance_table(gamma='0.99'))
+    # print('Policy performance comparison table')
+    # print(policy_performance_comparison_table(env, is_reuse=True))
+    print('Mixture probability table')
+    run_mixture_probability_table(is_reuse=False)
     # print('gap_to_information_relaxation')
     # pprint(ser.gap_to_information_relaxation)
     # print('improvement')
