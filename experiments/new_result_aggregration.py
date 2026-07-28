@@ -102,6 +102,7 @@ class SimulateEvaluationResult:
         'overtime_utilization',
         'solving_time_per_state',
         'uids_by_policy',
+        'after_warmup_cost_by_uid',
     )
 
     def __init__(self,directory_path, file_pattern, env, group_ids=None, is_reuse=False):
@@ -125,6 +126,8 @@ class SimulateEvaluationResult:
 
         # Discountred total cost gap after warmup period (if the information relaxation includes the discount factor, then we should use discounted gap.)
         self.after_warmup_policy_costs = defaultdict(RunningStats)
+        # Per-sample-path after-warmup cost, keyed (group_id, policy_id) -> {uid: cost}, used for paired comparisons
+        self.after_warmup_cost_by_uid = defaultdict(dict)
         # Waiting time target violation
         self.waiting_time_target_ptc_by_type_day = defaultdict(dd_dd_rs_factory)
         self.waiting_time_target_ptc_by_day = defaultdict(dd_rs_factory)
@@ -219,7 +222,10 @@ class SimulateEvaluationResult:
         # becarful abount the warm-up period.
         costs_after_warmup = data['costs'][warm_up_periods:] if len(data['costs']) > warm_up_periods else data['costs']
 
-        self.after_warmup_policy_costs[(group_id, policy_id)] += sum(cost for t, cost in enumerate(costs_after_warmup))
+        after_warmup_cost = sum(cost for t, cost in enumerate(costs_after_warmup))
+        self.after_warmup_policy_costs[(group_id, policy_id)] += after_warmup_cost
+        if uid is not None:
+            self.after_warmup_cost_by_uid[(group_id, policy_id)][uid] = after_warmup_cost
         
         scheduled_patients = np.array(data["scheduled_patients"])[warm_up_periods:].sum(axis=0) if len(data["scheduled_patients"]) > warm_up_periods else np.array(data["scheduled_patients"]).sum(axis=0)
         
@@ -331,6 +337,117 @@ class SimulateEvaluationResult:
         for (group_id, policy_id), stats in self.after_warmup_policy_costs.items():
             table += f"{policy_label.get(policy_id, policy_id)} & ${stats.confidence_interval(0.8)}$ & ${self.waiting_time_violation[(group_id, policy_id)].confidence_interval()}$ & ${self.overtime_utilization[(group_id, policy_id)].confidence_interval()}$\\\\\n"
         return table
+
+    def improvement_over_baseline(self, group_id, policy_id, baseline_id='myopic', confidence=0.95):
+        """Paired relative improvement (%) of `policy_id` over `baseline_id` in
+        after-warmup discounted total cost, matched by uid (common random numbers).
+
+        Uses the ratio-of-paired-means estimator mean(C_b - C_p) / mean(C_b)
+        (per-path ratios are undefined when a baseline path has zero cost),
+        with a delta-method confidence-interval half-width.
+
+        Returns (improvement_pct, half_width_pct, n_pairs).
+        """
+        from scipy.stats import norm
+        policy_costs = self.after_warmup_cost_by_uid[(group_id, policy_id)]
+        baseline_costs = self.after_warmup_cost_by_uid[(group_id, baseline_id)]
+        common_uids = policy_costs.keys() & baseline_costs.keys()
+        pc = np.array([policy_costs[uid] for uid in common_uids])
+        bc = np.array([baseline_costs[uid] for uid in common_uids])
+        n = len(common_uids)
+        if n < 2 or bc.mean() == 0:
+            return 0.0, 0.0, n
+        diff = bc - pc
+        improvement = diff.mean() / bc.mean() * 100
+        cov = np.cov(np.vstack([diff, bc]))
+        dm, bm = diff.mean(), bc.mean()
+        var = (cov[0, 0] / bm ** 2 - 2 * dm * cov[0, 1] / bm ** 3 + dm ** 2 * cov[1, 1] / bm ** 4) / n
+        half_width = norm.ppf((1 + confidence) / 2) * np.sqrt(max(var, 0.0)) * 100
+        return improvement, half_width, n
+
+    def overall_performance_table(self, gamma='0.99', baseline_id='myopic', confidence=0.95):
+        """Generates the overall case-study performance LaTeX table with
+        discounted total cost, relative improvement over the baseline policy,
+        wait-time violations, and overtime utilization."""
+        policy_order = [
+            ('approx_penalized_hindsight', 'Penalized Hindsight'),
+            ('row_gen_alp', 'ALP'),
+            ('myopic', 'Myopic'),
+        ]
+
+        def fmt(value, decimals=0):
+            return f'{value:,.{decimals}f}'.replace(',', '{,}')
+
+        def cell(mean, half_width, mean_decimals=0, hw_decimals=1, bold=False):
+            body = f'{fmt(mean, mean_decimals)} \\pm {fmt(half_width, hw_decimals)}'
+            return f'\\(\\mathbf{{{body}}}\\)' if bold else f'\\({body}\\)'
+
+        # Keep only policies present in the data; assume a single group_id.
+        group_ids = {gid for gid, _ in self.after_warmup_policy_costs.keys()}
+        rows = []
+        n_paths = 0
+        for group_id in sorted(group_ids, key=str):
+            policies = [(pid, label) for pid, label in policy_order
+                        if (group_id, pid) in self.after_warmup_policy_costs]
+            costs = {pid: self.after_warmup_policy_costs[(group_id, pid)] for pid, _ in policies}
+            violations = {pid: self.waiting_time_violation[(group_id, pid)] for pid, _ in policies}
+            overtimes = {pid: self.overtime_utilization[(group_id, pid)] for pid, _ in policies}
+            improvements = {
+                pid: self.improvement_over_baseline(group_id, pid, baseline_id, confidence)
+                for pid, _ in policies if pid != baseline_id
+            }
+            n_paths = max(n_paths, max(stats.n for stats in costs.values()))
+
+            best_cost = min(costs, key=lambda pid: costs[pid].mean)
+            best_violation = min(violations, key=lambda pid: violations[pid].mean)
+            best_overtime = min(overtimes, key=lambda pid: overtimes[pid].mean)
+            best_improvement = max(improvements, key=lambda pid: improvements[pid][0]) if improvements else None
+
+            for pid, label in policies:
+                cost_cell = cell(costs[pid].mean, costs[pid].half_window(confidence), bold=pid == best_cost)
+                if pid == baseline_id:
+                    improvement_cell = '---'
+                else:
+                    improvement, half_width, _ = improvements[pid]
+                    improvement_cell = cell(improvement, half_width, mean_decimals=1, hw_decimals=1,
+                                            bold=pid == best_improvement)
+                violation_cell = cell(violations[pid].mean, violations[pid].half_window(confidence),
+                                      bold=pid == best_violation)
+                overtime_cell = cell(overtimes[pid].mean, overtimes[pid].half_window(confidence),
+                                     bold=pid == best_overtime)
+                rows.append(f'{label} & {cost_cell} & {improvement_cell} & {violation_cell} & {overtime_cell} \\\\')
+
+        body = '\n'.join(rows)
+        gamma_tag = gamma.replace('.', '')
+        table = f"""\\begin{{table}}[!htbp]
+\\centering
+\\begin{{threeparttable}}
+\\caption{{Estimated case-study policy performance with $\\gamma={gamma}$.}}
+\\label{{tab:overall_performance_{gamma_tag}_case_study}}
+
+\\small
+\\setlength{{\\tabcolsep}}{{6pt}}
+\\renewcommand{{\\arraystretch}}{{1.15}}
+
+\\begin{{tabular*}}{{\\textwidth}}{{@{{\\extracolsep{{\\fill}}}} lcccc @{{}}}}
+\\toprule
+Policy
+& \\makecell{{Discounted\\\\total cost}}
+& \\makecell{{Improvement over\\\\Myopic (\\%)}}
+& \\makecell{{Wait-time\\\\violations}}
+& \\makecell{{Overtime\\\\utilization}}\\\\
+\\midrule
+{body}
+\\bottomrule
+\\end{{tabular*}}
+
+\\begin{{tablenotes}}[flushleft]
+\\footnotesize
+\\item \\textit{{Note.}} Values are sample means \\(\\pm\\) {round(confidence * 100)}\\% confidence-interval half-widths over \\({fmt(n_paths)}\\) evaluation sample paths. Improvement over Myopic is the paired relative reduction in discounted total cost on common sample paths, with a delta-method {round(confidence * 100)}\\% confidence interval. Bold entries are the best value in each metric. Table~\\ref{{tab:case_study_inputs}} reports the case-study inputs.
+\\end{{tablenotes}}
+\\end{{threeparttable}}
+\\end{{table}}"""
+        return table
     
     def plot_percentage_improvement(self, scale, xlabel, ylabel, file_name):
         # Plot percentage improvement of myopic and ALP over the information relaxation benchmark
@@ -403,6 +520,8 @@ if __name__ == "__main__":
     print(ser.waiting_time_target_ptc_table())
     print('Summary table')
     print(ser.performance_summary_table())
+    print('Overall performance table')
+    print(ser.overall_performance_table(gamma='0.99'))
     # print('gap_to_information_relaxation')
     # pprint(ser.gap_to_information_relaxation)
     # print('improvement')
