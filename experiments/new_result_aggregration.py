@@ -463,6 +463,134 @@ Policy
                                                                         file_name))
 
 
+def _merge_stats_by_policy(stats_dict, policy_id):
+    """Merge the RunningStats of ``policy_id`` across all group_ids."""
+    merged = RunningStats()
+    for (group_id, pid), stats in stats_dict.items():
+        if pid == policy_id:
+            merged += stats
+    return merged
+
+
+def policy_performance_comparison_table(
+    env,
+    base_results_dir=os.path.join('.', 'experiments', 'results'),
+    conditions=(
+        ('Fixed initial state', 'base_toy_study', True),
+        ('Steady state', 'steady_state_toy_study', False),
+        ('ALP warm-up', 'alp_steady_state_toy_study', True),
+    ),
+    file_pattern='[0-9]*.jsonl',
+    is_reuse=True,
+    confidence=0.95,
+):
+    """Build the policy-performance comparison table (one column pair per
+    initial-state condition: 95% CI and Gap %).
+
+    ``conditions`` is a sequence of ``(label, folder_name, show_gap_percent)``
+    tuples; each folder under ``base_results_dir`` holds the evaluation JSONL
+    files of one initial-state condition. When ``show_gap_percent`` is False
+    the Gap % cells of that condition are printed as NA.
+    """
+    policy_order = [
+        ('approx_hindsight', 'Hindsight'),
+        ('approx_penalized_hindsight', 'Penalized hindsight'),
+        ('myopic', 'Myopic'),
+        ('row_gen_alp', 'ALP'),
+    ]
+
+    results = []
+    for label, folder_name, show_gap_percent in conditions:
+        ser = SimulateEvaluationResult(
+            os.path.join(base_results_dir, folder_name),
+            file_pattern,
+            env,
+            is_reuse=is_reuse,
+        )
+        results.append((label, ser, show_gap_percent))
+
+    loaded_policy_ids = {
+        pid for _, ser, _ in results for (_, pid) in ser.policy_costs.keys()
+    }
+    policies = [(pid, label) for pid, label in policy_order if pid in loaded_policy_ids]
+
+    def ci_cell(stats):
+        if stats.n == 0:
+            return 'NA'
+        return f"\\({round(stats.mean)} \\pm {round(stats.half_window(confidence), 1)}\\)"
+
+    def gap_percent_cell(stats, show_gap_percent):
+        if not show_gap_percent or stats.n == 0:
+            return 'NA'
+        return f"\\({round(stats.mean)} \\pm {round(stats.half_window(confidence), 1)}\\)"
+
+    # --- header ---------------------------------------------------------
+    col_spec = 'l' + 'r' * (2 * len(results))
+    group_header = '\n'.join(
+        f"& \\multicolumn{{2}}{{c}}{{{label}}}" for label, _, _ in results
+    ) + ' \\\\'
+    cmidrules = ' '.join(
+        f"\\cmidrule(lr){{{2 + 2 * i}-{3 + 2 * i}}}" for i in range(len(results))
+    )
+    ci_header = '& ' + ' \n& '.join('95\\% CI & Gap \\%' for _ in results) + ' \\\\'
+
+    # --- body -----------------------------------------------------------
+    blocks = []
+    for pid, policy_label in policies:
+        lines = [f"{policy_label} {'& ' * 2 * len(results)}\\\\"]
+        cost_cells, zero_cells, max_cells = [], [], []
+        for _, ser, show_gap_percent in results:
+            cost_cells += [ci_cell(_merge_stats_by_policy(ser.policy_costs, pid)), '']
+            zero_cells += [
+                ci_cell(_merge_stats_by_policy(ser.zero_penalized_gap, pid)),
+                gap_percent_cell(_merge_stats_by_policy(ser.zero_penalized_improvement, pid), show_gap_percent),
+            ]
+            max_cells += [
+                ci_cell(_merge_stats_by_policy(ser.penalized_gap, pid)),
+                gap_percent_cell(_merge_stats_by_policy(ser.penalized_improvement, pid), show_gap_percent),
+            ]
+        lines.append('\\quad Policy cost \n& ' + ' \n& '.join(cost_cells).rstrip() + ' \\\\')
+        lines.append('\\quad Zero-penalty gap \n& ' + ' \n& '.join(zero_cells) + ' \\\\')
+        lines.append('\\quad Max-penalty gap \n& ' + ' \n& '.join(max_cells) + ' \\\\')
+        blocks.append('\n'.join(lines))
+    body = '\n\\addlinespace[2pt]\n\n'.join(blocks)
+
+    table = f"""\\begin{{table}}[t]
+\\centering
+\\begin{{threeparttable}}
+\\footnotesize
+\\setlength{{\\tabcolsep}}{{3.5pt}}
+\\renewcommand{{\\arraystretch}}{{0.95}}
+
+\\caption{{Performance comparison of different policies:
+$I=2$, $C_r=7$, $C_o=3$, $o=100$, $N=7$, $g_i=2000$,
+$\\boldsymbol{{\\lambda}}=(1,2)$ with total arrival rate \\(3\\) capped at \\(9\\),
+$\\gamma=0.99$, and $M_{{\\text{{eval}}}}=5{{,}}000$.
+Treatment patterns and waiting-time penalties are given in
+Tables~\\ref{{tab:treatment_pattern_toy_study_1}} and
+\\ref{{tab:wait_time_penalty_toy_study_1}}.}}
+\\label{{tab:policy_performance_comparision}}
+
+\\begin{{tabular*}}{{\\linewidth}}{{@{{\\extracolsep{{\\fill}}}} {col_spec} @{{}}}}
+\\toprule
+Initial-state condition
+{group_header}
+{cmidrules}
+{ci_header}
+\\midrule
+{body}
+\\bottomrule
+\\end{{tabular*}}
+
+\\begin{{tablenotes}}[flushleft]
+\\footnotesize
+\\item Notes. The zero-penalty gap is the difference between the policy cost and the zero-penalty perfect-information relaxation cost. The max-penalty gap is the difference between the policy cost and the penalized perfect-information relaxation cost obtained with the fitted penalty coefficients \\(\\hat{{\\boldsymbol{{\\theta}}}}^*\\). Gap \\% reports each gap as a percentage of the corresponding information-relaxation cost.
+\\end{{tablenotes}}
+\\end{{threeparttable}}
+\\end{{table}}"""
+    return table
+
+
 def run_improvement_plots(base_results_dir, file_pattern, env_info, group_ids, is_reuse=False):
     for config in EXPERIMENT_PLOT_CONFIGS:
         directory_path = os.path.join(base_results_dir, config['name'])
@@ -485,7 +613,7 @@ if __name__ == "__main__":
     config = get_config_by_type('toy')
     env = config.env
     waiting_time_targets = [env.holding_cost.get_waiting_target(i) for i in range(env.num_types)]
-    base_results_dir = os.path.join('.', 'experiments', 'results', 'base_toy_study')
+    base_results_dir = os.path.join('.', 'experiments', 'results', 'alp_steady_state_toy_study')
     file_pattern = '[0-9]*.jsonl'
     # group_ids = ['73d11360affe39305e7716cf5c42ac04', '841708e72300000ddfd948daf08d6805', 'a3202d39ed34711b47ecebb72aabad43']
     # run_improvement_plots(
@@ -522,6 +650,8 @@ if __name__ == "__main__":
     print(ser.performance_summary_table())
     print('Overall performance table')
     print(ser.overall_performance_table(gamma='0.99'))
+    print('Policy performance comparison table')
+    print(policy_performance_comparison_table(env, is_reuse=True))
     # print('gap_to_information_relaxation')
     # pprint(ser.gap_to_information_relaxation)
     # print('improvement')

@@ -12,6 +12,7 @@ from param_generation.mutators import (
     mutate_high_priority_proportion,
     mutate_high_priority_waiting_time_penalty,
     mutate_initial_state_congestion,
+    mutate_initial_state_congestion_05_const,
     mutate_is_proposal_098_const,
     mutate_low_priority_waiting_time_target,
     mutate_mixture_geometric_proposal_lambda_0,
@@ -23,12 +24,6 @@ from param_generation.mutators import (
 
 EXPERIMENT_SPECS = {
     spec.name: spec for spec in [
-        ExperimentSpec(
-            name='base_toy_study',
-            config_type='toy',
-            val_args=[0.5],
-            mutate=mutate_initial_state_congestion,
-        ),
         ExperimentSpec(
             name='initial_state_congestion',
             config_type='toy',
@@ -158,12 +153,6 @@ EXPERIMENT_SPECS = {
             agent_mutate=mutate_mixture_geometric_proposal_lambda_0,
         ),
         ExperimentSpec(
-            name='toy_study_base_case',
-            config_type='toy',
-            val_args=[0.99],
-            agent_mutate=mutate_discount_factor_for_sample_path_length_proposal,
-        ),
-        ExperimentSpec(
             name='toy_study_099_mixture_geometric_proposal_095_test',
             config_type='toy',
             val_args=[0.1],
@@ -178,6 +167,12 @@ EXPERIMENT_SPECS = {
             agent_mutate=mutate_mixture_geometric_proposal_lambda_0,
         ),
         ExperimentSpec(
+            name='base_toy_study',
+            config_type='toy',
+            val_args=[0.5],
+            mutate=mutate_initial_state_congestion,
+        ),
+        ExperimentSpec(
             name='steady_state_toy_study',
             config_type='toy',
             val_args=[0.5],
@@ -189,6 +184,13 @@ EXPERIMENT_SPECS = {
             val_args=[0.5],
             mutate=mutate_initial_state_congestion,
         ),
+        ExperimentSpec(
+            name='mixture_probability_toy_study',
+            config_type='toy',
+            val_args=[0.05, 0.1, 0.15, 1.0],
+            mutate=mutate_initial_state_congestion_05_const,
+            agent_mutate=mutate_mixture_geometric_proposal_lambda_0,
+        )
     ]
 }
 

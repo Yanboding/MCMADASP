@@ -382,6 +382,63 @@ class BendersDecompositionSolver:
         self.imm_cost = imm_cost
         self.theta_vars = theta_vars
         self.action_vars = action_vars
+        # Lazily-created |action| epigraph variables for the min-norm
+        # optimal-face re-solve (see _min_norm_master_action).
+        self._action_abs_vars = None
+
+    def _min_norm_master_action(self, fallback_action, verbose=False):
+        """Return the minimum-L1-norm action on the master's optimal face.
+
+        The master objective only involves the theta epigraph variables, so
+        with few cuts its optimal face is typically unbounded in the action
+        space and simplex returns a degenerate vertex with astronomically
+        large action values (which numerically break the subproblems). This
+        re-solve keeps the PRIMARY objective pinned at its optimal value and,
+        among all optimal solutions, picks the one minimizing ``sum |a_j|``.
+        The action variables themselves stay UNBOUNDED and the master optimum
+        is unchanged -- this is a tie-break on the optimal face, not a bound.
+
+        Any Benders optimality cut is valid at any action point, so cutting at
+        the min-norm optimum preserves correctness. On any failure the
+        first-phase ``fallback_action`` is returned unchanged.
+        """
+        model = self.master_model
+        original_sense = model.ModelSense
+        primary_objective = model.getObjective()
+        objective_value = model.ObjVal
+        if self._action_abs_vars is None:
+            abs_vars = model.addMVar(
+                self.action_vars.shape[0], lb=0.0, name="action_abs")
+            model.addConstr(abs_vars >= self.action_vars, name="action_abs_pos")
+            model.addConstr(abs_vars >= -self.action_vars, name="action_abs_neg")
+            self._action_abs_vars = abs_vars
+        # Pin the primary objective at its optimum, with a RELATIVE slack.
+        # An exact pin is numerically infeasible in the early degenerate
+        # iterations (the optimum sits at the theta upper-bound cap, reached
+        # only along a near-unbounded direction), which silently falls back to
+        # the degenerate vertex. The slack cannot stall the Benders endgame
+        # because this re-solve only runs while max|a| > 1e6 (see solve());
+        # once the cuts pin the action to sane magnitudes the loop uses the
+        # untouched first-phase vertex.
+        slack = 1e-9 * max(1.0, abs(objective_value))
+        if original_sense == GRB.MINIMIZE:
+            guard = model.addConstr(
+                primary_objective <= objective_value + slack, name="min_norm_guard")
+        else:
+            guard = model.addConstr(
+                primary_objective >= objective_value - slack, name="min_norm_guard")
+        try:
+            model.setObjective(self._action_abs_vars.sum(), GRB.MINIMIZE)
+            model.optimize()
+            if model.Status == GRB.OPTIMAL:
+                return np.array(self.action_vars.X, dtype=float)
+            print(f"Min-norm re-solve not optimal (Status {model.Status}); "
+                  f"keeping first-phase master action")
+            return fallback_action
+        finally:
+            model.remove(guard)
+            model.setObjective(primary_objective, original_sense)
+            model.update()
 
     @staticmethod
     def _checkpoint_paths(checkpoint_path):
@@ -751,7 +808,8 @@ class BendersDecompositionSolver:
               parallel=True,
               max_workers=None,
               checkpoint_path=None,
-              resume_checkpoint_path=None):
+              resume_checkpoint_path=None,
+              min_norm_action=False):
         info = {}
         lower_bound = -GRB.INFINITY
         upper_bound = GRB.INFINITY
@@ -784,8 +842,14 @@ class BendersDecompositionSolver:
         # by each subproblem's cold solve during construction, so injecting them
         # lets the solver skip the iteration that would otherwise just re-derive
         # them and starts the master from a gradient-informed approximation.
-        # Skipped on resume (the reloaded checkpoint already contains them).
-        if not resume_checkpoint_path:
+        # Skipped only when a checkpoint actually restored cuts (the reloaded
+        # store already contains them). Callers routinely pass
+        # ``resume_checkpoint_path`` unconditionally (pointing at a file that
+        # does not exist yet on a fresh run), so keying on the path alone would
+        # skip seeding on fresh runs and let the cut-less master push the
+        # coefficients to absurd magnitudes (numerically breaking the
+        # subproblems).
+        if not checkpoint_state.get('cut_count'):
             bound_at_zero, seed_records = self._seed_initial_cuts(active_workers)
             if bound_at_zero is not None:
                 # The optimum is at least as good as all-zero coefficients, so
@@ -822,12 +886,18 @@ class BendersDecompositionSolver:
                     print(f"Iteration {global_iteration}, master solved in {time.time() - start} seconds")
                     self._report_memory_usage(global_iteration)
                     action = self.action_vars.X
-                    if core_point is None:
-                        core_point = copy.deepcopy(action)
                     if is_min:
                         lower_bound = self.master_model.ObjVal
                     else:
                         upper_bound = self.master_model.ObjVal
+                    if min_norm_action and np.max(np.abs(action)) > 1e6:
+                        # Degenerate vertex on an under-constrained optimal
+                        # face: re-solve for the minimum-norm optimal action
+                        # (bounds above use the primary ObjVal). Sane actions
+                        # skip the re-solve so the endgame is untouched.
+                        action = self._min_norm_master_action(action, verbose=verbose)
+                    if core_point is None:
+                        core_point = copy.deepcopy(action)
 
                 print(f"Iteration {global_iteration}, action from master: {action.tolist()}")
 

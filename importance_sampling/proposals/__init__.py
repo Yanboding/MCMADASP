@@ -39,6 +39,16 @@ def build_proposal(spec):
             f'Unknown proposal type {proposal_type!r}. '
             f'Available: {sorted(_PROPOSAL_TYPES)}'
         )
+    # Degenerate mixture: with lambda_0 == 1 all mass sits on the long
+    # component, i.e. the proposal IS the target Geom(gamma) length
+    # distribution and every per-period weight is 1. Return None so the agent
+    # uses the default no-proposal sampling branch
+    # (ArrivalGeneratorSamplePathProposal): the sampled paths are then
+    # byte-identical to a run without any proposal (same RNG stream and
+    # consumption order), not merely equal in distribution -- the QMC mixture
+    # sampler would draw different concrete paths.
+    if proposal_type == 'mixture_geometric' and float(spec.get('lambda_0', 0.5)) == 1.0:
+        return None
     return _PROPOSAL_TYPES[proposal_type](**spec)
 
 

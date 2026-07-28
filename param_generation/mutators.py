@@ -34,6 +34,13 @@ def mutate_initial_state_congestion(env_args, occupancy_level):
     }
 
 
+def mutate_initial_state_congestion_05_const(env_args, val):
+    """Always set initial-state congestion 0.5; the swept ``val`` (lambda_0)
+    is ignored so the env matches ``base_toy_study`` exactly while the agent
+    mutator sweeps the mixture proposal mass."""
+    mutate_initial_state_congestion(env_args, 0.5)
+
+
 def mutate_high_priority_proportion(env_args, proportion):
     total = sum(env_args['arrival_rates'])
     env_args['arrival_rates'] = [total * proportion, total * (1 - proportion)]
