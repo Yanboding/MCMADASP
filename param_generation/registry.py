@@ -184,6 +184,32 @@ EXPERIMENT_SPECS = {
             val_args=[0.05, 0.1, 0.15, 1.0],
             mutate=mutate_initial_state_congestion_05_const,
             agent_mutate=mutate_mixture_geometric_proposal_lambda_0,
+        ),
+        # Evaluation-proposal comparison arms (see
+        # docs/superpowers/specs/2026-07-29-eval-proposal-comparison-design.md):
+        # env and policy are byte-identical to mixture_probability_toy_study
+        # val=0.1; only the name (= results directory) differs. The evaluation
+        # proposal itself is supplied per-arm by the CLI recipe.
+        ExperimentSpec(
+            name='toy_eval_proposal_geometric_099',
+            config_type='toy',
+            val_args=[0.1],
+            mutate=mutate_initial_state_congestion_05_const,
+            agent_mutate=mutate_mixture_geometric_proposal_lambda_0,
+        ),
+        ExperimentSpec(
+            name='toy_eval_proposal_fixed_459',
+            config_type='toy',
+            val_args=[0.1],
+            mutate=mutate_initial_state_congestion_05_const,
+            agent_mutate=mutate_mixture_geometric_proposal_lambda_0,
+        ),
+        ExperimentSpec(
+            name='toy_eval_proposal_mixture_095_l01',
+            config_type='toy',
+            val_args=[0.1],
+            mutate=mutate_initial_state_congestion_05_const,
+            agent_mutate=mutate_mixture_geometric_proposal_lambda_0,
         )
     ]
 }

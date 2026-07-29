@@ -14,4 +14,8 @@ class FixedLengthProposal(SamplePathLengthProposal):
 
     def survival_probability(self, periods):
         periods = np.asarray(periods, dtype=int)
-        return (periods <= self.max_length).astype(float)
+        # +1: the trailing decision period after the last sampled arrival
+        # (stage cost but no arrival, see ``_evaluation_period_weights``) is
+        # guaranteed to occur once the fixed-length tail has been drawn, so it
+        # must not be treated as unsupported (survival probability 0).
+        return (periods <= self.max_length + 1).astype(float)

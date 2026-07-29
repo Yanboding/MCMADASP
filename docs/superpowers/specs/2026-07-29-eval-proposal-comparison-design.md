@@ -32,9 +32,13 @@ byte-identical `env_args` to `mixture_probability_toy_study`.
 | `toy_eval_proposal_mixture_095_l01` | `{'type': 'mixture_geometric', 'target_discount_factor': 0.99, 'discount_factor_proposal': 0.95, 'lambda_0': 0.1}` | bounded in [1, 10] | unbiased IS, short paths |
 
 Per arm: 4096 evaluation paths, `warm_up_periods=0`, fixed initial state (no
-randomization). All arms share the same arrival RNG seeds (env_args identical,
-seeds offset +1001 inside `generate_test_paths_and_init_state`), giving common
-random numbers across arms.
+randomization). All arms start from the same arrival RNG seeds (env_args
+identical, seeds offset +1001 inside `generate_test_paths_and_init_state`),
+but the arms are NOT common-random-numbers paired: each proposal consumes the
+shared RNG stream differently when drawing lengths (fixed draws none,
+geometric one per path, mixture via QMC seeds), so the arrival streams
+desynchronize and the three arms are effectively independent samples.
+Variance comparisons across arms must treat them as independent, not paired.
 
 The fixed horizon 459 is computed in code as `int(scipy.stats.geom.ppf(0.99,
 1 - 0.99))` with an assertion that it equals 459 — not hard-coded. The

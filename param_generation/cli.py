@@ -10,6 +10,10 @@ import os
 import shutil
 from pprint import pprint
 
+from scipy.stats import geom
+
+from param_generation.caching import load_trained_coefficients_from_folder
+from param_generation.command_files import write_grouped_command_file
 from param_generation.datasets import (
     generate_penalty_coefficient_training_env,
     generate_policy_efficiency_data,
@@ -377,9 +381,81 @@ def recipe_case_study_099_mixture_geometric_proposal_095_overtime_50_policy_eval
         policy_ids=['approx_penalized_hindsight'],
     )
 
+def recipe_toy_eval_proposal_comparison(
+    test_sample_path_num=4096,
+    num_groups=500,
+    dat_file='table.dat',
+    penalty_coefficients_dir=os.path.join(
+        'experiments', 'results', 'mixture_probability_toy_study'
+    ),
+):
+    """Evaluation-proposal comparison on the toy env (spec:
+    docs/superpowers/specs/2026-07-29-eval-proposal-comparison-design.md).
+
+    ONE fixed approx_penalized_hindsight policy (internal mixture IS proposal
+    lambda_0=0.1, trained coefficients reused from
+    ``mixture_probability_toy_study``) is evaluated on tails drawn from three
+    different length proposals; each record carries the matching
+    ``period_weights`` so ``run.py`` stays unbiased per arm. All
+    3 x ``test_sample_path_num`` records go into ONE grouped dat file.
+    """
+    # Fail fast if the trained coefficients are missing: silently retraining
+    # per arm would be slow and would break the fixed-policy comparison.
+    coefficients = load_trained_coefficients_from_folder(
+        experiment_name='mixture_probability_toy_study',
+        mutate_val=0.1,
+        sample_path_number=256,
+        folder_path=penalty_coefficients_dir,
+    )
+    if coefficients is None:
+        raise RuntimeError(
+            'No trained penalty coefficients (mutate_val=0.1, '
+            f'sample_path_number=256) found in {penalty_coefficients_dir}.'
+        )
+
+    # 459 = 0.99-quantile of Geom(1 - 0.99). The fixed proposal samples
+    # max_length = 458 arrivals so the rollout visits exactly 459 weighted
+    # decision periods (see the spec: FixedLengthProposal(459) would raise in
+    # _evaluation_period_weights).
+    fixed_horizon = int(geom.ppf(0.99, 1 - 0.99))
+    assert fixed_horizon == 459, fixed_horizon
+
+    arms = [
+        ('toy_eval_proposal_geometric_099',
+         {'type': 'geometric', 'discount_factor_proposal': 0.99}),
+        ('toy_eval_proposal_fixed_459',
+         {'type': 'fixed', 'max_length': fixed_horizon - 1}),
+        ('toy_eval_proposal_mixture_095_l01',
+         {'type': 'mixture_geometric', 'target_discount_factor': 0.99,
+          'discount_factor_proposal': 0.95, 'lambda_0': 0.1}),
+    ]
+    all_records = []
+    for experiment_name, evaluation_proposal_spec in arms:
+        test_envs = build_variation_test_env(EXPERIMENT_SPECS[experiment_name])
+        all_records.extend(
+            generate_test_paths_and_init_state(
+                test_envs=test_envs,
+                test_sample_path_num=test_sample_path_num,
+                warm_up_periods=0,
+                num_periods=None,
+                dat_file=None,
+                is_require_penalty_coefficients=True,
+                is_random_initial_state=False,
+                policy_ids=['row_gen_alp'],
+                evaluation_proposal_spec=evaluation_proposal_spec,
+                penalty_coefficients_dir=penalty_coefficients_dir,
+            )
+        )
+    write_grouped_command_file(
+        results=all_records, num_groups=num_groups, dat_file=dat_file
+    )
+    return all_records
+
+
 def main():
     """Run the currently-active dataset-generation recipe."""
-    recipe_case_study_099_mixture_geometric_proposal_095_overtime_50_policy_evaluation()
+    recipe_toy_eval_proposal_comparison()
+    #recipe_case_study_099_mixture_geometric_proposal_095_overtime_50_policy_evaluation()
     #recipe_case_study_099_mixture_geometric_proposal_095_policy_evaluation()
 
 

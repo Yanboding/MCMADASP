@@ -130,7 +130,7 @@ def _normalize_penalty_training_init_state(init_state, sample_path_number):
 
 
 
-def generate_test_paths_and_init_state(test_envs, test_sample_path_num, warm_up_periods=0, num_periods=None, dat_file=None, num_groups=None, is_require_penalty_coefficients=True, is_random_initial_state=False, policy_ids=None, train_data_dir=None, warm_up_policy_id=None):
+def generate_test_paths_and_init_state(test_envs, test_sample_path_num, warm_up_periods=0, num_periods=None, dat_file=None, num_groups=None, is_require_penalty_coefficients=True, is_random_initial_state=False, policy_ids=None, train_data_dir=None, warm_up_policy_id=None, evaluation_proposal_spec=None, penalty_coefficients_dir=None):
     '''
     Inital state is considered as period 1. sample path will start from period 2.
 
@@ -154,6 +154,18 @@ def generate_test_paths_and_init_state(test_envs, test_sample_path_num, warm_up_
     and starts every other policy from the resulting per-path warm-up state,
     evaluating them on the post-warm-up tail only. This makes all policies
     start from the warm-up policy's steady state.
+
+    ``evaluation_proposal_spec`` optionally decouples the EVALUATION-path
+    proposal from the agent's own IS proposal: when given (a
+    ``build_proposal``-style spec dict), the post-warm-up tails and
+    ``period_weights`` are drawn from it while the embedded ``policy_specs``
+    keep the untouched agent proposal. When ``None`` the tails fall back to
+    the agent's spec (legacy coupled behavior).
+
+    ``penalty_coefficients_dir`` optionally points the trained-coefficient
+    lookup at another experiment's results folder (passed through as
+    ``folder_path``), so a new experiment name can reuse coefficients without
+    copying files or retraining.
     '''
     policy_ids = list(policy_ids or [])
     policy_id_set = set(policy_ids)
@@ -205,6 +217,7 @@ def generate_test_paths_and_init_state(test_envs, test_sample_path_num, warm_up_
                 experiment_name=experiment_name,
                 mutate_val=mutate_val,
                 sample_path_number=sample_path_number,
+                folder_path=penalty_coefficients_dir,
             )
             if loaded_coefficients is not None:
                 direct_coefficients = loaded_coefficients
@@ -277,14 +290,18 @@ def generate_test_paths_and_init_state(test_envs, test_sample_path_num, warm_up_
         sample_gen_args['stop_time_random_seed'] = env_args.get("stop_time_random_seed", 1) + 1001
         config_for_sample_path = get_config_by_type('infinite_custom', args=sample_gen_args)
         env_for_sample_path = config_for_sample_path.env
-        # Draw the post-warm-up evaluation tails from the SAME importance-sampling
-        # proposal used for penalty-coefficient training. Falls back to the
-        # target geometric horizon (``build_proposal(None) is None``) when no
-        # proposal is configured, keeping the legacy behaviour unchanged.
-        sample_path_proposal = build_proposal(
-            inner_agent_args.get('sample_path_length_proposal')
+        # Draw the post-warm-up evaluation tails from ``evaluation_proposal_spec``
+        # when given, else from the SAME importance-sampling proposal used for
+        # penalty-coefficient training. Falls back to the target geometric
+        # horizon (``build_proposal(None) is None``) when no proposal is
+        # configured, keeping the legacy behaviour unchanged.
+        eval_proposal_spec = (
+            evaluation_proposal_spec
+            if evaluation_proposal_spec is not None
+            else inner_agent_args.get('sample_path_length_proposal')
             or inner_agent_args.get('sample_path_proposal')
         )
+        sample_path_proposal = build_proposal(eval_proposal_spec)
         # Generate the whole evaluation batch directly from the proposal in a
         # single call. The proposal's stratified/QMC length sampling is defined
         # over the FULL sample size (e.g. a mixture deterministically assigns a
