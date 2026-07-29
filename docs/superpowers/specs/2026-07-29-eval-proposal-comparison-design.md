@@ -28,7 +28,7 @@ byte-identical `env_args` to `mixture_probability_toy_study`.
 | experiment_name | evaluation proposal spec | period_weights | notes |
 |---|---|---|---|
 | `toy_eval_proposal_geometric_099` | `{'type': 'geometric', 'discount_factor_proposal': 0.99}` | all 1 | unbiased plain-MC baseline, long paths |
-| `toy_eval_proposal_fixed_459` | `{'type': 'fixed', 'max_length': int(geom.ppf(0.99, 0.01))}` (= 459) | `0.99**(t-1)` | truncated-horizon estimate; ~1% tail weight dropped by design |
+| `toy_eval_proposal_fixed_459` | `{'type': 'fixed', 'max_length': int(geom.ppf(0.99, 0.01)) - 1}` (= 458) | `0.99**(t-1)`, t = 1..459 | truncated-horizon estimate over 459 decision periods; ~1% tail weight dropped by design |
 | `toy_eval_proposal_mixture_095_l01` | `{'type': 'mixture_geometric', 'target_discount_factor': 0.99, 'discount_factor_proposal': 0.95, 'lambda_0': 0.1}` | bounded in [1, 10] | unbiased IS, short paths |
 
 Per arm: 4096 evaluation paths, `warm_up_periods=0`, fixed initial state (no
@@ -36,8 +36,16 @@ randomization). All arms share the same arrival RNG seeds (env_args identical,
 seeds offset +1001 inside `generate_test_paths_and_init_state`), giving common
 random numbers across arms.
 
-The fixed length 459 is computed in code as `int(scipy.stats.geom.ppf(0.99,
-1 - 0.99))` with an assertion that it equals 459 — not hard-coded.
+The fixed horizon 459 is computed in code as `int(scipy.stats.geom.ppf(0.99,
+1 - 0.99))` with an assertion that it equals 459 — not hard-coded. The
+proposal itself uses `max_length = 459 - 1 = 458`: rolling a policy over a
+sampled tail of N arrivals visits N + 1 decision periods (the trailing period
+carries a stage cost but no arrival), and `_evaluation_period_weights`
+therefore computes N + 1 weights. `FixedLengthProposal(459)` would raise
+`ValueError` there (survival probability is 0 at period 460); the established
+`-1` convention (see `mutate_fixed_length_for_sample_path_length_proposal`)
+yields tails of 458 arrivals evaluated over exactly 459 weighted decision
+periods. Verified empirically before planning.
 
 ## Why decoupling is needed (current state)
 
@@ -118,8 +126,8 @@ separates the arms by directory with no changes.
 Unit tests (pytest, toy env, small path counts, e.g. 8 per arm):
 
 1. geometric-0.99 arm: `period_weights` all equal 1;
-2. fixed arm: every sampled path length equals 459 and weights equal
-   `0.99**(t-1)`;
+2. fixed arm: every sampled path has 458 arrivals and `period_weights` has
+   459 entries equal to `0.99**(t-1)`, t = 1..459;
 3. mixture arm: weights within `[1, 10]`;
 4. regression guard: calling `generate_test_paths_and_init_state` WITHOUT the
    new parameters produces records identical to the pre-change behavior;
