@@ -702,6 +702,28 @@ def run_mixture_probability_table(is_reuse=True, policy_id='approx_penalized_hin
     return table
 
 
+def report_eval_proposal_policy_costs(is_reuse=True, confidence=0.95):
+    """Report the policy cost of each evaluation-proposal arm."""
+    from experiments import get_config_by_type
+    for experiment_name in (
+        'toy_eval_proposal_fixed_459',
+        'toy_eval_proposal_geometric_099',
+        'toy_eval_proposal_mixture_095_l01',
+    ):
+        ser = SimulateEvaluationResult(
+            os.path.join('.', 'experiments', 'results', experiment_name),
+            '[0-9]*.jsonl',
+            get_config_by_type('toy').env,
+            is_reuse=is_reuse,
+        )
+        for (group_id, policy_id), stats in sorted(ser.policy_costs.items()):
+            print(
+                f"{experiment_name} | policy={policy_id}: "
+                f"{stats.mean:.2f} +/- {stats.half_window(confidence):.2f} "
+                f"(n={stats.n})"
+            )
+
+
 # I want to plot discount improvement
 if __name__ == "__main__":
     # from experiments import get_config_by_type
@@ -747,8 +769,9 @@ if __name__ == "__main__":
     # print(ser.overall_performance_table(gamma='0.99'))
     # print('Policy performance comparison table')
     # print(policy_performance_comparison_table(env, is_reuse=True))
-    print('Mixture probability table')
-    run_mixture_probability_table(is_reuse=False)
+    # print('Mixture probability table')
+    # run_mixture_probability_table(is_reuse=False)
+    report_eval_proposal_policy_costs()
     # print('gap_to_information_relaxation')
     # pprint(ser.gap_to_information_relaxation)
     # print('improvement')

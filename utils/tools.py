@@ -319,12 +319,7 @@ def acquire_grb_env(kwargs=None, verbose=False, wait=15):
                 print('Get one token...')
             return grb_env  # success
         except Exception as e:
-            if "All tokens currently in use" in str(e):
-                if verbose:
-                    print('Waiting...')
-                time.sleep(wait)  # back‑off and try again
-            else:
-                raise  # some other licence error
+            time.sleep(wait)
 
 def flatten(vars):
     return gp.hstack([item.reshape(-1) for item in vars])
