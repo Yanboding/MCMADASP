@@ -20,7 +20,8 @@ from param_generation.mutators import (
     mutate_overtime_cost,
     mutate_total_arrival_rate,
     mutate_type_1_treatment_pattern,
-    mutate_mixture_target_discount_factor_overtime_50
+    mutate_mixture_target_discount_factor_overtime_50,
+    mutate_mixture_target_discount_factor_overtime_5
 )
 
 EXPERIMENT_SPECS = {
@@ -158,6 +159,13 @@ EXPERIMENT_SPECS = {
             config_type='ejor',
             val_args=[0.1],
             mutate=mutate_mixture_target_discount_factor_overtime_50,
+            agent_mutate=mutate_mixture_geometric_proposal_lambda_0,
+        ),
+        ExperimentSpec(
+            name='case_study_099_mixture_geometric_proposal_095_overtime_5',
+            config_type='ejor',
+            val_args=[0.1],
+            mutate=mutate_mixture_target_discount_factor_overtime_5,
             agent_mutate=mutate_mixture_geometric_proposal_lambda_0,
         ),
         ExperimentSpec(

@@ -154,6 +154,16 @@ def mutate_mixture_target_discount_factor_overtime_50(env_args, val):
     env_args['discount_factor'] = MIXTURE_TARGET_DISCOUNT_FACTOR
     env_args['overtime_cost_by_day'] = 50
 
+def mutate_mixture_target_discount_factor_overtime_5(env_args, val):
+    """Pin the env discount factor to the mixture-proposal target (0.99).
+
+    The swept ``val`` (``lambda_0``) is intentionally ignored: the target
+    discount factor is held fixed so it matches the proposal's
+    ``target_discount_factor``.
+    """
+    env_args['discount_factor'] = MIXTURE_TARGET_DISCOUNT_FACTOR
+    env_args['overtime_cost_by_day'] = 5
+
 def mutate_mixture_geometric_proposal_lambda_0(agent_args, lambda_0):
     """Set a mixture-geometric IS proposal, sweeping the long-component mass.
 
