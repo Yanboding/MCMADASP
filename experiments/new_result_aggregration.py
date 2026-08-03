@@ -703,13 +703,28 @@ def run_mixture_probability_table(is_reuse=True, policy_id='approx_penalized_hin
 
 
 def report_eval_proposal_policy_costs(is_reuse=True, confidence=0.95):
-    """Report the policy cost of each evaluation-proposal arm."""
+    """LaTeX table of policy costs: one row per policy, one column per
+    evaluation-path proposal."""
     from experiments import get_config_by_type
-    for experiment_name in (
-        'toy_eval_proposal_fixed_459',
-        'toy_eval_proposal_geometric_099',
-        'toy_eval_proposal_mixture_095_l01',
-    ):
+    proposals = (
+        ('toy_eval_proposal_fixed_459',
+         '\\makecell{Fixed horizon\\\\(\\(459\\) periods)}'),
+        ('toy_eval_proposal_geometric_099',
+         '\\makecell{Geometric\\\\(\\(\\gamma_{\\text{proposal}} = 0.99\\))}'),
+        ('toy_eval_proposal_mixture_095_l01',
+         '\\makecell{Mixture geometric\\\\(\\(\\gamma_{\\text{proposal}} = 0.95\\), \\(\\lambda_0 = 0.1\\))}'),
+    )
+    policy_labels = {
+        'approx_penalized_hindsight': 'Penalized Hindsight',
+        'row_gen_alp': 'ALP',
+        'myopic': 'Myopic',
+    }
+
+    def fmt(value, decimals=0):
+        return f'{value:,.{decimals}f}'.replace(',', '{,}')
+
+    costs = {}
+    for experiment_name, _ in proposals:
         ser = SimulateEvaluationResult(
             os.path.join('.', 'experiments', 'results', experiment_name),
             '[0-9]*.jsonl',
@@ -717,11 +732,42 @@ def report_eval_proposal_policy_costs(is_reuse=True, confidence=0.95):
             is_reuse=is_reuse,
         )
         for (group_id, policy_id), stats in sorted(ser.policy_costs.items()):
-            print(
-                f"{experiment_name} | policy={policy_id}: "
-                f"{stats.mean:.2f} +/- {stats.half_window(confidence):.2f} "
-                f"(n={stats.n})"
-            )
+            costs.setdefault(policy_id, {})[experiment_name] = stats
+
+    rows = []
+    for policy_id, stats_by_experiment in sorted(costs.items()):
+        cells = [
+            f"\\({fmt(stats_by_experiment[name].mean)} \\pm {fmt(stats_by_experiment[name].half_window(confidence), 1)}\\)"
+            for name, _ in proposals
+        ]
+        rows.append(f"{policy_labels.get(policy_id, policy_id)} & " + ' & '.join(cells) + " \\\\")
+    body = '\n'.join(rows)
+    header = '\n'.join(f"& {label}" for _, label in proposals)
+
+    table = f"""\\begin{{table}}[H]
+\\centering
+\\begin{{threeparttable}}
+\\caption{{Policy-cost estimates under the three evaluation-path proposals.}}
+\\label{{tab:eval_proposal_policy_costs}}
+\\small
+\\setlength{{\\tabcolsep}}{{8pt}}
+\\renewcommand{{\\arraystretch}}{{1.15}}
+\\begin{{tabular}}{{@{{}}lccc@{{}}}}
+\\toprule
+Policy
+{header} \\\\
+\\midrule
+{body}
+\\bottomrule
+\\end{{tabular}}
+\\begin{{tablenotes}}[flushleft]
+\\footnotesize
+\\item \\textit{{Note.}} Values are discounted-total-cost sample means \\(\\pm\\) {round(confidence * 100)}\\% confidence-interval half-widths under each proposal's importance-sampling period weights, over 4{{,}}096 evaluation sample paths per proposal. The instance uses 50\\% initial occupancy; other inputs are given in Table~\\ref{{tab:treatment_pattern_and_penalty_toy_study_1}}.
+\\end{{tablenotes}}
+\\end{{threeparttable}}
+\\end{{table}}"""
+    print(table)
+    return table
 
 
 # I want to plot discount improvement

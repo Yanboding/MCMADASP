@@ -168,6 +168,27 @@ EXPERIMENT_SPECS = {
             mutate=mutate_mixture_target_discount_factor_overtime_5,
             agent_mutate=mutate_mixture_geometric_proposal_lambda_0,
         ),
+        # Saure EJOR case-study pair (spec:
+        # docs/superpowers/specs/2026-08-02-saure-ejor-case-study-design.md).
+        # Both use the ejor base env (overtime 100); the mutator pins the
+        # discount factor to the mixture target 0.99 so the pair's env_args are
+        # identical (shared warm-up prefixes + one shared ALP). val=0.1 is the
+        # mutate_val the trained overtime-100 penalty coefficients are keyed by,
+        # and doubles as lambda_0 for the steady-state experiment's mixture
+        # proposal.
+        ExperimentSpec(
+            name='case_study_ejor_replication',
+            config_type='ejor',
+            val_args=[0.1],
+            mutate=mutate_mixture_target_discount_factor,
+        ),
+        ExperimentSpec(
+            name='case_study_ejor_alp_steady_state',
+            config_type='ejor',
+            val_args=[0.1],
+            mutate=mutate_mixture_target_discount_factor,
+            agent_mutate=mutate_mixture_geometric_proposal_lambda_0,
+        ),
         ExperimentSpec(
             name='base_toy_study',
             config_type='toy',

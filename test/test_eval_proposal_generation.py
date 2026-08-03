@@ -66,21 +66,42 @@ class TestEvaluationProposalDecoupling(unittest.TestCase):
                 MIXTURE_SPEC,
             )
 
-    def test_geometric_target_eval_proposal_weights_are_all_one(self):
+    def test_geometric_target_eval_proposal_weights_discount_after_first(self):
+        # The rollout visits L+1 decision periods for an L-arrival tail
+        # (trailing period: stage cost, no arrival), so period s is visited iff
+        # L >= s-1 and its unbiased weight divides by P(L >= s-1). Under the
+        # target-geometric proposal that gives 1 for s=1 and gamma afterwards.
         records = generate({'type': 'geometric', 'discount_factor_proposal': 0.99})
         for record in records:
             self.assertEqual(
                 len(record['period_weights']), len(record['sample_path']) + 1
             )
-            for weight in record['period_weights']:
-                self.assertEqual(weight, 1.0)
+            self.assertAlmostEqual(record['period_weights'][0], 1.0, places=12)
+            for weight in record['period_weights'][1:]:
+                self.assertAlmostEqual(weight, 0.99, places=12)
 
     def test_mixture_eval_proposal_weights_bounded(self):
+        # Shifted weights: w_1 = 1; for s >= 2, gamma <= w_s <= gamma / lambda_0.
         records = generate(MIXTURE_SPEC)
         for record in records:
-            for weight in record['period_weights']:
-                self.assertGreaterEqual(weight, 1.0 - 1e-12)
-                self.assertLessEqual(weight, 10.0 + 1e-9)
+            self.assertAlmostEqual(record['period_weights'][0], 1.0, places=12)
+            for weight in record['period_weights'][1:]:
+                self.assertGreaterEqual(weight, 0.99 - 1e-12)
+                self.assertLessEqual(weight, 0.99 / 0.1 + 1e-9)
+
+    def test_mixture_eval_proposal_weights_match_shifted_closed_form(self):
+        gamma, q, lambda_0 = 0.99, 0.95, 0.1
+        records = generate(MIXTURE_SPEC)
+        for record in records:
+            weights = record['period_weights']
+            self.assertEqual(len(weights), len(record['sample_path']) + 1)
+            for index, observed in enumerate(weights):
+                s = index + 1
+                survival = (
+                    1.0 if s == 1
+                    else lambda_0 * gamma ** (s - 2) + (1 - lambda_0) * q ** (s - 2)
+                )
+                self.assertAlmostEqual(observed, gamma ** (s - 1) / survival, places=12)
 
     def test_none_falls_back_to_agent_proposal_spec(self):
         # Regression guard: omitting evaluation_proposal_spec must reproduce the
@@ -215,7 +236,10 @@ class TestEvalProposalComparisonRecipe(unittest.TestCase):
         for saved in by_arm['toy_eval_proposal_fixed_459']:
             self.assertEqual(len(saved['sample_path']), 458)
         for saved in by_arm['toy_eval_proposal_geometric_099']:
-            self.assertTrue(all(w == 1.0 for w in saved['period_weights']))
+            weights = saved['period_weights']
+            self.assertAlmostEqual(weights[0], 1.0, places=12)
+            for weight in weights[1:]:
+                self.assertAlmostEqual(weight, 0.99, places=12)
 
 
 if __name__ == '__main__':

@@ -52,6 +52,17 @@ def _pin_sampling_seeds(env_args, seed):
     env_args['env_random_seed'] = seed
 
 
+def offset_sample_generation_seeds(env_args, seed_offset):
+    """Return a deepcopy of ``env_args`` whose arrival/stop-time/env seeds are
+    shifted by ``seed_offset``, so path generation draws from a random stream
+    disjoint from training (and from any other offset)."""
+    sample_gen_args = copy.deepcopy(env_args)
+    sample_gen_args['env_random_seed'] = env_args.get('env_random_seed', 0) + seed_offset
+    sample_gen_args['arrival_random_seed'] = env_args.get('arrival_random_seed', 42) + seed_offset
+    sample_gen_args['stop_time_random_seed'] = env_args.get('stop_time_random_seed', 1) + seed_offset
+    return sample_gen_args
+
+
 def _make_sampler_env(base_env_args, init_state_rng):
     """Build a sampler env with a *different* env_random_seed so the
     initial-state RNG is independent of the (pinned) sample-path RNGs."""
@@ -70,24 +81,31 @@ def _evaluation_period_weights(proposal, discount_factor, tail_length):
     horizon, or ``None`` when no reweighting is needed.
 
     When ``proposal`` is ``None`` the tail was drawn from the target geometric
-    horizon (proposal == target), so every weight is 1 and we return ``None`` to
-    keep the evaluation byte-identical to the non-importance-sampling path.
+    horizon by the legacy path and no reweighting is applied, so we return
+    ``None`` to keep the evaluation byte-identical to the
+    non-importance-sampling path.
 
-    Otherwise the tail was drawn from ``proposal`` (a different length
-    distribution), so period ``t`` must be reweighted by
-    ``gamma ** (t - 1) / P_proposal(L >= t)``. Rolling the policy over
-    ``tail_length`` sampled arrivals visits ``tail_length + 1`` decision periods
-    (the trailing period carries a stage cost but no arrival), so we return one
-    weight per visited period.
+    Otherwise the tail was drawn from ``proposal``. Rolling the policy over
+    ``tail_length`` sampled arrivals visits ``tail_length + 1`` decision
+    periods (the trailing period carries a stage cost but no arrival), so
+    period ``s`` is visited iff the sampled length ``L >= s - 1`` and its
+    unbiased weight is ``gamma ** (s - 1) / P_proposal(L >= s - 1)``. In terms
+    of the proposal's per-period ratios ``u_t = gamma ** (t - 1) / P(L >= t)``
+    this is ``w_1 = 1`` and ``w_s = gamma * u_{s-1}`` for ``s >= 2``; deriving
+    the weights from ``period_likelihood_ratios`` keeps its validation (gamma
+    match, positive survival). For a fixed-length proposal the weights are
+    unchanged (``gamma ** (s - 1)``). The agent-side use of
+    ``period_likelihood_ratios`` intentionally differs: its scenarios weight
+    exactly ``L`` periods, for which dividing by ``P(L >= s)`` is correct.
     """
     if proposal is None:
         return None
     num_periods = tail_length + 1
-    weights = proposal.period_likelihood_ratios(
+    unshifted = proposal.period_likelihood_ratios(
         target_discount_factor=discount_factor,
         lengths=[num_periods],
     )[0]
-    return [float(w) for w in weights]
+    return [1.0] + [float(discount_factor * w) for w in unshifted[:-1]]
 
 
 def _normalize_penalty_training_init_state(init_state, sample_path_number):
@@ -130,7 +148,7 @@ def _normalize_penalty_training_init_state(init_state, sample_path_number):
 
 
 
-def generate_test_paths_and_init_state(test_envs, test_sample_path_num, warm_up_periods=0, num_periods=None, dat_file=None, num_groups=None, is_require_penalty_coefficients=True, is_random_initial_state=False, policy_ids=None, train_data_dir=None, warm_up_policy_id=None, evaluation_proposal_spec=None, penalty_coefficients_dir=None):
+def generate_test_paths_and_init_state(test_envs, test_sample_path_num, warm_up_periods=0, num_periods=None, dat_file=None, num_groups=None, is_require_penalty_coefficients=True, is_random_initial_state=False, policy_ids=None, train_data_dir=None, warm_up_policy_id=None, evaluation_proposal_spec=None, penalty_coefficients_dir=None, warm_up_paths=None, sample_gen_seed_offset=1001):
     '''
     Inital state is considered as period 1. sample path will start from period 2.
 
@@ -166,6 +184,17 @@ def generate_test_paths_and_init_state(test_envs, test_sample_path_num, warm_up_
     lookup at another experiment's results folder (passed through as
     ``folder_path``), so a new experiment name can reuse coefficients without
     copying files or retraining.
+
+    ``warm_up_paths`` optionally supplies one pre-drawn warm-up arrival prefix
+    (shape ``(warm_up_periods, num_types)``) per sample path. Use it to make
+    several experiments share byte-identical warm-up prefixes while their
+    post-warm-up tails are still drawn per experiment. Only supported when
+    ``num_periods`` is None.
+
+    ``sample_gen_seed_offset`` shifts the arrival/stop-time/env seeds used for
+    path generation (default 1001, the historical offset). Give different
+    experiments different offsets so their evaluation tails come from disjoint
+    random streams.
     '''
     policy_ids = list(policy_ids or [])
     policy_id_set = set(policy_ids)
@@ -174,6 +203,24 @@ def generate_test_paths_and_init_state(test_envs, test_sample_path_num, warm_up_
             f"warm_up_policy_id '{warm_up_policy_id}' must be one of the "
             f"evaluated policy_ids {policy_ids}."
         )
+    if warm_up_paths is not None:
+        if num_periods is not None:
+            raise ValueError(
+                "warm_up_paths is only supported on the proposal-driven branch "
+                "(num_periods=None)."
+            )
+        if len(warm_up_paths) != test_sample_path_num:
+            raise ValueError(
+                "warm_up_paths must have length test_sample_path_num "
+                f"({test_sample_path_num}); got {len(warm_up_paths)}."
+            )
+        warm_up_paths = [np.asarray(path) for path in warm_up_paths]
+        for index, path in enumerate(warm_up_paths):
+            if len(path) != warm_up_periods:
+                raise ValueError(
+                    f"warm_up_paths[{index}] has {len(path)} periods but "
+                    f"warm_up_periods={warm_up_periods}."
+                )
     results = []
     for (env_uid, experiment_name, mutate_val), variant in test_envs.items():
         env_args = variant['env_args']
@@ -284,10 +331,10 @@ def generate_test_paths_and_init_state(test_envs, test_sample_path_num, warm_up_
         # for this variant so each saved record carries everything the runner
         # needs to instantiate its agents.
         max_length = 0
-        sample_gen_args = copy.deepcopy(env_args)
-        sample_gen_args["env_random_seed"] = env_args.get("env_random_seed", 0) + 1001 # make sure the random seed for sample path generation is different from the random seed for training ALP
-        sample_gen_args['arrival_random_seed'] = env_args.get("arrival_random_seed", 42) + 1001 # Seed for sample path generation
-        sample_gen_args['stop_time_random_seed'] = env_args.get("stop_time_random_seed", 1) + 1001
+        # Path-generation seeds are offset from the training seeds so evaluation
+        # paths stay independent of the ALP/penalty training paths; distinct
+        # offsets keep different experiments' tails independent of each other.
+        sample_gen_args = offset_sample_generation_seeds(env_args, sample_gen_seed_offset)
         config_for_sample_path = get_config_by_type('infinite_custom', args=sample_gen_args)
         env_for_sample_path = config_for_sample_path.env
         # Draw the post-warm-up evaluation tails from ``evaluation_proposal_spec``
@@ -310,9 +357,9 @@ def generate_test_paths_and_init_state(test_envs, test_sample_path_num, warm_up_
         # a time (the previous ``size=1`` call) rounds ``lambda_0 * 1`` down to
         # zero long paths, collapsing the mixture onto its short component and
         # shrinking the mean horizon. ``sample_arrival_paths`` draws from
-        # ``env_for_sample_path``'s arrival RNG, whose seed is offset by +1001
-        # from the training seed, so the evaluation paths stay independent of the
-        # training sample paths.
+        # ``env_for_sample_path``'s arrival RNG, whose seeds are offset by
+        # ``sample_gen_seed_offset`` from the training seeds, so the evaluation
+        # paths stay independent of the training sample paths.
         proposal_tails = None
         if num_periods is None and sample_path_proposal is not None:
             proposal_tails, _ = sample_path_proposal.sample_arrival_paths(
@@ -324,7 +371,11 @@ def generate_test_paths_and_init_state(test_envs, test_sample_path_num, warm_up_
             init_state = env_for_sample_path.generate_initial_state() if ('init_state' not in env_args.get('reset_params', {})) or is_random_initial_state else env_args['reset_params']['init_state']
             init_state = tuple(np.array(item).tolist() for item in init_state)
             if num_periods is None:
-                warm_up_path = env_for_sample_path.reset_arrivals(stop_time=warm_up_periods)
+                warm_up_path = (
+                    warm_up_paths[path_index]
+                    if warm_up_paths is not None
+                    else env_for_sample_path.reset_arrivals(stop_time=warm_up_periods)
+                )
                 if proposal_tails is not None:
                     sampled_path = proposal_tails[path_index]
                 else:
