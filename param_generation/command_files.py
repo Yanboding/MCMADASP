@@ -24,15 +24,17 @@ def _write_lines(lines, dat_file):
     return lines
 
 
-def write_grouped_command_file(results, num_groups=None, dat_file=None):
+def write_grouped_command_file(results, num_groups=None, dat_file=None, start_index=1):
     """Split ``results`` into ``num_groups`` strided groups, one command each.
 
     When ``num_groups`` is falsy, each result becomes its own group. Every
     command's ``--params`` payload is the JSON-encoded list of its group.
+    ``start_index`` sets the first command's line id, so several blocks of
+    groups can be concatenated into one dat file with continuous ids.
     """
     n = num_groups if num_groups and num_groups > 0 else len(results)
     groups = [results[i::n] for i in range(min(n, len(results)))]
-    lines = [_command_line(line_index, group) for line_index, group in enumerate(groups, start=1)]
+    lines = [_command_line(line_index, group) for line_index, group in enumerate(groups, start=start_index)]
     return _write_lines(lines, dat_file)
 
 

@@ -9,6 +9,7 @@ runs the recipe that is currently active for the project; switch the call in
 import os
 import shutil
 from pprint import pprint
+import time
 
 from scipy.stats import geom
 
@@ -515,7 +516,16 @@ def recipe_saure_ejor_case_study(
     (offset 3003); the experiments' tails use offsets 1001/2002, so tails are
     independent across experiments while warm-ups coincide. All ``2 * test_sample_path_num`` records are written into ONE grouped
     ``dat_file`` (default ``table.dat``); ``run.py`` routes each record to its
-    own experiment results folder via ``experiment_name``.
+    own experiment results folder via ``experiment_name``. The file is
+    SEGMENTED: lines ``1..num_groups//2`` hold experiment 1 only (with
+    ``skip_information_relaxation=True`` — policy costs only), the remaining
+    lines experiment 2 only, so cluster jobs can be resourced per experiment.
+
+    For a quick local smoke run pass a small ``test_sample_path_num``
+    explicitly (e.g. ``recipe_saure_ejor_case_study(test_sample_path_num=4,
+    dat_file='table_smoke.dat')``) instead of editing the default: a bare
+    ``python generate_params.py`` must keep producing the full 4096-path
+    deliverable.
     """
     shared_coefficients = load_trained_coefficients_from_folder(
         experiment_name='case_study_099_mixture_geometric_proposal_095',
@@ -558,8 +568,10 @@ def recipe_saure_ejor_case_study(
     steady_state_envs = build_variation_test_env(
         EXPERIMENT_SPECS['case_study_ejor_alp_steady_state']
     )
+    start = time.time()
     (replication_variant,) = replication_envs.values()
     (steady_state_variant,) = steady_state_envs.values()
+    print(time.time() - start, 'seconds to build the test envs')
     if replication_variant['env_args'] != steady_state_variant['env_args']:
         raise RuntimeError(
             'The Saure EJOR specs must share identical env_args so the warm-up '
@@ -627,11 +639,29 @@ def recipe_saure_ejor_case_study(
         warm_up_paths=warm_up_paths,
         sample_gen_seed_offset=2002,
     )
-    write_grouped_command_file(
-        results=replication_records + steady_state_records,
-        num_groups=num_groups,
-        dat_file=dat_file,
+    # Experiment 1 reports policy costs only: its information-relaxation
+    # bounds are ~750-period direct models (four per record) that dominate the
+    # runtime and are not part of the replication comparison.
+    for record in replication_records:
+        record['skip_information_relaxation'] = True
+
+    # Segmented layout in ONE dat file: the first num_groups//2 lines hold
+    # experiment 1 only, the rest experiment 2 only, so cluster jobs can be
+    # resourced per experiment (experiment 1 lines never build the
+    # 256-scenario hindsight solver and thus need only one Gurobi token).
+    replication_lines = write_grouped_command_file(
+        results=replication_records, num_groups=num_groups // 2, dat_file=None
     )
+    steady_state_lines = write_grouped_command_file(
+        results=steady_state_records,
+        num_groups=num_groups - num_groups // 2,
+        dat_file=None,
+        start_index=num_groups // 2 + 1,
+    )
+    lines = replication_lines + steady_state_lines
+    with open(dat_file, 'w') as f:
+        f.writelines(lines)
+    print(f"Saved {len(lines)} commands to {dat_file}")
     return replication_records, steady_state_records
 
 

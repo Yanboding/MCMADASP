@@ -216,8 +216,14 @@ class ALPRowGenerationAgent(InfiniteRTAgent):
             if not solve_and_handle_errors(policy_model, verbose=verbose):
                 raise RuntimeError("Master model optimal solution not found")
             # ---------- 8. return ----------
-            action = self.get_solution(action_var, is_final=True)
-            return policy_model.ObjVal, action, {}
+            advance_scheduling_decision, _ = self.get_solution(action_var, is_final=True)
+            # Regular-first repair: the trained value function prices a free
+            # regular slot at ~ the discounted overtime cost (U_j ~
+            # overtime_cost * gamma**j with V_j ~ 0), so the LP ties between
+            # booking a new slot as regular or overtime and Gurobi may return
+            # a vertex that books overtime while regular capacity remains.
+            overtime_decision = self.regular_first_overtime(state, advance_scheduling_decision)
+            return policy_model.ObjVal, (advance_scheduling_decision, overtime_decision), {}
 
 if "__main__" == __name__:
     from experiments import get_config_by_type

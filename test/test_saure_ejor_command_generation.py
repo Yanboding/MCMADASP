@@ -255,21 +255,27 @@ class TestSaureEjorRecipe(unittest.TestCase):
             with open(os.path.join(tmp_dir, 'table.dat')) as f:
                 lines = f.readlines()
             self.assertEqual(len(lines), 2)
-            parsed = []
+            parsed_lines = []
             for line in lines:
                 payload = line[line.index("'") + 1:line.rindex("'")]
-                parsed.extend(json.loads(payload))
+                parsed_lines.append(json.loads(payload))
+            parsed = [record for group in parsed_lines for record in group]
             self.assertEqual(len(parsed), 8)
-            by_experiment = {}
-            for record in parsed:
-                by_experiment.setdefault(record['experiment_name'], []).append(record)
-            self.assertEqual(
-                {name: len(items) for name, items in by_experiment.items()},
-                {
-                    'case_study_ejor_replication': 4,
-                    'case_study_ejor_alp_steady_state': 4,
-                },
-            )
+            # Segmented layout with continuous line indices: the first
+            # num_groups//2 lines hold experiment 1 only (bounds skipped), the
+            # remaining lines experiment 2 only (bounds kept).
+            self.assertTrue(lines[0].startswith('1 '))
+            self.assertTrue(lines[1].startswith('2 '))
+            self.assertTrue(all(
+                record['experiment_name'] == 'case_study_ejor_replication'
+                and record['skip_information_relaxation'] is True
+                for record in parsed_lines[0]
+            ))
+            self.assertTrue(all(
+                record['experiment_name'] == 'case_study_ejor_alp_steady_state'
+                and 'skip_information_relaxation' not in record
+                for record in parsed_lines[1]
+            ))
 
             expected_weights = [0.99 ** t for t in range(5)]
             for rep, steady in zip(replication, steady_state):

@@ -24,6 +24,20 @@ class InfiniteRTAgent:
         self.state_var_counter = 0
         self.action_var_counter = 0
 
+    def regular_first_overtime(self, state, advance_scheduling_decision):
+        """Canonical regular-first overtime split for a scheduling decision:
+        overtime only for the load beyond regular capacity (the same formula
+        ``env.valid_actions`` uses). Repairs optimizer vertices that book
+        overtime while regular capacity remains (value-function or penalty
+        terms can make the two splits tie); the repair only reduces overtime,
+        so it is always feasible and never increases the realized cost."""
+        new_booking_slots = self.env.convert_action_to_booking_slots(advance_scheduling_decision)
+        regular_bookings = np.asarray(state[0])
+        return np.maximum(
+            np.round(regular_bookings + new_booking_slots - self.env.regular_capacity).astype(int),
+            0,
+        )
+
     def get_solution(self, action_var, is_final=False):
         x_var, y_var = action_var
         if is_final:

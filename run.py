@@ -496,7 +496,8 @@ def evaluate_policy_costs_with_information_relaxation(uid,
                                                       job_id,
                                                       generating_function_spec,
                                                       period_weights=None,
-                                                      warm_up_policy_id=None):
+                                                      warm_up_policy_id=None,
+                                                      skip_information_relaxation=False):
     '''
     This function evaluates the costs of different policies and their gaps to the information relaxation lower bounds.
 
@@ -511,6 +512,12 @@ def evaluate_policy_costs_with_information_relaxation(uid,
     ``costs``/``penalties``/``scheduled_patients``/``overtime`` trajectory
     (shared warm-up prefix + the policy's own tail), so aggregation can slice
     by ``warm_up_periods`` uniformly across all policies.
+
+    ``skip_information_relaxation=True`` skips building and solving the two
+    information-relaxation lower bounds entirely (each is a direct model over
+    the full evaluation tail — the dominant cost for long tails); the saved
+    records carry ``None`` in the four bound/gap fields. Policy costs are
+    unaffected.
     '''
     init_state = tuple(np.array(item) for item in init_state)
     sample_path = np.array(sample_path)
@@ -524,13 +531,17 @@ def evaluate_policy_costs_with_information_relaxation(uid,
     # and the penalty accounting on each executed trajectory.
     generating_function_spec = _normalize_generating_function_spec(generating_function_spec)
     policy_costs_generating_function = _build_generating_function(env=env, spec=generating_function_spec)
-    zero_lowerbound_instance, penalized_lowerbound_instance = _build_lowerbound_instances(
-        env, generating_function_spec, grb_env, grb_sub_envs)
+    zero_lowerbound_instance = penalized_lowerbound_instance = None
+    if not skip_information_relaxation:
+        zero_lowerbound_instance, penalized_lowerbound_instance = _build_lowerbound_instances(
+            env, generating_function_spec, grb_env, grb_sub_envs)
 
     # With a shared warm-up state every policy evaluates the bounds at the same
     # state, so memoize them instead of re-solving identical problems.
     bounds_by_state = {}
     def bounds_at(state):
+        if skip_information_relaxation:
+            return None, None
         key = iter_to_tuple(state)
         if key not in bounds_by_state:
             bounds_by_state[key] = _information_relaxation_bounds(
@@ -554,8 +565,8 @@ def evaluate_policy_costs_with_information_relaxation(uid,
             **base_record,
             'policy_id': 'information_relaxation_only',
             'agent_name': 'information_relaxation_only',
-            'zero_information_relaxation_cost': float(zero_cost),
-            'penalized_information_relaxation_cost': float(penalized_cost),
+            'zero_information_relaxation_cost': None if zero_cost is None else float(zero_cost),
+            'penalized_information_relaxation_cost': None if penalized_cost is None else float(penalized_cost),
             'gap_to_zero_information_relaxation': 0.0,
             'gap_to_penalized_information_relaxation': 0.0,
             'warmup_state': tuple(np.array(item).tolist() for item in init_state),
@@ -595,10 +606,10 @@ def evaluate_policy_costs_with_information_relaxation(uid,
         zero_cost, penalized_cost = bounds_at(warmup_state)
         policy_result.update({
             **base_record,
-            'zero_information_relaxation_cost': float(zero_cost),
-            'penalized_information_relaxation_cost': float(penalized_cost),
-            'gap_to_zero_information_relaxation': float(policy_result['total_cost'] - zero_cost),
-            'gap_to_penalized_information_relaxation': float(policy_result['penalized_cost'] - penalized_cost),
+            'zero_information_relaxation_cost': None if zero_cost is None else float(zero_cost),
+            'penalized_information_relaxation_cost': None if penalized_cost is None else float(penalized_cost),
+            'gap_to_zero_information_relaxation': None if zero_cost is None else float(policy_result['total_cost'] - zero_cost),
+            'gap_to_penalized_information_relaxation': None if penalized_cost is None else float(policy_result['penalized_cost'] - penalized_cost),
         })
         _append_jsonl_record(output_file, policy_result)
 

@@ -746,11 +746,18 @@ class ApproxQAgent(InfiniteRTAgent):
                     max_workers=None,
                     verbose=False):
         if self.solver_name == 'approx_Q':
-            return self.approx_Q_solve(state, t, action=action, verbose=verbose)
+            obj, solved_action, info = self.approx_Q_solve(state, t, action=action, verbose=verbose)
         elif self.solver_name == 'approx_penalized_hindsight':
-            return self.hindsight_solve(state, t, action=action, tol=tol, max_iterations=max_iterations, use_pareto_cuts=use_pareto_cuts, pareto_epsilon=pareto_epsilon, core_alpha=core_alpha, parallel=parallel, max_workers=max_workers, verbose=verbose)
+            obj, solved_action, info = self.hindsight_solve(state, t, action=action, tol=tol, max_iterations=max_iterations, use_pareto_cuts=use_pareto_cuts, pareto_epsilon=pareto_epsilon, core_alpha=core_alpha, parallel=parallel, max_workers=max_workers, verbose=verbose)
         else:
             raise ValueError(f"Unsupported solver_name: {self.solver_name}")
+        advance_scheduling_decision, _ = solved_action
+        # Regular-first repair (see InfiniteRTAgent.regular_first_overtime):
+        # the penalty terms in the (penalized) hindsight objective can tie or
+        # even favour overtime while regular capacity remains; the executed
+        # action must never do so.
+        overtime_decision = self.regular_first_overtime(state, advance_scheduling_decision)
+        return obj, (advance_scheduling_decision, overtime_decision), info
     
 
 if __name__ == '__main__':

@@ -100,9 +100,10 @@ class AlpSteadyStateWarmupTest(unittest.TestCase):
         os.chdir(self._old_cwd)
         self._tmpdir.cleanup()
 
-    def _evaluate(self, warm_up_policy_id, policy_ids=('approx_penalized_hindsight', 'row_gen_alp', 'myopic')):
+    def _evaluate(self, warm_up_policy_id, policy_ids=('approx_penalized_hindsight', 'row_gen_alp', 'myopic'), **extra):
         return run.evaluate_policy_costs_with_information_relaxation(
             uid='uid-test',
+            **extra,
             experiment_name='unit_test_alp_warmup',
             mutate_val=0.5,
             init_state=([[1, 1], [1, 1]], [0, 0], [4, 3]),
@@ -174,6 +175,23 @@ class AlpSteadyStateWarmupTest(unittest.TestCase):
     def test_unknown_warm_up_policy_raises(self):
         with self.assertRaises(ValueError):
             self._evaluate('row_gen_alp', policy_ids=('myopic',))
+
+    def test_skip_information_relaxation_skips_bounds_and_writes_none(self):
+        summary = self._evaluate('row_gen_alp', skip_information_relaxation=True)
+        self.assertEqual(len(summary), 3)
+        # The two lower-bound solver instances are never even constructed.
+        self.assertEqual(_FakeLowerBoundAgent.instances, [])
+        output_file = os.path.join(
+            'experiments', 'results', 'unit_test_alp_warmup', 'unittest.jsonl'
+        )
+        with open(output_file) as f:
+            rows = [json.loads(line) for line in f if line.strip()]
+        self.assertEqual(len(rows), 3)
+        for row in rows:
+            self.assertIsNone(row['zero_information_relaxation_cost'])
+            self.assertIsNone(row['penalized_information_relaxation_cost'])
+            self.assertIsNone(row['gap_to_zero_information_relaxation'])
+            self.assertIsNone(row['gap_to_penalized_information_relaxation'])
 
     def test_legacy_mode_unchanged_without_warm_up_policy(self):
         self._evaluate(None)
