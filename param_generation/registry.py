@@ -21,7 +21,8 @@ from param_generation.mutators import (
     mutate_total_arrival_rate,
     mutate_type_1_treatment_pattern,
     mutate_mixture_target_discount_factor_overtime_50,
-    mutate_mixture_target_discount_factor_overtime_5
+    mutate_mixture_target_discount_factor_overtime_5,
+    mutate_sample_path_number_mixture_geometric_l01,
 )
 
 EXPERIMENT_SPECS = {
@@ -153,6 +154,17 @@ EXPERIMENT_SPECS = {
             val_args=[0.1],
             mutate=mutate_mixture_target_discount_factor,
             agent_mutate=mutate_mixture_geometric_proposal_lambda_0,
+        ),
+        # Scenario-count sweep for the 0.99-target case study (mixture-
+        # geometric proposal, lambda_0 = 0.1 fixed): how does the Benders
+        # scenario count drive the per-iteration 95% CI of the subproblem
+        # objectives reported during training? val = sample_path_number.
+        ExperimentSpec(
+            name='case_study_099_scenario_number',
+            config_type='ejor',
+            val_args=[64, 128, 256, 512],
+            mutate=mutate_mixture_target_discount_factor,
+            agent_mutate=mutate_sample_path_number_mixture_geometric_l01,
         ),
         ExperimentSpec(
             name='case_study_099_mixture_geometric_proposal_095_overtime_50',

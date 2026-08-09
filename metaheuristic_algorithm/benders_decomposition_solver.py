@@ -353,27 +353,25 @@ class SubproblemWorker:
 
 
 class BendersDecompositionSolver:
-    """
-    Bender's decomposition solver for two-stage stochastic programs.
-    The master problem is built by master_builder_fn, and the subproblems
-    are built by subproblem_builder_fn.
+    """Benders decomposition for two-stage stochastic programs.
+
+    The caller builds the master model and one ``SubproblemWorker`` per
+    scenario; this class only runs the cutting-plane loop.
 
     Args:
-        master_builder_fn: function() -> (gp.Model, list of gp.Var)
-            Builds the master problem and returns it along with the action variables.
-        subproblem_builder_fn: function() -> (gp.Model, list of gp.Constr)
-            Builds a subproblem and returns it along with the linking constraints.
-        subproblem_builder_args: dict
-            Arguments to pass to subproblem_builder_fn.
-        num_subproblems: int
-            Number of subproblems (scenarios).
-        sense: GRB.MINIMIZE or GRB.MAXIMIZE
-        tol: float
-            Tolerance for convergence.
-        max_iter: int
-            Maximum number of Bender iterations.
-        verbose: bool
-            Whether to print detailed logs.
+        master_model: gp.Model with first-stage variables and objective
+            ``imm_cost + mean(theta_vars)`` already set.
+        workers: list of SubproblemWorker, one per scenario, indexed so
+            that ``workers[i].subproblem_id == i`` matches ``theta_vars[i]``.
+        imm_cost: first-stage cost expression on the master (or a float
+            for a constant first stage).
+        theta_vars: MVar of per-scenario epigraph variables.
+        action_vars: MVar of first-stage action variables referenced by the
+            subproblem linking constraints.
+
+    Entry points: ``solve`` (iterative cutting-plane loop with optional
+    checkpointing, cut purging, Pareto cuts) and ``solve_with_callback``
+    (single MIP solve injecting cuts lazily at each incumbent).
     """
 
     def __init__(self, master_model, workers, imm_cost, theta_vars, action_vars):
@@ -385,67 +383,268 @@ class BendersDecompositionSolver:
         # Lazily-created |action| epigraph variables for the min-norm
         # optimal-face re-solve (see _min_norm_master_action).
         self._action_abs_vars = None
+        # Purge bookkeeping; solve() re-initializes these per call. Set here
+        # so _register_cut is safe to reach before/outside solve().
+        self._cut_purge_enabled = False
+        self._cut_registry = []
+        self._latest_cut_by_scenario = {}
 
-    def _register_cut(self, constr, record, iteration):
-        if not self._cut_purge_enabled:
-            return
-        # Cuts built from MVar expressions come back as 0-d/1-element MConstr;
-        # bulk getAttr/remove need the scalar Constr.
-        if hasattr(constr, 'tolist'):
-            constr = constr.tolist()
-        while isinstance(constr, (list, tuple)):
-            constr = constr[0]
-        entry = {'constr': constr, 'record': record, 'last_active': iteration}
-        self._cut_registry.append(entry)
-        if record['kind'] == 'optimality':
-            self._latest_cut_by_scenario[record['scenario_id']] = entry
+    # ---- Public API ----
 
-    def _update_cut_activity(self, iteration, slack_tol):
-        """Reset the purge clock of cuts tight at the current master solution.
+    def solve(self, 
+              init_solution=None,
+              is_hard_bound=False,
+              tol=1e-6,
+              max_iter=150,
+              use_pareto_cuts=False,
+              pareto_epsilon=1e-4,
+              core_alpha=None,
+              verbose=False,
+              parallel=True,
+              max_workers=None,
+              checkpoint_path=None,
+              resume_checkpoint_path=None,
+              min_norm_action=False,
+              purge_after=None,
+              purge_slack_tol=1e-6):
+        info = {}
+        lower_bound = -GRB.INFINITY
+        upper_bound = GRB.INFINITY
+        core_point = None  # For Pareto cuts; initialized after the first master solve.
+        is_min = self.master_model.ModelSense == GRB.MINIMIZE
+        scenario_count = self.theta_vars.shape[0]
 
-        Must run right after a successful master solve: Gurobi drops solution
-        attributes (Slack) as soon as the model is modified, e.g. by the
-        min-norm re-solve or by adding this iteration's cuts.
+        # Cut purging keeps the master from growing without bound: optimality
+        # cuts that stay slack for ``purge_after`` consecutive master solves
+        # are removed (each scenario's newest cut and all feasibility cuts are
+        # kept). ``purge_after=None`` (the default) disables purging. Set up
+        # BEFORE seeding/checkpoint reload so those cuts are registered too.
+        self._cut_purge_enabled = purge_after is not None
+        self._cut_registry = []
+        self._latest_cut_by_scenario = {}
+
+        # The worker set and their env grouping are fixed for the whole solve,
+        # so compute them once. Workers sharing an env must be solved
+        # sequentially (envs are not thread-safe for concurrent optimize), which
+        # makes the env group, not the individual worker, the unit of parallelism.
+        active_workers = self.workers[:scenario_count]
+        env_groups = _group_workers_by_env(active_workers)
+        resolved_max_workers = _resolve_parallel_workers(max_workers, len(env_groups))
+        executor = ThreadPoolExecutor(max_workers=resolved_max_workers) if parallel else None
+
+        if checkpoint_path and not resume_checkpoint_path:
+            self._reset_checkpoint_store(checkpoint_path)
+
+        checkpoint_state = self._load_cut_checkpoint(resume_checkpoint_path)
+        if checkpoint_state.get('core_point') is not None:
+            core_point = np.asarray(checkpoint_state['core_point'], dtype=float)
+        lower_bound = checkpoint_state.get('lower_bound', lower_bound) or lower_bound
+        upper_bound = checkpoint_state.get('upper_bound', upper_bound) or upper_bound
+        iteration_offset = int(checkpoint_state.get('iteration', 0) or 0)
+        cut_count = int(checkpoint_state.get('cut_count', 0) or 0)
+
+        # Seed the master with the build-time (a=0) Benders cuts -- one per
+        # scenario -- before the first master solve. They were produced for free
+        # by each subproblem's cold solve during construction, so injecting them
+        # lets the solver skip the iteration that would otherwise just re-derive
+        # them and starts the master from a gradient-informed approximation.
+        # Skipped only when a checkpoint actually restored cuts (the reloaded
+        # store already contains them). Callers routinely pass
+        # ``resume_checkpoint_path`` unconditionally (pointing at a file that
+        # does not exist yet on a fresh run), so keying on the path alone would
+        # skip seeding on fresh runs and let the cut-less master push the
+        # coefficients to absurd magnitudes (numerically breaking the
+        # subproblems).
+        if not checkpoint_state.get('cut_count'):
+            lower_bound, upper_bound, cut_count = self._seed_initial_cuts(
+                active_workers, iteration_offset, lower_bound, upper_bound,
+                cut_count, checkpoint_path, core_point)
+        try:
+            for iteration in range(1, max_iter + 1):
+                global_iteration = iteration_offset + iteration
+                if init_solution is not None and iteration == 1:
+                    # Use the provided initial solution instead of solving the master.
+                    action = np.asarray(init_solution, dtype=float)
+                    core_point = copy.deepcopy(action)
+                    print(f"Iteration {global_iteration}, using init_solution (skipping master solve)")
+                else:
+                    action, master_obj = self._solve_master_step(
+                        global_iteration, purge_slack_tol, min_norm_action, verbose)
+                    if is_min:
+                        lower_bound = master_obj
+                    else:
+                        upper_bound = master_obj
+                    if core_point is None:
+                        core_point = copy.deepcopy(action)
+
+                print(f"Iteration {global_iteration}, action from master: {action.tolist()}")
+
+                # Solve every subproblem for this candidate action.
+                if use_pareto_cuts:
+                    solve_one = lambda w: w.solve_pareto(action, core_point, pareto_epsilon, verbose)
+                else:
+                    solve_one = lambda w: w.solve(action, verbose)
+                start_sub = time.time()
+                results, executor = self._solve_all_subproblems(
+                    active_workers, env_groups, solve_one, executor, global_iteration
+                )
+                parallel = executor is not None
+                print(f"Iteration {global_iteration}, subproblems solved in {time.time() - start_sub:.2f}s")
+                self._report_memory_usage(global_iteration, active_workers)
+
+                all_feasible, feasibility_cuts, optimality_cuts, new_cut_records, cost_to_go_estimation = \
+                    self._build_cuts(results, active_workers, action)
+
+                if not all_feasible:
+                    # Some scenario infeasible: add feasibility cuts and repeat.
+                    # By design this skips bound refresh, core-point update,
+                    # purging and the checkpoint save.
+                    self._add_cuts_to_master(feasibility_cuts, new_cut_records,
+                                             global_iteration, 'feasibility')
+                    print('-' * 20)
+                    continue
+
+                # All scenarios feasible: add optimality cuts and refresh bounds.
+                self._add_cuts_to_master(optimality_cuts, new_cut_records,
+                                         global_iteration, 'optimality')
+                cost_to_go_estimation /= scenario_count  # Average cost-to-go across scenarios for reporting.
+                first_stage_cost = self.imm_cost.getValue() if hasattr(self.imm_cost, 'getValue') else float(self.imm_cost or 0.0)
+                # Keep the incumbent (subproblem-evaluated) bound monotone so the
+                # build-time a=0 seed bound is never lost and the gap shrinks
+                # monotonically: the evaluated value at any action is a valid
+                # lower bound (maximization) / upper bound (minimization).
+                if is_min:
+                    upper_bound = min(upper_bound, first_stage_cost + cost_to_go_estimation)
+                else:
+                    lower_bound = max(lower_bound, first_stage_cost + cost_to_go_estimation)
+
+                # If an init_solution was supplied, its evaluated cost is a valid
+                # bound on the master's optimum. Add it once as a hard constraint
+                # to prune the master's search space.
+                if init_solution is not None and iteration == 1 and is_hard_bound:
+                    master_obj_expr = self.master_model.getObjective()
+                    if is_min:
+                        self.master_model.addConstr(master_obj_expr <= upper_bound, name="init_solution_upper_bound")
+                        print(f"Added hard master upper bound from init_solution: {upper_bound}")
+                    else:
+                        self.master_model.addConstr(master_obj_expr >= lower_bound, name="init_solution_lower_bound")
+                        print(f"Added hard master lower bound from init_solution: {lower_bound}")
+
+                # Update core point AFTER we have a valid x_k from the master.
+                core_point = self.update_core_point(core_point, action, iteration, alpha=core_alpha)
+
+                print(f"UB: {upper_bound}, LB: {lower_bound}, Gap: {abs(upper_bound - lower_bound)}, "
+                      f"First-stage cost: {first_stage_cost}, Cost-to-go estimate: {cost_to_go_estimation}")
+
+                # Monte Carlo error of the scenario average: a wide interval
+                # means the scenario sample, not the cuts, limits accuracy.
+                obj_mean, obj_half_width = self._objective_confidence_interval(
+                    [v for (is_feasible, v, _) in results if is_feasible])
+                print(f"Iteration {global_iteration}, subproblem objective mean {obj_mean:.4f} "
+                      f"+/- {obj_half_width:.4f} (95% CI, N={scenario_count})")
+
+                cut_count = self._checkpoint_iteration(
+                    checkpoint_path, global_iteration, lower_bound, upper_bound,
+                    core_point, cut_count, new_cut_records, purge_after)
+
+                if abs(upper_bound - lower_bound) < tol:
+                    info = {}
+                    break
+                if lower_bound > upper_bound:
+                    print("Error: Lower bound exceeded upper bound (check dual rays/bounds).")
+                    info = {'debug': 'lower_bound_exceeded_upper_bound'}
+                    break
+                print('-' * 20)
+            else:
+                print('Max iterations reached')
+        finally:
+            if executor is not None:
+                executor.shutdown(wait=False)
+        return upper_bound, info
+
+    def solve_with_callback(self, tol=1e-6,
+                            max_iter=150,
+                            use_pareto_cuts=False,
+                            pareto_epsilon=1e-4,
+                            max_workers=None,
+                            parallel=True,
+                            verbose=False):
+        # 1. Mandatory Parameter for Lazy Constraints
+        self.master_model.Params.MIPGap = 0.0
+        self.master_model.Params.LazyConstraints = 1
+
+        # 2. Subproblem parallelism, set up ONCE for the whole solve. Env groups
+        # are the unit of parallelism -- workers sharing a Gurobi env must be
+        # solved sequentially (envs are not thread-safe for concurrent optimize)
+        # while different env groups run concurrently. A single persistent
+        # ThreadPoolExecutor is reused by every callback so incumbents don't each
+        # pay thread-pool build/teardown; it is sized to the number of env groups
+        # (capped by max_workers / SLURM CPUs / cpu_count).
+        active_workers = self.workers[:self.theta_vars.shape[0]]
+        env_groups = _group_workers_by_env(active_workers)
+        resolved_max_workers = _resolve_parallel_workers(max_workers, len(env_groups))
+        executor = (
+            ThreadPoolExecutor(max_workers=resolved_max_workers)
+            if parallel and resolved_max_workers > 1
+            else None
+        )
+
+        # 3. Attach variables/data to the model object for the callback to access
+        # We use the underscore prefix (_) to avoid namespace collisions
+        self.master_model._action_vars = self.action_vars
+        self.master_model._theta_vars = self.theta_vars
+        self.master_model._workers = self.workers
+        self.master_model._env_groups = env_groups
+        self.master_model._executor = executor
+        self.master_model._max_iterations = max_iter
+        self.master_model._tol = tol
+        self.master_model._use_pareto = use_pareto_cuts
+        self.master_model._pareto_epsilon = pareto_epsilon
+        self.master_model._core_point = None
+        self.master_model._cb_iter = 0
+        self.master_model._max_workers = max_workers
+        self.master_model._verbose = verbose
+
+        # 4. Start the single optimization call
+        print("Starting Benders with Lazy Constraint Callback...")
+        try:
+            self.master_model.optimize(benders_callback)
+        finally:
+            if executor is not None:
+                executor.shutdown(wait=False)
+        # 5. Extract results
+        info = {}
+        if self.master_model.Status == GRB.OPTIMAL:
+            return self.master_model.ObjVal, info
+        return None, info
+
+    # ---- Master step ----
+
+    def _solve_master_step(self, global_iteration, purge_slack_tol, min_norm_action, verbose):
+        """Solve the master and return ``(action, master_obj)``.
+
+        Cut activity is captured HERE, right after the solve: Gurobi drops
+        solution attributes (Slack) as soon as the model is modified, and the
+        min-norm re-solve below may do exactly that. ``master_obj`` is read
+        before the min-norm re-solve, which only replaces a degenerate action
+        with the minimum-L1 point on the same optimal face.
         """
-        entries = [e for e in self._cut_registry if e['record']['kind'] == 'optimality']
-        if not entries:
-            return
-        constrs = [e['constr'] for e in entries]
-        slacks = self.master_model.getAttr(GRB.Attr.Slack, constrs)
-        rhs_values = self.master_model.getAttr(GRB.Attr.RHS, constrs)
-        for entry, slack, rhs in zip(entries, slacks, rhs_values):
-            if abs(slack) <= slack_tol * max(1.0, abs(rhs)):
-                entry['last_active'] = iteration
-
-    def _purge_inactive_cuts(self, iteration, purge_after):
-        """Drop optimality cuts inactive for >= ``purge_after`` master solves.
-
-        Keeps each scenario's newest cut (every theta stays supported, so the
-        master stays bounded) and all feasibility cuts (dropping one could let
-        the master revisit an infeasible action and cycle). Removal is lazy --
-        no update() here, or Gurobi would discard the current solution that
-        callers still read (action_vars.X) after the final iteration.
-        """
-        protected = {id(entry) for entry in self._latest_cut_by_scenario.values()}
-        keep, stale = [], []
-        for entry in self._cut_registry:
-            is_stale = (entry['record']['kind'] == 'optimality'
-                        and id(entry) not in protected
-                        and iteration - entry['last_active'] >= purge_after)
-            (stale if is_stale else keep).append(entry)
-        if stale:
-            self.master_model.remove([entry['constr'] for entry in stale])
-            self._cut_registry = keep
-        return len(stale)
-
-    def _rewrite_cut_checkpoint_store(self, checkpoint_path):
-        """Rewrite the cuts file to exactly the surviving registry records."""
-        cuts_path = self._checkpoint_paths(checkpoint_path)[1]
-        tmp_path = f"{cuts_path}.tmp"
-        with gzip.open(tmp_path, 'wt', encoding='utf-8') as handle:
-            for entry in self._cut_registry:
-                handle.write(json.dumps(entry['record'], separators=(',', ':')) + '\n')
-        os.replace(tmp_path, cuts_path)
+        start = time.time()
+        if not solve_and_handle_errors(self.master_model, verbose=verbose):
+            raise RuntimeError("Master model optimal solution not found")
+        print(f"Iteration {global_iteration}, master solved in {time.time() - start} seconds")
+        self._report_memory_usage(global_iteration)
+        action = self.action_vars.X
+        if self._cut_purge_enabled:
+            self._update_cut_activity(global_iteration, purge_slack_tol)
+        master_obj = self.master_model.ObjVal
+        if min_norm_action and np.max(np.abs(action)) > 1e6:
+            # Degenerate vertex on an under-constrained optimal face:
+            # re-solve for the minimum-norm optimal action (bounds use the
+            # primary ObjVal captured above). Sane actions skip the re-solve
+            # so the endgame is untouched.
+            action = self._min_norm_master_action(action, verbose=verbose)
+        return action, master_obj
 
     def _min_norm_master_action(self, fallback_action, verbose=False):
         """Return the minimum-L1-norm action on the master's optimal face.
@@ -500,6 +699,189 @@ class BendersDecompositionSolver:
             model.remove(guard)
             model.setObjective(primary_objective, original_sense)
             model.update()
+
+    def _seed_initial_cuts(self, active_workers, iteration, lower_bound, upper_bound,
+                           cut_count, checkpoint_path, core_point):
+        """Seed the master with each worker's build-time (a=0) optimality cut.
+
+        Every subproblem was solved once at coefficients ``a = 0`` while it was
+        built, producing ``Q_s(0)`` and the subgradient ``g_s = phi_s(x*(0))``.
+        Since ``Q_s`` is concave in ``a``, ``theta_s <= Q_s(0) + g_s . a`` is a
+        globally valid optimality cut (a tangent that upper-bounds the concave
+        ``Q_s`` for the maximization master; the inequality flips for a
+        minimization master). Injecting all available cuts BEFORE the first
+        master solve means the solver starts from the approximation it would
+        otherwise spend a full iteration (re-)deriving at ``a = 0`` -- so it
+        converges in fewer iterations and the first master action is
+        gradient-informed rather than an arbitrary extreme point.
+
+        When EVERY worker carries a build-time cut, the value at ``a = 0``,
+        ``(1/N) sum_s Q_s(0)``, is a valid incumbent bound (the optimum is no
+        worse than all-zero coefficients) and tightens ``upper_bound``
+        (minimization) or ``lower_bound`` (maximization); a partial average is
+        not a valid bound, so mixed worker sets leave the bounds untouched.
+        Seeded cuts are appended to the checkpoint store so a resume does not
+        lose them. Returns the (possibly tightened) ``(lower_bound,
+        upper_bound, cut_count)``; unchanged when no worker carries a
+        build-time cut.
+        """
+        is_min = self.master_model.ModelSense == GRB.MINIMIZE
+        seeded_workers, seeded_results = [], []
+        for worker in active_workers:
+            initial_cut = getattr(worker, "initial_cut", None)
+            if initial_cut is None:
+                continue
+            v0, g0 = initial_cut
+            seeded_workers.append(worker)
+            seeded_results.append((True, float(v0), np.asarray(g0, dtype=float)))
+        if not seeded_workers:
+            return lower_bound, upper_bound, cut_count
+
+        zero_action = np.zeros(self.action_vars.shape[0], dtype=float)
+        _, _, optimality_cuts, cut_records, cost_to_go = self._build_cuts(
+            seeded_results, seeded_workers, zero_action)
+        seed_constrs = self.master_model.addConstrs(
+            (optimality_cuts[i] for i in range(len(optimality_cuts))),
+            name="benders_seed_cut_",
+        )
+        for i, record in enumerate(cut_records):
+            self._register_cut(seed_constrs[i], record, iteration)
+        self.master_model.update()
+
+        all_seeded = len(seeded_workers) == len(active_workers)
+        bound_at_zero = (cost_to_go / len(active_workers)) if all_seeded else None
+        print(f"Seeded master with {len(optimality_cuts)} build-time (a=0) cuts"
+              + (f"; bound at zero coefficients = {bound_at_zero}" if bound_at_zero is not None else ""))
+
+        if bound_at_zero is not None:
+            # The optimum is at least as good as all-zero coefficients, so
+            # the a=0 value is a valid incumbent bound to start the gap from.
+            if is_min:
+                upper_bound = min(upper_bound, bound_at_zero)
+            else:
+                lower_bound = max(lower_bound, bound_at_zero)
+        if cut_records and checkpoint_path:
+            cut_count += len(cut_records)
+            self._save_cut_checkpoint(
+                checkpoint_path,
+                {
+                    'iteration': iteration,
+                    'lower_bound': None if np.isinf(lower_bound) else float(lower_bound),
+                    'upper_bound': None if np.isinf(upper_bound) else float(upper_bound),
+                    'core_point': None if core_point is None else np.asarray(core_point, dtype=float).tolist(),
+                    'cut_count': cut_count,
+                },
+                new_cut_records=cut_records,
+            )
+        return lower_bound, upper_bound, cut_count
+
+    # ---- Cut construction / registration / purging ----
+
+    def _build_cuts(self, results, active_workers, action):
+        """Convert subproblem results into Benders cuts and checkpoint records.
+
+        Returns ``(all_feasible, feasibility_cuts, optimality_cuts, cut_records,
+        cost_to_go)`` where ``cost_to_go`` is the sum of feasible subproblem
+        objectives (the caller averages it across scenarios).
+        """
+        is_min = self.master_model.ModelSense == GRB.MINIMIZE
+        action_values = np.asarray(action, dtype=float)
+        feasibility_cuts, optimality_cuts, cut_records = [], [], []
+        cost_to_go = 0.0
+        all_feasible = True
+        for worker, (is_feasible, v, duals) in zip(active_workers, results):
+            scenario_id = worker.subproblem_id
+            # theta[s] >= v + duals^T (x - x_k)  (>= flips to <= for maximization)
+            cut_expr = v + duals @ (self.action_vars - action)
+            if not is_feasible:
+                all_feasible = False
+                feasibility_cuts.append(cut_expr >= 0)
+                cut_records.append(
+                    self._cut_to_record('feasibility', scenario_id, duals, v, action_values, 'ge')
+                )
+            else:
+                cost_to_go += v
+                if is_min:
+                    optimality_cuts.append(self.theta_vars[scenario_id] >= cut_expr)
+                    cut_records.append(
+                        self._cut_to_record('optimality', scenario_id, duals, v, action_values, 'ge')
+                    )
+                else:
+                    optimality_cuts.append(self.theta_vars[scenario_id] <= cut_expr)
+                    cut_records.append(
+                        self._cut_to_record('optimality', scenario_id, duals, v, action_values, 'le')
+                    )
+        return all_feasible, feasibility_cuts, optimality_cuts, cut_records, cost_to_go
+
+    def _add_cuts_to_master(self, cuts, records, iteration, kind):
+        """Add this iteration's cuts of one kind and register them for purging.
+
+        ``records`` is the full record list from ``_build_cuts``; the entries
+        with ``kind`` correspond one-to-one, in order, to ``cuts``.
+        """
+        print(f"Iteration {iteration}, adding {len(cuts)} {kind} cuts")
+        prefix = 'feas' if kind == 'feasibility' else 'opt'
+        constrs = self.master_model.addConstrs(
+            (cuts[i] for i in range(len(cuts))),
+            name=f"{prefix}_cut_{iteration}_",
+        )
+        kind_records = [r for r in records if r['kind'] == kind]
+        for i, record in enumerate(kind_records):
+            self._register_cut(constrs[i], record, iteration)
+
+    def _register_cut(self, constr, record, iteration):
+        if not self._cut_purge_enabled:
+            return
+        # Cuts built from MVar expressions come back as 0-d/1-element MConstr;
+        # bulk getAttr/remove need the scalar Constr.
+        if hasattr(constr, 'tolist'):
+            constr = constr.tolist()
+        while isinstance(constr, (list, tuple)):
+            constr = constr[0]
+        entry = {'constr': constr, 'record': record, 'last_active': iteration}
+        self._cut_registry.append(entry)
+        if record['kind'] == 'optimality':
+            self._latest_cut_by_scenario[record['scenario_id']] = entry
+
+    def _update_cut_activity(self, iteration, slack_tol):
+        """Reset the purge clock of cuts tight at the current master solution.
+
+        Must run right after a successful master solve: Gurobi drops solution
+        attributes (Slack) as soon as the model is modified, e.g. by the
+        min-norm re-solve or by adding this iteration's cuts.
+        """
+        entries = [e for e in self._cut_registry if e['record']['kind'] == 'optimality']
+        if not entries:
+            return
+        constrs = [e['constr'] for e in entries]
+        slacks = self.master_model.getAttr(GRB.Attr.Slack, constrs)
+        rhs_values = self.master_model.getAttr(GRB.Attr.RHS, constrs)
+        for entry, slack, rhs in zip(entries, slacks, rhs_values):
+            if abs(slack) <= slack_tol * max(1.0, abs(rhs)):
+                entry['last_active'] = iteration
+
+    def _purge_inactive_cuts(self, iteration, purge_after):
+        """Drop optimality cuts inactive for >= ``purge_after`` master solves.
+
+        Keeps each scenario's newest cut (every theta stays supported, so the
+        master stays bounded) and all feasibility cuts (dropping one could let
+        the master revisit an infeasible action and cycle). Removal is lazy --
+        no update() here, or Gurobi would discard the current solution that
+        callers still read (action_vars.X) after the final iteration.
+        """
+        protected = {id(entry) for entry in self._latest_cut_by_scenario.values()}
+        keep, stale = [], []
+        for entry in self._cut_registry:
+            is_stale = (entry['record']['kind'] == 'optimality'
+                        and id(entry) not in protected
+                        and iteration - entry['last_active'] >= purge_after)
+            (stale if is_stale else keep).append(entry)
+        if stale:
+            self.master_model.remove([entry['constr'] for entry in stale])
+            self._cut_registry = keep
+        return len(stale)
+
+    # ---- Checkpoint I/O ----
 
     @staticmethod
     def _checkpoint_paths(checkpoint_path):
@@ -705,37 +1087,53 @@ class BendersDecompositionSolver:
             json.dump(metadata, handle, separators=(',', ':'))
         os.replace(tmp_path, meta_path)
 
-    def update_core_point(self, core: np.ndarray, xk: np.ndarray, k: int, alpha: float | None = None) -> np.ndarray:
-        xk = np.asarray(xk, dtype=float)
-        core = np.asarray(core, dtype=float)
-        if alpha is None:
-            alpha = 1.0 / (k + 1.0)  # diminishing step
-        return (1.0 - alpha) * core + alpha * xk
+    def _rewrite_cut_checkpoint_store(self, checkpoint_path):
+        """Rewrite the cuts file to exactly the surviving registry records."""
+        cuts_path = self._checkpoint_paths(checkpoint_path)[1]
+        tmp_path = f"{cuts_path}.tmp"
+        with gzip.open(tmp_path, 'wt', encoding='utf-8') as handle:
+            for entry in self._cut_registry:
+                handle.write(json.dumps(entry['record'], separators=(',', ':')) + '\n')
+        os.replace(tmp_path, cuts_path)
 
-    @staticmethod
-    def _get_model_memory_usage(model):
-        return {
-            'mem_used_gb': float(model.getAttr(GRB.Attr.MemUsed)),
-            'max_mem_used_gb': float(model.getAttr(GRB.Attr.MaxMemUsed)),
+    def _checkpoint_iteration(self, checkpoint_path, global_iteration, lower_bound,
+                              upper_bound, core_point, cut_count, new_cut_records,
+                              purge_after):
+        """Purge stale cuts, then persist this iteration's checkpoint state.
+
+        Purge runs AFTER this iteration's cuts were registered (so each
+        scenario's newest cut is protected) and BEFORE the save (so the store
+        reflects the surviving cuts). After a purge the cuts file is rewritten
+        to exactly the surviving registry; otherwise the new records are
+        appended. Returns the updated running cut count.
+        """
+        purged_count = 0
+        if self._cut_purge_enabled:
+            purged_count = self._purge_inactive_cuts(global_iteration, purge_after)
+            if purged_count:
+                print(f"Iteration {global_iteration}, purged {purged_count} inactive cuts "
+                      f"({len(self._cut_registry)} cuts remain)")
+
+        checkpoint_state = {
+            'iteration': global_iteration,
+            'lower_bound': None if np.isinf(lower_bound) else float(lower_bound),
+            'upper_bound': None if np.isinf(upper_bound) else float(upper_bound),
+            'core_point': None if core_point is None else np.asarray(core_point, dtype=float).tolist(),
+            'cut_count': cut_count + len(new_cut_records),
         }
+        if purged_count:
+            # Rewrite the cuts store to the surviving cuts (this iteration's
+            # cuts are already in the registry) so a resume does not
+            # re-inflate the master with purged cuts.
+            checkpoint_state['cut_count'] = len(self._cut_registry)
+            if checkpoint_path:
+                self._rewrite_cut_checkpoint_store(checkpoint_path)
+                self._save_cut_checkpoint(checkpoint_path, checkpoint_state, new_cut_records=None)
+        else:
+            self._save_cut_checkpoint(checkpoint_path, checkpoint_state, new_cut_records=new_cut_records)
+        return checkpoint_state['cut_count']
 
-    def _report_memory_usage(self, iteration, active_workers=None):
-        master_memory = self._get_model_memory_usage(self.master_model)
-        print(
-            f"Iteration {iteration}, master memory used: {master_memory['mem_used_gb']:.4f} GB "
-            f"(peak {master_memory['max_mem_used_gb']:.4f} GB)"
-        )
-        if active_workers is None:
-            return master_memory, None
-
-        subproblem_memories = [self._get_model_memory_usage(worker.model) for worker in active_workers]
-        total_mem_used = sum(memory['mem_used_gb'] for memory in subproblem_memories)/len(subproblem_memories)
-        total_peak_mem_used = max(memory['max_mem_used_gb'] for memory in subproblem_memories)
-        print(
-            f"Iteration {iteration}, subproblem memory used: {total_mem_used:.4f} GB "
-            f"(peak {total_peak_mem_used:.4f} GB across {len(subproblem_memories)} workers)"
-        )
-        return master_memory, subproblem_memories
+    # ---- Subproblem dispatch / misc ----
 
     def _solve_all_subproblems(self, active_workers, env_groups, solve_one, executor, global_iteration):
         """Solve every subproblem for the current master action.
@@ -778,436 +1176,45 @@ class BendersDecompositionSolver:
                 )
         return results, executor
 
-    def _build_cuts(self, results, active_workers, action):
-        """Convert subproblem results into Benders cuts and checkpoint records.
+    def update_core_point(self, core: np.ndarray, xk: np.ndarray, k: int, alpha: float | None = None) -> np.ndarray:
+        xk = np.asarray(xk, dtype=float)
+        core = np.asarray(core, dtype=float)
+        if alpha is None:
+            alpha = 1.0 / (k + 1.0)  # diminishing step
+        return (1.0 - alpha) * core + alpha * xk
 
-        Returns ``(all_feasible, feasibility_cuts, optimality_cuts, cut_records,
-        cost_to_go)`` where ``cost_to_go`` is the sum of feasible subproblem
-        objectives (the caller averages it across scenarios).
-        """
-        is_min = self.master_model.ModelSense == GRB.MINIMIZE
-        action_values = np.asarray(action, dtype=float)
-        feasibility_cuts, optimality_cuts, cut_records = [], [], []
-        cost_to_go = 0.0
-        all_feasible = True
-        for worker, (is_feasible, v, duals) in zip(active_workers, results):
-            scenario_id = worker.subproblem_id
-            # theta[s] >= v + duals^T (x - x_k)  (>= flips to <= for maximization)
-            cut_expr = v + duals @ (self.action_vars - action)
-            if not is_feasible:
-                all_feasible = False
-                feasibility_cuts.append(cut_expr >= 0)
-                cut_records.append(
-                    self._cut_to_record('feasibility', scenario_id, duals, v, action_values, 'ge')
-                )
-            else:
-                cost_to_go += v
-                if is_min:
-                    optimality_cuts.append(self.theta_vars[scenario_id] >= cut_expr)
-                    cut_records.append(
-                        self._cut_to_record('optimality', scenario_id, duals, v, action_values, 'ge')
-                    )
-                else:
-                    optimality_cuts.append(self.theta_vars[scenario_id] <= cut_expr)
-                    cut_records.append(
-                        self._cut_to_record('optimality', scenario_id, duals, v, action_values, 'le')
-                    )
-        return all_feasible, feasibility_cuts, optimality_cuts, cut_records, cost_to_go
+    @staticmethod
+    def _get_model_memory_usage(model):
+        return {
+            'mem_used_gb': float(model.getAttr(GRB.Attr.MemUsed)),
+            'max_mem_used_gb': float(model.getAttr(GRB.Attr.MaxMemUsed)),
+        }
 
-    def _seed_initial_cuts(self, active_workers, iteration=0):
-        """Seed the master with each worker's build-time (a=0) optimality cut.
-
-        Every subproblem was solved once at coefficients ``a = 0`` while it was
-        built, producing ``Q_s(0)`` and the subgradient ``g_s = phi_s(x*(0))``.
-        Since ``Q_s`` is concave in ``a``, ``theta_s <= Q_s(0) + g_s . a`` is a
-        globally valid optimality cut (a tangent that upper-bounds the concave
-        ``Q_s`` for the maximization master; the inequality flips for a
-        minimization master). Injecting all available cuts BEFORE the first
-        master solve means the solver starts from the approximation it would
-        otherwise spend a full iteration (re-)deriving at ``a = 0`` -- so it
-        converges in fewer iterations and the first master action is
-        gradient-informed rather than an arbitrary extreme point.
-
-        The value at ``a = 0``, ``(1/N) sum_s Q_s(0)``, is also a valid bound on
-        the optimum (the optimum is no worse than all-zero coefficients); it is
-        returned so the caller can initialize the incumbent bound. Returns
-        ``(bound_at_zero, cut_records)`` -- ``(None, [])`` when no worker carries
-        a build-time cut, and ``bound_at_zero is None`` when only some workers do
-        (a partial average is not a valid bound on the full-scenario objective).
-        """
-        seeded_workers, seeded_results = [], []
-        for worker in active_workers:
-            initial_cut = getattr(worker, "initial_cut", None)
-            if initial_cut is None:
-                continue
-            v0, g0 = initial_cut
-            seeded_workers.append(worker)
-            seeded_results.append((True, float(v0), np.asarray(g0, dtype=float)))
-        if not seeded_workers:
-            return None, []
-
-        zero_action = np.zeros(self.action_vars.shape[0], dtype=float)
-        _, _, optimality_cuts, cut_records, cost_to_go = self._build_cuts(
-            seeded_results, seeded_workers, zero_action)
-        seed_constrs = self.master_model.addConstrs(
-            (optimality_cuts[i] for i in range(len(optimality_cuts))),
-            name="benders_seed_cut_",
+    def _report_memory_usage(self, iteration, active_workers=None):
+        master_memory = self._get_model_memory_usage(self.master_model)
+        print(
+            f"Iteration {iteration}, master memory used: {master_memory['mem_used_gb']:.4f} GB "
+            f"(peak {master_memory['max_mem_used_gb']:.4f} GB)"
         )
-        for i, record in enumerate(cut_records):
-            self._register_cut(seed_constrs[i], record, iteration)
-        self.master_model.update()
+        if active_workers is None:
+            return master_memory, None
 
-        all_seeded = len(seeded_workers) == len(active_workers)
-        bound_at_zero = (cost_to_go / len(active_workers)) if all_seeded else None
-        print(f"Seeded master with {len(optimality_cuts)} build-time (a=0) cuts"
-              + (f"; bound at zero coefficients = {bound_at_zero}" if bound_at_zero is not None else ""))
-        return bound_at_zero, cut_records
-
-    def solve(self, 
-              init_solution=None,
-              is_hard_bound=False,
-              tol=1e-6,
-              max_iter=150,
-              use_pareto_cuts=False,
-              pareto_epsilon=1e-4,
-              core_alpha=None,
-              verbose=False,
-              parallel=True,
-              max_workers=None,
-              checkpoint_path=None,
-              resume_checkpoint_path=None,
-              min_norm_action=False,
-              purge_after=None,
-              purge_slack_tol=1e-6):
-        info = {}
-        lower_bound = -GRB.INFINITY
-        upper_bound = GRB.INFINITY
-        core_point = None  # For Pareto cuts; initialized after the first master solve.
-        is_min = self.master_model.ModelSense == GRB.MINIMIZE
-        scenario_count = self.theta_vars.shape[0]
-
-        # Cut purging keeps the master from growing without bound: optimality
-        # cuts that stay slack for ``purge_after`` consecutive master solves
-        # are removed (each scenario's newest cut and all feasibility cuts are
-        # kept). ``purge_after=None`` (the default) disables purging. Set up
-        # BEFORE seeding/checkpoint reload so those cuts are registered too.
-        self._cut_purge_enabled = purge_after is not None
-        self._cut_registry = []
-        self._latest_cut_by_scenario = {}
-
-        # The worker set and their env grouping are fixed for the whole solve,
-        # so compute them once. Workers sharing an env must be solved
-        # sequentially (envs are not thread-safe for concurrent optimize), which
-        # makes the env group, not the individual worker, the unit of parallelism.
-        active_workers = self.workers[:scenario_count]
-        env_groups = _group_workers_by_env(active_workers)
-        resolved_max_workers = _resolve_parallel_workers(max_workers, len(env_groups))
-        executor = ThreadPoolExecutor(max_workers=resolved_max_workers) if parallel else None
-
-        if checkpoint_path and not resume_checkpoint_path:
-            self._reset_checkpoint_store(checkpoint_path)
-
-        checkpoint_state = self._load_cut_checkpoint(resume_checkpoint_path)
-        if checkpoint_state.get('core_point') is not None:
-            core_point = np.asarray(checkpoint_state['core_point'], dtype=float)
-        lower_bound = checkpoint_state.get('lower_bound', lower_bound) or lower_bound
-        upper_bound = checkpoint_state.get('upper_bound', upper_bound) or upper_bound
-        iteration_offset = int(checkpoint_state.get('iteration', 0) or 0)
-        cut_count = int(checkpoint_state.get('cut_count', 0) or 0)
-
-        # Seed the master with the build-time (a=0) Benders cuts -- one per
-        # scenario -- before the first master solve. They were produced for free
-        # by each subproblem's cold solve during construction, so injecting them
-        # lets the solver skip the iteration that would otherwise just re-derive
-        # them and starts the master from a gradient-informed approximation.
-        # Skipped only when a checkpoint actually restored cuts (the reloaded
-        # store already contains them). Callers routinely pass
-        # ``resume_checkpoint_path`` unconditionally (pointing at a file that
-        # does not exist yet on a fresh run), so keying on the path alone would
-        # skip seeding on fresh runs and let the cut-less master push the
-        # coefficients to absurd magnitudes (numerically breaking the
-        # subproblems).
-        if not checkpoint_state.get('cut_count'):
-            bound_at_zero, seed_records = self._seed_initial_cuts(
-                active_workers, iteration=iteration_offset)
-            if bound_at_zero is not None:
-                # The optimum is at least as good as all-zero coefficients, so
-                # the a=0 value is a valid incumbent bound to start the gap from.
-                if is_min:
-                    upper_bound = min(upper_bound, bound_at_zero)
-                else:
-                    lower_bound = max(lower_bound, bound_at_zero)
-            if seed_records and checkpoint_path:
-                cut_count += len(seed_records)
-                self._save_cut_checkpoint(
-                    checkpoint_path,
-                    {
-                        'iteration': iteration_offset,
-                        'lower_bound': None if np.isinf(lower_bound) else float(lower_bound),
-                        'upper_bound': None if np.isinf(upper_bound) else float(upper_bound),
-                        'core_point': None if core_point is None else np.asarray(core_point, dtype=float).tolist(),
-                        'cut_count': cut_count,
-                    },
-                    new_cut_records=seed_records,
-                )
-        try:
-            for iteration in range(1, max_iter + 1):
-                global_iteration = iteration_offset + iteration
-                start = time.time()
-                if init_solution is not None and iteration == 1:
-                    # Use the provided initial solution instead of solving the master.
-                    action = np.asarray(init_solution, dtype=float)
-                    core_point = copy.deepcopy(action)
-                    print(f"Iteration {global_iteration}, using init_solution (skipping master solve)")
-                else:
-                    if not solve_and_handle_errors(self.master_model, verbose=verbose):
-                        raise RuntimeError("Master model optimal solution not found")
-                    print(f"Iteration {global_iteration}, master solved in {time.time() - start} seconds")
-                    self._report_memory_usage(global_iteration)
-                    action = self.action_vars.X
-                    # Capture cut activity NOW: Gurobi drops solution
-                    # attributes (Slack) once the model is modified, and the
-                    # min-norm re-solve below may do exactly that.
-                    if self._cut_purge_enabled:
-                        self._update_cut_activity(global_iteration, purge_slack_tol)
-                    if is_min:
-                        lower_bound = self.master_model.ObjVal
-                    else:
-                        upper_bound = self.master_model.ObjVal
-                    if min_norm_action and np.max(np.abs(action)) > 1e6:
-                        # Degenerate vertex on an under-constrained optimal
-                        # face: re-solve for the minimum-norm optimal action
-                        # (bounds above use the primary ObjVal). Sane actions
-                        # skip the re-solve so the endgame is untouched.
-                        action = self._min_norm_master_action(action, verbose=verbose)
-                    if core_point is None:
-                        core_point = copy.deepcopy(action)
-
-                print(f"Iteration {global_iteration}, action from master: {action.tolist()}")
-
-                # Solve every subproblem for this candidate action.
-                if use_pareto_cuts:
-                    solve_one = lambda w: w.solve_pareto(action, core_point, pareto_epsilon, verbose)
-                else:
-                    solve_one = lambda w: w.solve(action, verbose)
-                start_sub = time.time()
-                results, executor = self._solve_all_subproblems(
-                    active_workers, env_groups, solve_one, executor, global_iteration
-                )
-                parallel = executor is not None
-                print(f"Iteration {global_iteration}, subproblems solved in {time.time() - start_sub:.2f}s")
-                self._report_memory_usage(global_iteration, active_workers)
-
-                all_feasible, feasibility_cuts, optimality_cuts, new_cut_records, cost_to_go_estimation = \
-                    self._build_cuts(results, active_workers, action)
-
-                if not all_feasible:
-                    # Some scenario infeasible: add feasibility cuts and repeat.
-                    print(f"Iteration {global_iteration}, adding {len(feasibility_cuts)} feasibility cuts")
-                    feas_constrs = self.master_model.addConstrs(
-                        (feasibility_cuts[i] for i in range(len(feasibility_cuts))),
-                        name=f"feas_cut_{global_iteration}_",
-                    )
-                    feas_records = [r for r in new_cut_records if r['kind'] == 'feasibility']
-                    for i, record in enumerate(feas_records):
-                        self._register_cut(feas_constrs[i], record, global_iteration)
-                    print('-' * 20)
-                    continue
-
-                # All scenarios feasible: add optimality cuts and refresh bounds.
-                print(f"Iteration {global_iteration}, adding {len(optimality_cuts)} optimality cuts")
-                opt_constrs = self.master_model.addConstrs(
-                    (optimality_cuts[i] for i in range(len(optimality_cuts))),
-                    name=f"opt_cut_{global_iteration}_",
-                )
-                opt_records = [r for r in new_cut_records if r['kind'] == 'optimality']
-                for i, record in enumerate(opt_records):
-                    self._register_cut(opt_constrs[i], record, global_iteration)
-                cost_to_go_estimation /= scenario_count  # Average cost-to-go across scenarios for reporting.
-                first_stage_cost = self.imm_cost.getValue() if hasattr(self.imm_cost, 'getValue') else float(self.imm_cost or 0.0)
-                # Keep the incumbent (subproblem-evaluated) bound monotone so the
-                # build-time a=0 seed bound is never lost and the gap shrinks
-                # monotonically: the evaluated value at any action is a valid
-                # lower bound (maximization) / upper bound (minimization).
-                if is_min:
-                    upper_bound = min(upper_bound, first_stage_cost + cost_to_go_estimation)
-                else:
-                    lower_bound = max(lower_bound, first_stage_cost + cost_to_go_estimation)
-
-                # If an init_solution was supplied, its evaluated cost is a valid
-                # bound on the master's optimum. Add it once as a hard constraint
-                # to prune the master's search space.
-                if init_solution is not None and iteration == 1 and is_hard_bound:
-                    master_obj_expr = self.master_model.getObjective()
-                    if is_min:
-                        self.master_model.addConstr(master_obj_expr <= upper_bound, name="init_solution_upper_bound")
-                        print(f"Added hard master upper bound from init_solution: {upper_bound}")
-                    else:
-                        self.master_model.addConstr(master_obj_expr >= lower_bound, name="init_solution_lower_bound")
-                        print(f"Added hard master lower bound from init_solution: {lower_bound}")
-
-                # Update core point AFTER we have a valid x_k from the master.
-                core_point = self.update_core_point(core_point, action, iteration, alpha=core_alpha)
-
-                print(f"UB: {upper_bound}, LB: {lower_bound}, Gap: {abs(upper_bound - lower_bound)}, "
-                      f"First-stage cost: {first_stage_cost}, Cost-to-go estimate: {cost_to_go_estimation}")
-
-                # Purge AFTER registering this iteration's cuts (so each
-                # scenario's newest cut is protected) and BEFORE checkpointing
-                # (so the store reflects the surviving cuts).
-                purged_count = 0
-                if self._cut_purge_enabled:
-                    purged_count = self._purge_inactive_cuts(global_iteration, purge_after)
-                    if purged_count:
-                        print(f"Iteration {global_iteration}, purged {purged_count} inactive cuts "
-                              f"({len(self._cut_registry)} cuts remain)")
-
-                checkpoint_state = {
-                    'iteration': global_iteration,
-                    'lower_bound': None if np.isinf(lower_bound) else float(lower_bound),
-                    'upper_bound': None if np.isinf(upper_bound) else float(upper_bound),
-                    'core_point': None if core_point is None else np.asarray(core_point, dtype=float).tolist(),
-                    'cut_count': cut_count + len(new_cut_records),
-                }
-                if purged_count:
-                    # Rewrite the cuts store to the surviving cuts (this
-                    # iteration's cuts are already in the registry) so a
-                    # resume does not re-inflate the master with purged cuts.
-                    checkpoint_state['cut_count'] = len(self._cut_registry)
-                    if checkpoint_path:
-                        self._rewrite_cut_checkpoint_store(checkpoint_path)
-                        self._save_cut_checkpoint(checkpoint_path, checkpoint_state, new_cut_records=None)
-                else:
-                    self._save_cut_checkpoint(checkpoint_path, checkpoint_state, new_cut_records=new_cut_records)
-                cut_count = checkpoint_state['cut_count']
-
-                if abs(upper_bound - lower_bound) < tol:
-                    info = {}
-                    break
-                if lower_bound > upper_bound:
-                    print("Error: Lower bound exceeded upper bound (check dual rays/bounds).")
-                    info = {'debug': 'lower_bound_exceeded_upper_bound'}
-                    break
-                print('-' * 20)
-            else:
-                print('Max iterations reached')
-        finally:
-            if executor is not None:
-                executor.shutdown(wait=False)
-        return upper_bound, info
-
-    def solve_with_callback(self, tol=1e-6,
-                            max_iter=150,
-                            use_pareto_cuts=False,
-                            pareto_epsilon=1e-4,
-                            max_workers=None,
-                            parallel=True,
-                            verbose=False):
-        # 1. Mandatory Parameter for Lazy Constraints
-        self.master_model.Params.MIPGap = 0.0
-        self.master_model.Params.LazyConstraints = 1
-
-        # 2. Pre-processing: Initialize Core Point if using Pareto
-        # Often helpful to solve the LP relaxation first to get a good core point
-        # self.master_model.optimize()
-        # initial_action = np.array([v.X for v in self.action_vars])
-        # print('Initial action for Pareto cuts:', initial_action)
-
-        # 2b. Subproblem parallelism, set up ONCE for the whole solve. Env groups
-        # are the unit of parallelism -- workers sharing a Gurobi env must be
-        # solved sequentially (envs are not thread-safe for concurrent optimize)
-        # while different env groups run concurrently. A single persistent
-        # ThreadPoolExecutor is reused by every callback so incumbents don't each
-        # pay thread-pool build/teardown; it is sized to the number of env groups
-        # (capped by max_workers / SLURM CPUs / cpu_count).
-        active_workers = self.workers[:self.theta_vars.shape[0]]
-        env_groups = _group_workers_by_env(active_workers)
-        resolved_max_workers = _resolve_parallel_workers(max_workers, len(env_groups))
-        executor = (
-            ThreadPoolExecutor(max_workers=resolved_max_workers)
-            if parallel and resolved_max_workers > 1
-            else None
+        subproblem_memories = [self._get_model_memory_usage(worker.model) for worker in active_workers]
+        total_mem_used = sum(memory['mem_used_gb'] for memory in subproblem_memories)/len(subproblem_memories)
+        total_peak_mem_used = max(memory['max_mem_used_gb'] for memory in subproblem_memories)
+        print(
+            f"Iteration {iteration}, subproblem memory used: {total_mem_used:.4f} GB "
+            f"(peak {total_peak_mem_used:.4f} GB across {len(subproblem_memories)} workers)"
         )
+        return master_memory, subproblem_memories
 
-        # 3. Attach variables/data to the model object for the callback to access
-        # We use the underscore prefix (_) to avoid namespace collisions
-        self.master_model._action_vars = self.action_vars
-        self.master_model._theta_vars = self.theta_vars
-        self.master_model._workers = self.workers
-        self.master_model._env_groups = env_groups
-        self.master_model._executor = executor
-        self.master_model._max_iterations = max_iter
-        self.master_model._tol = tol
-        self.master_model._use_pareto = use_pareto_cuts
-        self.master_model._pareto_epsilon = pareto_epsilon
-        self.master_model._core_point = None
-        self.master_model._cb_iter = 0
-        self.master_model._max_workers = max_workers
-        self.master_model._verbose = verbose
+    @staticmethod
+    def _objective_confidence_interval(values):
+        """Mean and 95% half-width (normal approximation, ddof=1) of values."""
+        values = np.asarray(values, dtype=float)
+        mean = float(values.mean()) if values.size else 0.0
+        if values.size <= 1:
+            return mean, 0.0
+        half_width = 1.96 * float(values.std(ddof=1)) / float(np.sqrt(values.size))
+        return mean, half_width
 
-        # 4. Start the single optimization call
-        print("Starting Benders with Lazy Constraint Callback...")
-        try:
-            self.master_model.optimize(benders_callback)
-        finally:
-            if executor is not None:
-                executor.shutdown(wait=False)
-        # if not solve_and_handle_errors(self.master_model, verbose=verbose):
-        #     raise RuntimeError("Master model optimal solution not found")
-        # 5. Extract results
-        info = {}
-        if self.master_model.Status == GRB.OPTIMAL:
-            return self.master_model.ObjVal, info
-        return None, info
-
-    def update_master_problem(self, new_scenario_number):
-        # No need to update anything in the master problem
-        # Add the new variable to the model and the dictionary
-        # set imm_cost and a cost to go lb
-        start_index = len(self.theta_vars)
-        self.theta_vars += [self.master_model.addVar(vtype=GRB.CONTINUOUS, name=f"theta_{omega}") for omega in range(start_index, start_index + new_scenario_number)]
-        z = self.imm_cost + sum(self.theta_vars) / len(self.theta_vars)
-        current_sense = self.master_model.ModelSense
-        self.master_model.setObjective(z, current_sense)
-        self.master_model.update()
-
-    def adaptive_solve(self, batch_size=64,
-                       adaptive_tol=0.05,
-                       gap_tol=1e-6,
-                       max_iter=150,
-                       use_pareto_cuts=True,
-                       pareto_epsilon=1e-4,
-                       core_alpha=None,
-                       verbose=False):
-        converge = False
-        prev = -float('inf')
-        info = {}
-        number_of_workers = 0
-        while not converge:
-            # Include more workers if needed
-            # just activate next batch of workers
-            number_of_workers += batch_size
-            self.update_master_problem(new_scenario_number=batch_size)
-            # add theta vars for new workers
-            obj_val, info = self.solve_with_callback(tol=gap_tol,
-                                       max_iter=max_iter,
-                                       use_pareto_cuts=use_pareto_cuts,
-                                       pareto_epsilon=pareto_epsilon,
-                                       verbose=verbose)
-            if obj_val is None:
-                info['debug'] = 'no_objective_value'
-                break
-            obj_val = float(obj_val)
-            print(f"Adaptive solve: current objective value = {obj_val}, previous = {prev}", info, abs(obj_val - prev), number_of_workers, len(self.workers))
-            if 'debug' in info:
-                break
-            ptc_subgap = abs(obj_val - prev)/obj_val if obj_val > 0 else float('inf')
-            if ptc_subgap < adaptive_tol or number_of_workers >= len(self.workers):
-                info['number_of_workers'] = number_of_workers
-                converge = True
-            prev = obj_val
-        return prev, info
-
-
-if __name__ == "__main__":
-    action = (np.array([[1, 2], [3, 4]]), np.array([[5, 6], [7, 8]]))

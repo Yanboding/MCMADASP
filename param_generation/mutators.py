@@ -164,6 +164,17 @@ def mutate_mixture_target_discount_factor_overtime_5(env_args, val):
     env_args['discount_factor'] = MIXTURE_TARGET_DISCOUNT_FACTOR
     env_args['overtime_cost_by_day'] = 5
 
+def mutate_sample_path_number_mixture_geometric_l01(agent_args, sample_path_number):
+    """Sweep the Benders scenario count (``sample_path_number``) under the
+    fixed mixture-geometric IS proposal (``lambda_0 = 0.1``) of the
+    0.99-target case study, to measure how the scenario count drives the
+    per-iteration confidence interval of the subproblem objectives.
+    """
+    mutate_mixture_geometric_proposal_lambda_0(agent_args, 0.1)
+    agent_args['policy_id'] += '_scenario_' + str(sample_path_number)
+    agent_args['agent_args']['sample_path_number'] = sample_path_number
+
+
 def mutate_mixture_geometric_proposal_lambda_0(agent_args, lambda_0):
     """Set a mixture-geometric IS proposal, sweeping the long-component mass.
 

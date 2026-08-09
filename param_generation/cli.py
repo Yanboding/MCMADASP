@@ -15,7 +15,7 @@ from scipy.stats import geom
 
 from experiments import get_config_by_type
 from param_generation.caching import load_trained_coefficients_from_folder
-from param_generation.command_files import write_grouped_command_file
+from param_generation.command_files import write_command_file, write_grouped_command_file
 from param_generation.datasets import (
     generate_penalty_coefficient_training_env,
     generate_policy_efficiency_data,
@@ -414,6 +414,37 @@ def recipe_case_study_099_mixture_geometric_proposal_095_overtime_5_policy_evalu
         policy_ids=['approx_penalized_hindsight'],
     )
 
+def recipe_case_study_099_scenario_number_train_env(dat_file='table.dat'):
+    """Emit penalty-coefficient training commands for the scenario-count sweep.
+
+    One command per ``sample_path_number in {64, 128, 256, 512}`` (experiment
+    ``case_study_099_scenario_number``: 0.99-target case study, mixture-
+    geometric proposal lambda_0=0.1). The runner overrides the agent's
+    ``sample_path_number`` with the record-level value (run.py), so each
+    variant's swept ``val`` is passed through explicitly instead of the flat
+    256 default. Training logs report the per-iteration 95% CI of the
+    subproblem objectives, which is the observable this sweep measures.
+    """
+    test_envs = build_variation_test_env(
+        EXPERIMENT_SPECS['case_study_099_scenario_number']
+    )
+    all_records = []
+    for key, variant in test_envs.items():
+        (_, _, sample_path_number) = key
+        all_records.extend(
+            generate_penalty_coefficient_training_env(
+                {key: variant},
+                dat_file=None,
+                init_state=None,
+                sample_path_number=sample_path_number,
+                init_state_seed=12345,
+                sample_paths_seed=42,
+            )
+        )
+    write_command_file(all_records, dat_file)
+    return all_records
+
+
 def recipe_toy_eval_proposal_comparison(
     test_sample_path_num=4096,
     num_groups=500,
@@ -667,7 +698,7 @@ def recipe_saure_ejor_case_study(
 
 def main():
     """Run the currently-active dataset-generation recipe."""
-    recipe_saure_ejor_case_study()
+    recipe_case_study_099_scenario_number_train_env()
 
 
 if __name__ == '__main__':
