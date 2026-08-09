@@ -1,7 +1,7 @@
 """Test least-squares training of linear value-function coefficients.
 
 Generates synthetic (state, value) data from a ground-truth coefficient
-vector theta*, fits a fresh ``MulticlassLinearPenaltyFunction`` with
+vector theta*, fits a fresh ``LinearPenaltyFunction`` with
 ``ApproxQAgent.regression_train`` (a Gurobi QP), and checks that the fitted
 V_theta(s) reproduces the targets on training and held-out states. Finally
 verifies that the trained agent can solve the decision model.
@@ -10,7 +10,7 @@ import numpy as np
 
 from decision_maker import ApproxQAgent
 from experiments import get_config_by_type
-from generating_function import MulticlassLinearPenaltyFunction
+from generating_function import LinearPenaltyFunction
 
 
 def sample_states(env, size, rng):
@@ -39,7 +39,7 @@ def main():
         np.zeros(sizes[3]),
         np.zeros(sizes[4]),
     ])
-    truth = MulticlassLinearPenaltyFunction(env, coefficients=true_theta)
+    truth = LinearPenaltyFunction(env, coefficients=true_theta)
 
     X_train = sample_states(env, 300, rng)
     Y_train = np.array([truth.calculate_state_value(s) for s in X_train])
@@ -49,7 +49,7 @@ def main():
     agent = ApproxQAgent(env,
                          discount_factor=env.discount_factor,
                          sample_path_number=2,
-                         generating_function=MulticlassLinearPenaltyFunction(env))
+                         generating_function=LinearPenaltyFunction(env))
 
     # The agent must refuse to act before training.
     try:

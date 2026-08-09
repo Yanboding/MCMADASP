@@ -386,6 +386,67 @@ class BendersDecompositionSolver:
         # optimal-face re-solve (see _min_norm_master_action).
         self._action_abs_vars = None
 
+    def _register_cut(self, constr, record, iteration):
+        if not self._cut_purge_enabled:
+            return
+        # Cuts built from MVar expressions come back as 0-d/1-element MConstr;
+        # bulk getAttr/remove need the scalar Constr.
+        if hasattr(constr, 'tolist'):
+            constr = constr.tolist()
+        while isinstance(constr, (list, tuple)):
+            constr = constr[0]
+        entry = {'constr': constr, 'record': record, 'last_active': iteration}
+        self._cut_registry.append(entry)
+        if record['kind'] == 'optimality':
+            self._latest_cut_by_scenario[record['scenario_id']] = entry
+
+    def _update_cut_activity(self, iteration, slack_tol):
+        """Reset the purge clock of cuts tight at the current master solution.
+
+        Must run right after a successful master solve: Gurobi drops solution
+        attributes (Slack) as soon as the model is modified, e.g. by the
+        min-norm re-solve or by adding this iteration's cuts.
+        """
+        entries = [e for e in self._cut_registry if e['record']['kind'] == 'optimality']
+        if not entries:
+            return
+        constrs = [e['constr'] for e in entries]
+        slacks = self.master_model.getAttr(GRB.Attr.Slack, constrs)
+        rhs_values = self.master_model.getAttr(GRB.Attr.RHS, constrs)
+        for entry, slack, rhs in zip(entries, slacks, rhs_values):
+            if abs(slack) <= slack_tol * max(1.0, abs(rhs)):
+                entry['last_active'] = iteration
+
+    def _purge_inactive_cuts(self, iteration, purge_after):
+        """Drop optimality cuts inactive for >= ``purge_after`` master solves.
+
+        Keeps each scenario's newest cut (every theta stays supported, so the
+        master stays bounded) and all feasibility cuts (dropping one could let
+        the master revisit an infeasible action and cycle). Removal is lazy --
+        no update() here, or Gurobi would discard the current solution that
+        callers still read (action_vars.X) after the final iteration.
+        """
+        protected = {id(entry) for entry in self._latest_cut_by_scenario.values()}
+        keep, stale = [], []
+        for entry in self._cut_registry:
+            is_stale = (entry['record']['kind'] == 'optimality'
+                        and id(entry) not in protected
+                        and iteration - entry['last_active'] >= purge_after)
+            (stale if is_stale else keep).append(entry)
+        if stale:
+            self.master_model.remove([entry['constr'] for entry in stale])
+            self._cut_registry = keep
+        return len(stale)
+
+    def _rewrite_cut_checkpoint_store(self, checkpoint_path):
+        """Rewrite the cuts file to exactly the surviving registry records."""
+        cuts_path = self._checkpoint_paths(checkpoint_path)[1]
+        tmp_path = f"{cuts_path}.tmp"
+        with gzip.open(tmp_path, 'wt', encoding='utf-8') as handle:
+            for entry in self._cut_registry:
+                handle.write(json.dumps(entry['record'], separators=(',', ':')) + '\n')
+        os.replace(tmp_path, cuts_path)
+
     def _min_norm_master_action(self, fallback_action, verbose=False):
         """Return the minimum-L1-norm action on the master's optimal face.
 
@@ -587,14 +648,16 @@ class BendersDecompositionSolver:
 
         if os.path.exists(meta_path):
             state = self._read_json_file(meta_path)
+            reload_iteration = int(state.get('iteration', 0) or 0)
             cut_records = []
             for cut_index, record in enumerate(self._iter_cut_records(cuts_path)):
                 normalized = self._normalize_cut_record(record)
                 cut_records.append(normalized)
-                self.master_model.addConstr(
+                constr = self.master_model.addConstr(
                     self._cut_record_to_constraint(normalized),
                     name=f"reloaded_{normalized['kind']}_cut_{cut_index}",
                 )
+                self._register_cut(constr, normalized, reload_iteration)
             state['cuts'] = cut_records
             state['cut_count'] = len(cut_records)
             return state
@@ -603,14 +666,16 @@ class BendersDecompositionSolver:
             return empty_state
 
         state = self._read_json_file(checkpoint_path)
+        reload_iteration = int(state.get('iteration', 0) or 0)
         normalized_records = []
         for cut_index, record in enumerate(state.get('cuts', [])):
             normalized = self._normalize_cut_record(record)
             normalized_records.append(normalized)
-            self.master_model.addConstr(
+            constr = self.master_model.addConstr(
                 self._cut_record_to_constraint(normalized),
                 name=f"reloaded_{normalized['kind']}_cut_{cut_index}",
             )
+            self._register_cut(constr, normalized, reload_iteration)
 
         state['cuts'] = normalized_records
         state['cut_count'] = len(normalized_records)
@@ -749,7 +814,7 @@ class BendersDecompositionSolver:
                     )
         return all_feasible, feasibility_cuts, optimality_cuts, cut_records, cost_to_go
 
-    def _seed_initial_cuts(self, active_workers):
+    def _seed_initial_cuts(self, active_workers, iteration=0):
         """Seed the master with each worker's build-time (a=0) optimality cut.
 
         Every subproblem was solved once at coefficients ``a = 0`` while it was
@@ -784,10 +849,12 @@ class BendersDecompositionSolver:
         zero_action = np.zeros(self.action_vars.shape[0], dtype=float)
         _, _, optimality_cuts, cut_records, cost_to_go = self._build_cuts(
             seeded_results, seeded_workers, zero_action)
-        self.master_model.addConstrs(
+        seed_constrs = self.master_model.addConstrs(
             (optimality_cuts[i] for i in range(len(optimality_cuts))),
             name="benders_seed_cut_",
         )
+        for i, record in enumerate(cut_records):
+            self._register_cut(seed_constrs[i], record, iteration)
         self.master_model.update()
 
         all_seeded = len(seeded_workers) == len(active_workers)
@@ -809,13 +876,24 @@ class BendersDecompositionSolver:
               max_workers=None,
               checkpoint_path=None,
               resume_checkpoint_path=None,
-              min_norm_action=False):
+              min_norm_action=False,
+              purge_after=None,
+              purge_slack_tol=1e-6):
         info = {}
         lower_bound = -GRB.INFINITY
         upper_bound = GRB.INFINITY
         core_point = None  # For Pareto cuts; initialized after the first master solve.
         is_min = self.master_model.ModelSense == GRB.MINIMIZE
         scenario_count = self.theta_vars.shape[0]
+
+        # Cut purging keeps the master from growing without bound: optimality
+        # cuts that stay slack for ``purge_after`` consecutive master solves
+        # are removed (each scenario's newest cut and all feasibility cuts are
+        # kept). ``purge_after=None`` (the default) disables purging. Set up
+        # BEFORE seeding/checkpoint reload so those cuts are registered too.
+        self._cut_purge_enabled = purge_after is not None
+        self._cut_registry = []
+        self._latest_cut_by_scenario = {}
 
         # The worker set and their env grouping are fixed for the whole solve,
         # so compute them once. Workers sharing an env must be solved
@@ -850,7 +928,8 @@ class BendersDecompositionSolver:
         # coefficients to absurd magnitudes (numerically breaking the
         # subproblems).
         if not checkpoint_state.get('cut_count'):
-            bound_at_zero, seed_records = self._seed_initial_cuts(active_workers)
+            bound_at_zero, seed_records = self._seed_initial_cuts(
+                active_workers, iteration=iteration_offset)
             if bound_at_zero is not None:
                 # The optimum is at least as good as all-zero coefficients, so
                 # the a=0 value is a valid incumbent bound to start the gap from.
@@ -886,6 +965,11 @@ class BendersDecompositionSolver:
                     print(f"Iteration {global_iteration}, master solved in {time.time() - start} seconds")
                     self._report_memory_usage(global_iteration)
                     action = self.action_vars.X
+                    # Capture cut activity NOW: Gurobi drops solution
+                    # attributes (Slack) once the model is modified, and the
+                    # min-norm re-solve below may do exactly that.
+                    if self._cut_purge_enabled:
+                        self._update_cut_activity(global_iteration, purge_slack_tol)
                     if is_min:
                         lower_bound = self.master_model.ObjVal
                     else:
@@ -920,19 +1004,25 @@ class BendersDecompositionSolver:
                 if not all_feasible:
                     # Some scenario infeasible: add feasibility cuts and repeat.
                     print(f"Iteration {global_iteration}, adding {len(feasibility_cuts)} feasibility cuts")
-                    self.master_model.addConstrs(
+                    feas_constrs = self.master_model.addConstrs(
                         (feasibility_cuts[i] for i in range(len(feasibility_cuts))),
                         name=f"feas_cut_{global_iteration}_",
                     )
+                    feas_records = [r for r in new_cut_records if r['kind'] == 'feasibility']
+                    for i, record in enumerate(feas_records):
+                        self._register_cut(feas_constrs[i], record, global_iteration)
                     print('-' * 20)
                     continue
 
                 # All scenarios feasible: add optimality cuts and refresh bounds.
                 print(f"Iteration {global_iteration}, adding {len(optimality_cuts)} optimality cuts")
-                self.master_model.addConstrs(
+                opt_constrs = self.master_model.addConstrs(
                     (optimality_cuts[i] for i in range(len(optimality_cuts))),
                     name=f"opt_cut_{global_iteration}_",
                 )
+                opt_records = [r for r in new_cut_records if r['kind'] == 'optimality']
+                for i, record in enumerate(opt_records):
+                    self._register_cut(opt_constrs[i], record, global_iteration)
                 cost_to_go_estimation /= scenario_count  # Average cost-to-go across scenarios for reporting.
                 first_stage_cost = self.imm_cost.getValue() if hasattr(self.imm_cost, 'getValue') else float(self.imm_cost or 0.0)
                 # Keep the incumbent (subproblem-evaluated) bound monotone so the
@@ -961,6 +1051,17 @@ class BendersDecompositionSolver:
 
                 print(f"UB: {upper_bound}, LB: {lower_bound}, Gap: {abs(upper_bound - lower_bound)}, "
                       f"First-stage cost: {first_stage_cost}, Cost-to-go estimate: {cost_to_go_estimation}")
+
+                # Purge AFTER registering this iteration's cuts (so each
+                # scenario's newest cut is protected) and BEFORE checkpointing
+                # (so the store reflects the surviving cuts).
+                purged_count = 0
+                if self._cut_purge_enabled:
+                    purged_count = self._purge_inactive_cuts(global_iteration, purge_after)
+                    if purged_count:
+                        print(f"Iteration {global_iteration}, purged {purged_count} inactive cuts "
+                              f"({len(self._cut_registry)} cuts remain)")
+
                 checkpoint_state = {
                     'iteration': global_iteration,
                     'lower_bound': None if np.isinf(lower_bound) else float(lower_bound),
@@ -968,8 +1069,17 @@ class BendersDecompositionSolver:
                     'core_point': None if core_point is None else np.asarray(core_point, dtype=float).tolist(),
                     'cut_count': cut_count + len(new_cut_records),
                 }
-                self._save_cut_checkpoint(checkpoint_path, checkpoint_state, new_cut_records=new_cut_records)
-                cut_count += len(new_cut_records)
+                if purged_count:
+                    # Rewrite the cuts store to the surviving cuts (this
+                    # iteration's cuts are already in the registry) so a
+                    # resume does not re-inflate the master with purged cuts.
+                    checkpoint_state['cut_count'] = len(self._cut_registry)
+                    if checkpoint_path:
+                        self._rewrite_cut_checkpoint_store(checkpoint_path)
+                        self._save_cut_checkpoint(checkpoint_path, checkpoint_state, new_cut_records=None)
+                else:
+                    self._save_cut_checkpoint(checkpoint_path, checkpoint_state, new_cut_records=new_cut_records)
+                cut_count = checkpoint_state['cut_count']
 
                 if abs(upper_bound - lower_bound) < tol:
                     info = {}

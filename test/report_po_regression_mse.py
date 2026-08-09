@@ -11,7 +11,7 @@ import numpy as np
 
 from decision_maker import ApproxQAgent
 from experiments import get_config_by_type
-from generating_function import MulticlassLinearPenaltyFunction, MulticlassQuadraticPenaltyFunction
+from generating_function import LinearPenaltyFunction, MulticlassQuadraticPenaltyFunction
 
 
 def main():
@@ -21,7 +21,7 @@ def main():
                          discount_factor=env.discount_factor,
                          sample_path_number=2048,
                          paths_per_init_state=32,
-                         generating_function=MulticlassLinearPenaltyFunction(env),
+                         generating_function=LinearPenaltyFunction(env),
                          solver_name='approx_Q')
 
     value_generating_function = MulticlassQuadraticPenaltyFunction(env)

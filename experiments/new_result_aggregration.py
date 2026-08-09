@@ -103,6 +103,7 @@ class SimulateEvaluationResult:
         'solving_time_per_state',
         'uids_by_policy',
         'after_warmup_cost_by_uid',
+        'cost_by_uid',
     )
 
     def __init__(self,directory_path, file_pattern, env, group_ids=None, is_reuse=False):
@@ -128,6 +129,9 @@ class SimulateEvaluationResult:
         self.after_warmup_policy_costs = defaultdict(RunningStats)
         # Per-sample-path after-warmup cost, keyed (group_id, policy_id) -> {uid: cost}, used for paired comparisons
         self.after_warmup_cost_by_uid = defaultdict(dict)
+        # Per-sample-path importance-weighted discounted tail cost (``total_cost``),
+        # keyed (group_id, policy_id) -> {uid: cost}, used for paired comparisons
+        self.cost_by_uid = defaultdict(dict)
         # Waiting time target violation
         self.waiting_time_target_ptc_by_type_day = defaultdict(dd_dd_rs_factory)
         self.waiting_time_target_ptc_by_day = defaultdict(dd_rs_factory)
@@ -209,12 +213,16 @@ class SimulateEvaluationResult:
         if self.group_ids and group_id not in self.group_ids:
             self.group_ids.append(group_id)
         self.policy_costs[(group_id, policy_id)] += data['total_cost']
+        if uid is not None:
+            self.cost_by_uid[(group_id, policy_id)][uid] = data['total_cost']
         # use the first loaded policy as the information relaxation benchmark
         self.information_relaxation_id = policy_id
-        self.zero_penalized_information_relaxation_cost[(group_id, policy_id)] += data['zero_information_relaxation_cost']
-        self.penalized_information_relaxation_cost[(group_id, policy_id)] += data['penalized_information_relaxation_cost']
-        self.zero_penalized_gap[(group_id, policy_id)] += data['gap_to_zero_information_relaxation']
-        self.penalized_gap[(group_id, policy_id)] += data['gap_to_penalized_information_relaxation']
+        # Runs launched with skip_information_relaxation=True carry None here.
+        if data['zero_information_relaxation_cost'] is not None:
+            self.zero_penalized_information_relaxation_cost[(group_id, policy_id)] += data['zero_information_relaxation_cost']
+            self.penalized_information_relaxation_cost[(group_id, policy_id)] += data['penalized_information_relaxation_cost']
+            self.zero_penalized_gap[(group_id, policy_id)] += data['gap_to_zero_information_relaxation']
+            self.penalized_gap[(group_id, policy_id)] += data['gap_to_penalized_information_relaxation']
             
         if self.number_of_periods is None:
             self.number_of_periods = len(data['costs'])
@@ -247,12 +255,20 @@ class SimulateEvaluationResult:
 
 
         for day in range(len(scheduled_patients)):
+            # One sample per path and day: keep this OUT of the type loop, or the
+            # Total row's n is inflated by num_types and its CI shrinks by sqrt(num_types).
+            self.waiting_time_target_ptc_by_day[policy_id][day] += total_scheduled_patients_ptc_by_day[day]
             for treatment_type in range(len(scheduled_patients[day])):
                 self.waiting_time_target_ptc_by_type_day[policy_id][treatment_type][day] += scheduled_patients_ptc_by_day[day][treatment_type]
-                self.waiting_time_target_ptc_by_day[policy_id][day] += total_scheduled_patients_ptc_by_day[day]
         
-        for day in range(len(data["overtime"])):
-            self.overtime_utilization[(group_id, policy_id)] += data["overtime"][day] / self.env.overtime_capacity * 100
+        # Overtime utilization over the simulated evaluation days only: drop the
+        # warm-up prefix and the partially-booked trailing booking window.
+        num_simulated_days = len(data['costs'])
+        overtime_days = (data["overtime"][warm_up_periods:num_simulated_days]
+                         if num_simulated_days > warm_up_periods
+                         else data["overtime"][:num_simulated_days])
+        for overtime in overtime_days:
+            self.overtime_utilization[(group_id, policy_id)] += overtime / self.env.overtime_capacity * 100
         # calculate the waiting time violation rate
         # scheduled_patients is a 2D array of shape (num_days, num_types), where each entry represents the number of patients of a certain type scheduled on a certain day. We need to calculate the percentage of patients that are scheduled outside of their waiting time target. For each treatment type, we have a waiting time target (e.g., 1 day, 5 days, etc.). We can calculate the cumulative percentage of patients scheduled by each day and compare it to the waiting time target to determine the violation rate.
         patients_outside_target = sum(
@@ -265,32 +281,36 @@ class SimulateEvaluationResult:
         
         self.solving_time_per_state[(group_id, policy_id)] += data.get('solving_time_per_state', 0)
     
-    def waiting_time_target_ptc_table(self, days=(1, 5, 10, 15, 20)):
+    def waiting_time_target_ptc_table(self, days=(1, 5, 10, 15, 20), confidence=0.95,
+                                      label='tab:case_study_thresholds'):
         policy_order = [
             ('approx_penalized_hindsight', 'PH'),
             ('row_gen_alp', 'ALP'),
             ('myopic', 'M'),
         ]
         # Keep only the policies present in the loaded data.
-        policies = [(pid, label) for pid, label in policy_order
+        policies = [(pid, plabel) for pid, plabel in policy_order
                     if pid in self.waiting_time_target_ptc_by_type_day]
         num_policies = len(policies)
         num_types = max(len(self.waiting_time_target_ptc_by_type_day[pid])
                         for pid, _ in policies)
 
         def cell(stats):
-            return f'{round(stats.mean)}$\\pm${round(stats.half_window(0.95))}'
+            return f'{stats.mean:.0f}$\\pm${stats.half_window(confidence):.1f}'
 
-        col_spec = 'l' + 'c' * (num_policies * len(days))
+        def total_cell(stats):
+            return f'\\(\\mathbf{{{stats.mean:.0f} \\pm {stats.half_window(confidence):.1f}}}\\)'
+
+        col_spec = f'l*{{{num_policies * len(days)}}}{{c}}'
         header_groups = '\n'.join(
-            f'& \\multicolumn{{{num_policies}}}{{c}}{{\\textbf{{{day} workday{"s" if day > 1 else ""}}}}}'
+            f'& \\multicolumn{{{num_policies}}}{{c}}{{{day} workday{"s" if day > 1 else ""}}}'
             for day in days
         )
         cmidrules = '\n'.join(
             f'\\cmidrule(lr){{{2 + i * num_policies}-{1 + (i + 1) * num_policies}}}'
             for i in range(len(days))
         )
-        policy_header = ' '.join(f'& {label}' for _ in days for _, label in policies)
+        policy_header = ' '.join(f'& {plabel}' for _ in days for _, plabel in policies)
 
         body_lines = []
         for type in range(num_types):
@@ -300,33 +320,47 @@ class SimulateEvaluationResult:
             )
             body_lines.append(f'{type + 1} {cells} \\\\')
         total_cells = '\n'.join(
-            '& ' + ' & '.join(cell(self.waiting_time_target_ptc_by_day[pid][day - 1])
+            '& ' + ' & '.join(total_cell(self.waiting_time_target_ptc_by_day[pid][day - 1])
                               for pid, _ in policies)
             for day in days
         )
         body = '\n'.join(body_lines)
 
+        n_paths = self.waiting_time_target_ptc_by_day[policies[0][0]][days[0] - 1].n
+        abbreviations = ' and '.join(
+            text for pid, text in (('approx_penalized_hindsight', 'PH denotes Penalized Hindsight'),
+                                   ('myopic', 'M denotes Myopic'))
+            if pid in self.waiting_time_target_ptc_by_type_day
+        )
+
         table = f"""\\begin{{table}}[!htbp]
 \\centering
+\\begin{{threeparttable}}
+\\caption{{Percentage of treatments initiated within selected waiting-time thresholds.}}
+\\label{{{label}}}
 \\scriptsize
 \\setlength{{\\tabcolsep}}{{2.5pt}}
-\\renewcommand{{\\arraystretch}}{{1.05}}
-\\caption{{Percentage of cases initiated within given number of workdays under the Penalized Hindsight (PH), ALP, and Myopic (M) policies. $I=18$, $C_r=120$, $C_o=15$, $o=100$, $N=25$, $g_i=2000$, $\\lambda=8.25 \\text{{ with maximum }} 25$, and $\\gamma=0.95$. The waiting-time penalty, treatment patterns, and arrivals are shown in Tables~\\ref{{tab:treatment_pattern_case_study}} and~\\ref{{tab:wait_time_penalty_case_study}}, respectively.}}
-\\label{{tab:policy_performance_095_case_study}}
-\\resizebox{{\\textwidth}}{{!}}{{
+\\renewcommand{{\\arraystretch}}{{1.08}}
+\\resizebox{{\\textwidth}}{{!}}{{%
 \\begin{{tabular}}{{{col_spec}}}
 \\toprule
-\\textbf{{Type}}
+Type
 {header_groups} \\\\
 {cmidrules}
 {policy_header} \\\\
 \\midrule
 {body}
+\\midrule
 \\textbf{{Total}}
 {total_cells} \\\\
 \\bottomrule
-\\end{{tabular}}
+\\end{{tabular}}%
 }}
+\\begin{{tablenotes}}[flushleft]
+\\scriptsize
+\\item \\textit{{Note.}} Entries are percentages reported as sample means \\(\\pm\\) {round(confidence * 100)}\\% confidence-interval half-widths over {n_paths:,} evaluation sample paths. {abbreviations}. Treatment inputs appear in Table~\\ref{{tab:case_study_inputs}}.
+\\end{{tablenotes}}
+\\end{{threeparttable}}
 \\end{{table}}"""
         return table
     
@@ -341,9 +375,13 @@ class SimulateEvaluationResult:
             table += f"{policy_label.get(policy_id, policy_id)} & ${stats.confidence_interval(0.8)}$ & ${self.waiting_time_violation[(group_id, policy_id)].confidence_interval()}$ & ${self.overtime_utilization[(group_id, policy_id)].confidence_interval()}$\\\\\n"
         return table
 
-    def improvement_over_baseline(self, group_id, policy_id, baseline_id='myopic', confidence=0.95):
-        """Paired relative improvement (%) of `policy_id` over `baseline_id` in
-        after-warmup discounted total cost, matched by uid (common random numbers).
+    def improvement_over_baseline(self, group_id, policy_id, baseline_id='myopic', confidence=0.95,
+                                  cost_by_uid=None):
+        """Paired relative improvement (%) of `policy_id` over `baseline_id`,
+        matched by uid (common random numbers). By default the after-warmup
+        raw cost is compared; pass ``cost_by_uid`` (e.g. ``self.cost_by_uid``,
+        the importance-weighted discounted tail cost) to compare another
+        per-uid cost.
 
         Uses the ratio-of-paired-means estimator mean(C_b - C_p) / mean(C_b)
         (per-path ratios are undefined when a baseline path has zero cost),
@@ -352,8 +390,10 @@ class SimulateEvaluationResult:
         Returns (improvement_pct, half_width_pct, n_pairs).
         """
         from scipy.stats import norm
-        policy_costs = self.after_warmup_cost_by_uid[(group_id, policy_id)]
-        baseline_costs = self.after_warmup_cost_by_uid[(group_id, baseline_id)]
+        if cost_by_uid is None:
+            cost_by_uid = self.after_warmup_cost_by_uid
+        policy_costs = cost_by_uid[(group_id, policy_id)]
+        baseline_costs = cost_by_uid[(group_id, baseline_id)]
         common_uids = policy_costs.keys() & baseline_costs.keys()
         pc = np.array([policy_costs[uid] for uid in common_uids])
         bc = np.array([baseline_costs[uid] for uid in common_uids])
@@ -666,6 +706,224 @@ Initial-state condition
     return table
 
 
+def _fmt_latex_number(value, decimals=0):
+    """Format a number for LaTeX math mode with ``{,}`` thousands separators."""
+    return f'{value:,.{decimals}f}'.replace(',', '{,}')
+
+
+def _value_cell(mean, half_width, mean_decimals=0, hw_decimals=1, bold=False):
+    """``mean \\pm half-width`` LaTeX cell."""
+    body = f'{_fmt_latex_number(mean, mean_decimals)} \\pm {_fmt_latex_number(half_width, hw_decimals)}'
+    return f'\\(\\mathbf{{{body}}}\\)' if bold else f'\\({body}\\)'
+
+
+def _metric_cell(stats, confidence, mean_decimals=0, hw_decimals=1, bold=False):
+    """``mean \\pm half-width`` LaTeX cell for a RunningStats-like object."""
+    return _value_cell(stats.mean, stats.half_window(confidence), mean_decimals, hw_decimals, bold)
+
+
+def saure_ejor_steady_state_table(
+    base_results_dir=os.path.join('.', 'experiments', 'results'),
+    folder_name='case_study_ejor_alp_steady_state',
+    file_pattern='[0-9]*.jsonl',
+    is_reuse=True,
+    baseline_id='myopic',
+    confidence=0.95,
+):
+    """Case-study table for ``case_study_ejor_alp_steady_state``: per policy the
+    discounted total cost (importance-weighted ``total_cost`` of the evaluation
+    tail), the paired relative improvement over the Myopic policy, wait-time
+    violations, overtime utilization, and the suboptimality gaps to the
+    zero-penalty and penalized information-relaxation lower bounds. Both gaps
+    are reported in cost units, not percentages: the penalized bound's sample
+    mean is near zero under the mixture-geometric importance weights, so a
+    percentage of it would be meaningless."""
+    from experiments import get_config_by_type
+    env = get_config_by_type('ejor').env
+
+    policy_order = [
+        ('approx_penalized_hindsight', 'Penalized Hindsight'),
+        ('row_gen_alp', 'ALP'),
+        ('myopic', 'Myopic'),
+    ]
+    ser = SimulateEvaluationResult(
+        os.path.join(base_results_dir, folder_name),
+        file_pattern,
+        env,
+        is_reuse=is_reuse,
+    )
+
+    rows = []
+    n_paths = 0
+    for group_id in sorted({gid for gid, _ in ser.policy_costs.keys()}, key=str):
+        policies = [(pid, label) for pid, label in policy_order
+                    if (group_id, pid) in ser.policy_costs]
+        costs = {pid: ser.policy_costs[(group_id, pid)] for pid, _ in policies}
+        violations = {pid: ser.waiting_time_violation[(group_id, pid)] for pid, _ in policies}
+        overtimes = {pid: ser.overtime_utilization[(group_id, pid)] for pid, _ in policies}
+        zero_gaps = {pid: ser.zero_penalized_gap[(group_id, pid)] for pid, _ in policies}
+        penalized_gaps = {pid: ser.penalized_gap[(group_id, pid)] for pid, _ in policies}
+        improvements = {
+            pid: ser.improvement_over_baseline(group_id, pid, baseline_id, confidence,
+                                               cost_by_uid=ser.cost_by_uid)
+            for pid, _ in policies if pid != baseline_id
+        }
+        n_paths = max(n_paths, max(stats.n for stats in costs.values()))
+
+        best_cost = min(costs, key=lambda pid: costs[pid].mean)
+        best_violation = min(violations, key=lambda pid: violations[pid].mean)
+        best_overtime = min(overtimes, key=lambda pid: overtimes[pid].mean)
+        best_zero_gap = min(zero_gaps, key=lambda pid: zero_gaps[pid].mean)
+        best_penalized_gap = min(penalized_gaps, key=lambda pid: penalized_gaps[pid].mean)
+        best_improvement = max(improvements, key=lambda pid: improvements[pid][0]) if improvements else None
+
+        for pid, label in policies:
+            if pid == baseline_id:
+                improvement_cell = '---'
+            else:
+                improvement, half_width, _ = improvements[pid]
+                improvement_cell = _value_cell(improvement, half_width, mean_decimals=1,
+                                               bold=pid == best_improvement)
+            rows.append(
+                f'{label}'
+                f' & {_metric_cell(costs[pid], confidence, bold=pid == best_cost)}'
+                f' & {improvement_cell}'
+                f' & {_metric_cell(violations[pid], confidence, bold=pid == best_violation)}'
+                f' & {_metric_cell(overtimes[pid], confidence, bold=pid == best_overtime)}'
+                f' & {_metric_cell(zero_gaps[pid], confidence, bold=pid == best_zero_gap)}'
+                f' & {_metric_cell(penalized_gaps[pid], confidence, bold=pid == best_penalized_gap)} \\\\'
+            )
+    body = '\n'.join(rows)
+
+    table = f"""\\begin{{table}}[!htbp]
+\\centering
+\\begin{{threeparttable}}
+\\caption{{Estimated case-study policy performance starting from the ALP steady state with $\\gamma=0.99$.}}
+\\label{{tab:saure_ejor_steady_state}}
+
+\\small
+\\setlength{{\\tabcolsep}}{{4pt}}
+\\renewcommand{{\\arraystretch}}{{1.15}}
+
+\\resizebox{{\\textwidth}}{{!}}{{%
+\\begin{{tabular}}{{lcccccc}}
+\\toprule
+Policy
+& \\makecell{{Discounted\\\\total cost}}
+& \\makecell{{Improvement over\\\\Myopic (\\%)}}
+& \\makecell{{Wait-time\\\\violations}}
+& \\makecell{{Overtime\\\\utilization}}
+& \\makecell{{Gap to\\\\zero-penalty LB}}
+& \\makecell{{Gap to\\\\penalized LB}}\\\\
+\\midrule
+{body}
+\\bottomrule
+\\end{{tabular}}%
+}}
+
+\\begin{{tablenotes}}[flushleft]
+\\footnotesize
+\\item \\textit{{Note.}} Values are sample means \\(\\pm\\) {round(confidence * 100)}\\% confidence-interval half-widths over \\({_fmt_latex_number(n_paths)}\\) evaluation sample paths. Discounted total cost is the importance-weighted discounted cost of the post-warm-up evaluation periods. Improvement over Myopic is the paired relative reduction in discounted total cost on common sample paths, with a delta-method {round(confidence * 100)}\\% confidence interval. Wait-time violations and overtime utilization are percentages computed over the evaluation periods only. The last two columns report the policy's suboptimality gap (in cost units) to the zero-penalty and penalized perfect-information relaxation lower bounds. Bold entries are the best value in each metric.
+\\end{{tablenotes}}
+\\end{{threeparttable}}
+\\end{{table}}"""
+    return table
+
+
+def saure_ejor_replication_table(
+    base_results_dir=os.path.join('.', 'experiments', 'results'),
+    folder_name='case_study_ejor_replication',
+    file_pattern='[0-9]*.jsonl',
+    is_reuse=True,
+    confidence=0.95,
+):
+    """Case-study table for ``case_study_ejor_replication`` (empty start with a
+    750-day warm-up): discounted total cost, wait-time violations, and overtime
+    utilization for the ALP and Myopic policies."""
+    from experiments import get_config_by_type
+    env = get_config_by_type('ejor').env
+
+    policy_order = [
+        ('row_gen_alp', 'ALP'),
+        ('myopic', 'Myopic'),
+    ]
+    ser = SimulateEvaluationResult(
+        os.path.join(base_results_dir, folder_name),
+        file_pattern,
+        env,
+        is_reuse=is_reuse,
+    )
+
+    rows = []
+    n_paths = 0
+    for group_id in sorted({gid for gid, _ in ser.policy_costs.keys()}, key=str):
+        policies = [(pid, label) for pid, label in policy_order
+                    if (group_id, pid) in ser.policy_costs]
+        costs = {pid: ser.policy_costs[(group_id, pid)] for pid, _ in policies}
+        violations = {pid: ser.waiting_time_violation[(group_id, pid)] for pid, _ in policies}
+        overtimes = {pid: ser.overtime_utilization[(group_id, pid)] for pid, _ in policies}
+        n_paths = max(n_paths, max(stats.n for stats in costs.values()))
+
+        best_cost = min(costs, key=lambda pid: costs[pid].mean)
+        best_violation = min(violations, key=lambda pid: violations[pid].mean)
+        best_overtime = min(overtimes, key=lambda pid: overtimes[pid].mean)
+
+        for pid, label in policies:
+            rows.append(
+                f'{label}'
+                f' & {_metric_cell(costs[pid], confidence, bold=pid == best_cost)}'
+                f' & {_metric_cell(violations[pid], confidence, bold=pid == best_violation)}'
+                f' & {_metric_cell(overtimes[pid], confidence, bold=pid == best_overtime)} \\\\'
+            )
+    body = '\n'.join(rows)
+
+    table = f"""\\begin{{table}}[!htbp]
+\\centering
+\\begin{{threeparttable}}
+\\caption{{Estimated case-study policy performance under the EJOR replication design (empty start with a 750-day warm-up) with $\\gamma=0.99$.}}
+\\label{{tab:saure_ejor_replication}}
+
+\\small
+\\setlength{{\\tabcolsep}}{{6pt}}
+\\renewcommand{{\\arraystretch}}{{1.15}}
+
+\\begin{{tabular*}}{{\\textwidth}}{{@{{\\extracolsep{{\\fill}}}} lccc @{{}}}}
+\\toprule
+Policy
+& \\makecell{{Discounted\\\\total cost}}
+& \\makecell{{Wait-time\\\\violations}}
+& \\makecell{{Overtime\\\\utilization}}\\\\
+\\midrule
+{body}
+\\bottomrule
+\\end{{tabular*}}
+
+\\begin{{tablenotes}}[flushleft]
+\\footnotesize
+\\item \\textit{{Note.}} Values are sample means \\(\\pm\\) {round(confidence * 100)}\\% confidence-interval half-widths over \\({_fmt_latex_number(n_paths)}\\) evaluation sample paths. Each policy warms itself up for 750 days from an empty system; discounted total cost is the discounted cost of the 750 post-warm-up evaluation periods. Wait-time violations and overtime utilization are percentages computed over the evaluation periods only. Bold entries are the best value in each metric.
+\\end{{tablenotes}}
+\\end{{threeparttable}}
+\\end{{table}}"""
+    return table
+
+
+def run_saure_ejor_waiting_time_tables(is_reuse=True):
+    """Print ``waiting_time_target_ptc_table`` for each Saure EJOR case-study folder."""
+    from experiments import get_config_by_type
+    env = get_config_by_type('ejor').env
+    for folder, label in (('case_study_ejor_alp_steady_state', 'tab:case_study_thresholds'),
+                          ('case_study_ejor_replication', 'tab:case_study_thresholds_replication')):
+        ser = SimulateEvaluationResult(
+            os.path.join('.', 'experiments', 'results', folder),
+            '[0-9]*.jsonl',
+            env,
+            is_reuse=is_reuse,
+        )
+        print(f'% ===== {folder} =====')
+        print(ser.waiting_time_target_ptc_table(label=label))
+        print()
+
+
 def run_improvement_plots(base_results_dir, file_pattern, env_info, group_ids, is_reuse=False):
     for config in EXPERIMENT_PLOT_CONFIGS:
         directory_path = os.path.join(base_results_dir, config['name'])
@@ -817,7 +1075,12 @@ if __name__ == "__main__":
     # print(policy_performance_comparison_table(env, is_reuse=True))
     # print('Mixture probability table')
     # run_mixture_probability_table(is_reuse=False)
-    report_eval_proposal_policy_costs()
+    # report_eval_proposal_policy_costs()
+    print(saure_ejor_steady_state_table())
+    print()
+    print(saure_ejor_replication_table())
+    print()
+    run_saure_ejor_waiting_time_tables()
     # print('gap_to_information_relaxation')
     # pprint(ser.gap_to_information_relaxation)
     # print('improvement')

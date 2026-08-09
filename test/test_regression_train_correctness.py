@@ -12,7 +12,7 @@ import numpy as np
 
 from decision_maker import ApproxQAgent
 from experiments import get_config_by_type
-from generating_function import MulticlassLinearPenaltyFunction, MulticlassQuadraticPenaltyFunction
+from generating_function import MulticlassQuadraticPenaltyFunction
 
 
 def build_design_matrix(generating_function, states):

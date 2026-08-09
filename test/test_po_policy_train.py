@@ -11,13 +11,13 @@ import numpy as np
 
 from decision_maker import ApproxQAgent
 from experiments import get_config_by_type
-from generating_function import MulticlassLinearPenaltyFunction, MulticlassQuadraticPenaltyFunction
+from generating_function import LinearPenaltyFunction, MulticlassQuadraticPenaltyFunction
 
 
 def main():
     config = get_config_by_type('toy')
     env = config.env
-    penalty_generating_function = MulticlassLinearPenaltyFunction(env)
+    penalty_generating_function = LinearPenaltyFunction(env)
     agent = ApproxQAgent(env,
                          discount_factor=env.discount_factor,
                          sample_path_number=4,
