@@ -752,6 +752,10 @@ class BendersDecompositionSolver:
         bound_at_zero = (cost_to_go / len(active_workers)) if all_seeded else None
         print(f"Seeded master with {len(optimality_cuts)} build-time (a=0) cuts"
               + (f"; bound at zero coefficients = {bound_at_zero}" if bound_at_zero is not None else ""))
+        zero_mean, zero_half_width = self._objective_confidence_interval(
+            [v for _, v, _ in seeded_results])
+        print(f"Zero-penalty subproblem objective mean {zero_mean:.4f} +/- "
+              f"{zero_half_width:.4f} (95% CI, N={len(seeded_results)})")
 
         if bound_at_zero is not None:
             # The optimum is at least as good as all-zero coefficients, so
