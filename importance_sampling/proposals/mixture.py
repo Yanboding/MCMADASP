@@ -64,6 +64,12 @@ class MixtureGeometricStratifiedQMCProposal(SamplePathLengthProposal):
         self.lambda_0 = lambda_0
 
     # -- sampling ---------------------------------------------------------
+    def _component_sizes(self, size):
+        """Deterministic long/short allocation shared by sampling and weighting."""
+        size = int(size)
+        n_long = int(round(self.lambda_0 * size))
+        return n_long, size - n_long
+
     @staticmethod
     def _qmc_geometric_lengths(discount_factor, size, seed):
         """Invert a Geom(1 - discount_factor) CDF on a scrambled Sobol' sequence."""
@@ -88,14 +94,38 @@ class MixtureGeometricStratifiedQMCProposal(SamplePathLengthProposal):
         # the short (q) component, removing the component-indicator Monte-Carlo
         # noise. Seeds are drawn from the shared RNG so the draw is reproducible
         # yet advances (independent) across calls.
-        n_long = int(round(self.lambda_0 * size))
-        n_short = size - n_long
+        n_long, n_short = self._component_sizes(size)
         seed_long, seed_short = (
             int(s) for s in arrival_generator.rng.integers(0, 2 ** 32 - 1, size=2)
         )
         lengths_long = self._qmc_geometric_lengths(self.target_discount_factor, n_long, seed_long)
         lengths_short = self._qmc_geometric_lengths(self.discount_factor_proposal, n_short, seed_short)
         return np.concatenate([lengths_long, lengths_short]).astype(int)
+
+    def path_weights(self, size):
+        """Stratum weights: ``lambda_0`` spread over the long paths and
+        ``1 - lambda_0`` over the short paths, positionally aligned with
+        ``sample_lengths``' long-then-short concatenation (which
+        ``sample_arrival_paths`` preserves). Unbiased for any positive
+        allocation, so the deterministic ``round()`` split needs no
+        ``lambda_0 * size`` integrality.
+        """
+        n_long, n_short = self._component_sizes(size)
+        if (self.lambda_0 > 0 and n_long == 0) or (self.lambda_0 < 1 and n_short == 0):
+            raise ValueError(
+                f"Degenerate stratified allocation for size={size}, "
+                f"lambda_0={self.lambda_0}: n_long={n_long}, n_short={n_short}.")
+        parts = []
+        if n_long:
+            parts.append(np.full(n_long, self.lambda_0 / n_long))
+        if n_short:
+            parts.append(np.full(n_short, (1.0 - self.lambda_0) / n_short))
+        return np.concatenate(parts)
+
+    def path_strata(self, size):
+        n_long, n_short = self._component_sizes(size)
+        return np.concatenate(
+            [np.zeros(n_long, dtype=int), np.ones(n_short, dtype=int)])
 
     # -- weighting --------------------------------------------------------
     def survival_probability(self, periods):

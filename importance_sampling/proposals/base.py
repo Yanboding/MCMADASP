@@ -53,6 +53,20 @@ class SamplePathLengthProposal(ABC):
         lengths = self.sample_lengths(arrival_generator=arrival_generator, size=size)
         return [arrival_generator.rvs(size=int(length)) for length in lengths], lengths
 
+    def path_weights(self, size):
+        """Per-path aggregation weights, summing to 1. Uniform by default.
+
+        Stratified proposals override this so the caller's average over paths
+        stays unbiased for any deterministic stratum allocation. Weights are
+        positionally aligned with ``sample_arrival_paths``' path order.
+        """
+        size = int(size)
+        return np.full(size, 1.0 / size)
+
+    def path_strata(self, size):
+        """Integer stratum label per path. Single stratum by default."""
+        return np.zeros(int(size), dtype=int)
+
     @abstractmethod
     def survival_probability(self, periods):
         """Return P_proposal(L >= t) for one-based period indices."""

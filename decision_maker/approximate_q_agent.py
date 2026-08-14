@@ -32,7 +32,8 @@ class ApproxQAgent(InfiniteRTAgent):
         self.future_decision_var_type = GRB.INTEGER if future_decision_var_type is None or future_decision_var_type == 'integer' else GRB.CONTINUOUS
         self.arrival_generator = copy.deepcopy(self.env.arrival_generator)
         self.sample_path_proposal = sample_path_proposal or ArrivalGeneratorSamplePathProposal()
-        self.delta, self.period_likelihood_ratios = self._initialize_sample_paths(sample_path_number)
+        (self.delta, self.period_likelihood_ratios, self.sample_path_weights,
+         self.sample_path_strata) = self._initialize_sample_paths(sample_path_number)
         self.sample_path_number = len(self.delta)
         self.penalty_ratio = penalty_ratio
         self.generating_function = generating_function
@@ -88,7 +89,9 @@ class ApproxQAgent(InfiniteRTAgent):
             target_discount_factor=self.discount_factor,
             lengths=lengths,
         )
-        return delta, period_likelihood_ratios
+        return (delta, period_likelihood_ratios,
+                proposal.path_weights(sample_path_number),
+                proposal.path_strata(sample_path_number))
     
     def _get_period_likelihood_ratio(self, scenario_id, zero_based_period_index):
         if not self.period_likelihood_ratios:
@@ -229,7 +232,7 @@ class ApproxQAgent(InfiniteRTAgent):
         # theta_vars = np.array(
         #     [master_model.addVar(vtype=GRB.CONTINUOUS, lb=-GRB.INFINITY, ub=1e10, name=f"eta_{omega}") for omega in range(len(self.delta))])
         theta_vars = master_model.addMVar(shape=self.sample_path_number, vtype=GRB.CONTINUOUS, lb=-GRB.INFINITY, ub=1e8, name="theta")
-        z = theta_vars.sum() / self.sample_path_number
+        z = theta_vars @ self.sample_path_weights
         coefficient_vars = self.generating_function.get_coefficient_var(model=master_model, coefficient_bound=coefficient_bound)
         master_model.setObjective(z, GRB.MAXIMIZE)
         # Gurobi finalizes objective sense on update; do this before Benders reads ModelSense.
@@ -522,7 +525,9 @@ class ApproxQAgent(InfiniteRTAgent):
                                                                  workers=workers,
                                                                  imm_cost=None,
                                                                  theta_vars=theta_vars,
-                                                                 action_vars=coefficient_vars)
+                                                                 action_vars=coefficient_vars,
+                                                                 scenario_weights=self.sample_path_weights,
+                                                                 scenario_strata=self.sample_path_strata)
         else:
             coefficient_vars = self.coefficient_model.action_vars
         # init_solution = [0] * coefficient_vars.shape[0]

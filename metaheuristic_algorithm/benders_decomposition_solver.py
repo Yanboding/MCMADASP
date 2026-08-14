@@ -368,18 +368,34 @@ class BendersDecompositionSolver:
         theta_vars: MVar of per-scenario epigraph variables.
         action_vars: MVar of first-stage action variables referenced by the
             subproblem linking constraints.
+        scenario_weights: optional per-scenario aggregation weights summing
+            to 1 (stratified IS proposals); uniform 1/N when omitted.
+        scenario_strata: optional integer stratum label per scenario, used by
+            the confidence-interval reporting; single stratum when omitted.
 
     Entry points: ``solve`` (iterative cutting-plane loop with optional
     checkpointing, cut purging, Pareto cuts) and ``solve_with_callback``
     (single MIP solve injecting cuts lazily at each incumbent).
     """
 
-    def __init__(self, master_model, workers, imm_cost, theta_vars, action_vars):
+    def __init__(self, master_model, workers, imm_cost, theta_vars, action_vars,
+                 scenario_weights=None, scenario_strata=None):
         self.master_model = master_model
         self.workers = workers
         self.imm_cost = imm_cost
         self.theta_vars = theta_vars
         self.action_vars = action_vars
+        # Per-scenario aggregation weights (stratified IS proposals); uniform
+        # when not supplied, which reproduces the classic 1/N average.
+        scenario_count = theta_vars.shape[0]
+        if scenario_weights is None:
+            self._scenario_weights = np.full(scenario_count, 1.0 / scenario_count)
+        else:
+            self._scenario_weights = np.asarray(scenario_weights, dtype=float)
+        if scenario_strata is None:
+            self._scenario_strata = np.zeros(scenario_count, dtype=int)
+        else:
+            self._scenario_strata = np.asarray(scenario_strata)
         # Lazily-created |action| epigraph variables for the min-norm
         # optimal-face re-solve (see _min_norm_master_action).
         self._action_abs_vars = None
@@ -507,7 +523,6 @@ class BendersDecompositionSolver:
                 # All scenarios feasible: add optimality cuts and refresh bounds.
                 self._add_cuts_to_master(optimality_cuts, new_cut_records,
                                          global_iteration, 'optimality')
-                cost_to_go_estimation /= scenario_count  # Average cost-to-go across scenarios for reporting.
                 first_stage_cost = self.imm_cost.getValue() if hasattr(self.imm_cost, 'getValue') else float(self.imm_cost or 0.0)
                 # Keep the incumbent (subproblem-evaluated) bound monotone so the
                 # build-time a=0 seed bound is never lost and the gap shrinks
@@ -539,7 +554,8 @@ class BendersDecompositionSolver:
                 # Monte Carlo error of the scenario average: a wide interval
                 # means the scenario sample, not the cuts, limits accuracy.
                 obj_mean, obj_half_width = self._objective_confidence_interval(
-                    [v for (is_feasible, v, _) in results if is_feasible])
+                    [v for (is_feasible, v, _) in results if is_feasible],
+                    weights=self._scenario_weights, strata=self._scenario_strata)
                 print(f"Iteration {global_iteration}, subproblem objective mean {obj_mean:.4f} "
                       f"+/- {obj_half_width:.4f} (95% CI, N={scenario_count})")
 
@@ -749,11 +765,16 @@ class BendersDecompositionSolver:
         self.master_model.update()
 
         all_seeded = len(seeded_workers) == len(active_workers)
-        bound_at_zero = (cost_to_go / len(active_workers)) if all_seeded else None
+        # Weights sum to 1 over ALL active workers, so the weighted sum is the
+        # weighted average exactly when every worker contributed a seed cut.
+        bound_at_zero = cost_to_go if all_seeded else None
         print(f"Seeded master with {len(optimality_cuts)} build-time (a=0) cuts"
               + (f"; bound at zero coefficients = {bound_at_zero}" if bound_at_zero is not None else ""))
+        seeded_ids = [worker.subproblem_id for worker in seeded_workers]
         zero_mean, zero_half_width = self._objective_confidence_interval(
-            [v for _, v, _ in seeded_results])
+            [v for _, v, _ in seeded_results],
+            weights=self._scenario_weights[seeded_ids],
+            strata=self._scenario_strata[seeded_ids])
         print(f"Zero-penalty subproblem objective mean {zero_mean:.4f} +/- "
               f"{zero_half_width:.4f} (95% CI, N={len(seeded_results)})")
 
@@ -785,8 +806,9 @@ class BendersDecompositionSolver:
         """Convert subproblem results into Benders cuts and checkpoint records.
 
         Returns ``(all_feasible, feasibility_cuts, optimality_cuts, cut_records,
-        cost_to_go)`` where ``cost_to_go`` is the sum of feasible subproblem
-        objectives (the caller averages it across scenarios).
+        cost_to_go)`` where ``cost_to_go`` is the scenario-weight-weighted sum
+        of feasible subproblem objectives (already the weighted average when
+        every scenario is feasible; weights sum to 1).
         """
         is_min = self.master_model.ModelSense == GRB.MINIMIZE
         action_values = np.asarray(action, dtype=float)
@@ -804,7 +826,7 @@ class BendersDecompositionSolver:
                     self._cut_to_record('feasibility', scenario_id, duals, v, action_values, 'ge')
                 )
             else:
-                cost_to_go += v
+                cost_to_go += self._scenario_weights[scenario_id] * v
                 if is_min:
                     optimality_cuts.append(self.theta_vars[scenario_id] >= cut_expr)
                     cut_records.append(
@@ -1213,12 +1235,36 @@ class BendersDecompositionSolver:
         return master_memory, subproblem_memories
 
     @staticmethod
-    def _objective_confidence_interval(values):
-        """Mean and 95% half-width (normal approximation, ddof=1) of values."""
+    def _objective_confidence_interval(values, weights=None, strata=None):
+        """Weighted mean and 95% half-width (normal approximation) of values.
+
+        With ``weights``/``strata`` from a stratified proposal, the mean is
+        ``sum(w_i v_i)`` and the variance uses the stratified formula
+        ``sum_h W_h^2 s_h^2 / n_h`` (within-stratum sample variance only,
+        ddof=1). Uniform weights with a single stratum reduce exactly to the
+        classic ``1.96 s / sqrt(N)`` interval. Within-stratum QMC sampling
+        breaks iid, so the interval is approximate (typically conservative).
+        """
         values = np.asarray(values, dtype=float)
-        mean = float(values.mean()) if values.size else 0.0
-        if values.size <= 1:
-            return mean, 0.0
-        half_width = 1.96 * float(values.std(ddof=1)) / float(np.sqrt(values.size))
-        return mean, half_width
+        if values.size == 0:
+            return 0.0, 0.0
+        if weights is None:
+            weights = np.full(values.size, 1.0 / values.size)
+        else:
+            weights = np.asarray(weights, dtype=float)
+        if strata is None:
+            strata = np.zeros(values.size, dtype=int)
+        else:
+            strata = np.asarray(strata)
+        mean = float(np.dot(weights, values))
+        variance = 0.0
+        for label in np.unique(strata):
+            in_stratum = strata == label
+            n_h = int(np.count_nonzero(in_stratum))
+            if n_h <= 1:
+                continue
+            total_weight = float(weights[in_stratum].sum())
+            sample_var = float(values[in_stratum].var(ddof=1))
+            variance += total_weight ** 2 * sample_var / n_h
+        return mean, 1.96 * float(np.sqrt(variance))
 
