@@ -404,6 +404,10 @@ class BendersDecompositionSolver:
         self._cut_purge_enabled = False
         self._cut_registry = []
         self._latest_cut_by_scenario = {}
+        # Pathwise safety state (see _add_pathwise_safety); None when off.
+        self._pathwise_epsilon = None
+        self._pathwise_rho = 0.0
+        self._pathwise_q0 = None
 
     # ---- Public API ----
 
@@ -422,7 +426,8 @@ class BendersDecompositionSolver:
               resume_checkpoint_path=None,
               min_norm_action=False,
               purge_after=None,
-              purge_slack_tol=1e-6):
+              purge_slack_tol=1e-6,
+              pathwise_safety=None):
         info = {}
         lower_bound = -GRB.INFINITY
         upper_bound = GRB.INFINITY
@@ -475,6 +480,12 @@ class BendersDecompositionSolver:
             lower_bound, upper_bound, cut_count = self._seed_initial_cuts(
                 active_workers, iteration_offset, lower_bound, upper_bound,
                 cut_count, checkpoint_path, core_point)
+        # Pathwise safety rows are NOT Benders cuts: not registered, not
+        # purged, not checkpointed -- so they are (re)added on every solve()
+        # call, including resumes that skip seeding.
+        self._pathwise_epsilon = None
+        if pathwise_safety is not None:
+            self._add_pathwise_safety(active_workers, pathwise_safety)
         try:
             for iteration in range(1, max_iter + 1):
                 global_iteration = iteration_offset + iteration
@@ -528,10 +539,20 @@ class BendersDecompositionSolver:
                 # build-time a=0 seed bound is never lost and the gap shrinks
                 # monotonically: the evaluated value at any action is a valid
                 # lower bound (maximization) / upper bound (minimization).
+                evaluated_value = first_stage_cost + cost_to_go_estimation
+                if self._pathwise_epsilon is not None:
+                    # Soft mode: the master objective carries the violation
+                    # penalty, so the evaluated incumbent must too or the
+                    # UB/LB gap compares different quantities.
+                    values = np.array([v for (_, v, _) in results], dtype=float)
+                    violation = (np.maximum(0.0, values - self._pathwise_q0) if is_min
+                                 else np.maximum(0.0, self._pathwise_q0 - values))
+                    penalty_value = self._pathwise_rho * float(self._scenario_weights @ violation)
+                    evaluated_value = evaluated_value + penalty_value if is_min else evaluated_value - penalty_value
                 if is_min:
-                    upper_bound = min(upper_bound, first_stage_cost + cost_to_go_estimation)
+                    upper_bound = min(upper_bound, evaluated_value)
                 else:
-                    lower_bound = max(lower_bound, first_stage_cost + cost_to_go_estimation)
+                    lower_bound = max(lower_bound, evaluated_value)
 
                 # If an init_solution was supplied, its evaluated cost is a valid
                 # bound on the master's optimum. Add it once as a hard constraint
@@ -576,6 +597,9 @@ class BendersDecompositionSolver:
         finally:
             if executor is not None:
                 executor.shutdown(wait=False)
+        if pathwise_safety is not None:
+            info = dict(info)
+            info['pathwise_safety'] = self._pathwise_safety_report(active_workers, pathwise_safety)
         return upper_bound, info
 
     def solve_with_callback(self, tol=1e-6,
@@ -799,6 +823,76 @@ class BendersDecompositionSolver:
                 new_cut_records=cut_records,
             )
         return lower_bound, upper_bound, cut_count
+
+    def _add_pathwise_safety(self, active_workers, mode):
+        """Constrain each scenario's epigraph variable by its zero-action value.
+
+        ``mode='hard'``: ``theta_s >= Q_s(0)`` (``<=`` for minimization).
+        ``mode=rho`` (float >= 0): soft/exact-penalty version with slack
+        ``epsilon_s >= 0`` -- ``theta_s + epsilon_s >= Q_s(0)`` -- and the
+        objective penalized by ``rho * sum_s omega_s epsilon_s``. Always
+        feasible (a = 0 satisfies every row with zero slack). ``Q_s(0)`` comes
+        from each worker's build-time ``initial_cut``.
+        """
+        missing = [w.subproblem_id for w in active_workers
+                   if getattr(w, 'initial_cut', None) is None]
+        if missing:
+            raise ValueError(
+                f"pathwise_safety requires initial_cut on every worker; missing "
+                f"for scenarios {missing[:5]}{'...' if len(missing) > 5 else ''}")
+        is_min = self.master_model.ModelSense == GRB.MINIMIZE
+        q0 = np.array([float(w.initial_cut[0]) for w in active_workers], dtype=float)
+        ids = [w.subproblem_id for w in active_workers]
+        theta = self.theta_vars[ids]
+        if mode == 'hard':
+            self.master_model.addConstr(
+                theta <= q0 if is_min else theta >= q0, name="pathwise_safety")
+            self.master_model.update()
+            self._pathwise_q0 = q0
+            print(f"Pathwise safety: hard constraints on {len(ids)} scenarios")
+            return
+        rho = float(mode)
+        if rho < 0:
+            raise ValueError(f"pathwise_safety rho must be >= 0 or 'hard'; got {mode}")
+        eps = self.master_model.addMVar(len(ids), lb=0.0, name="pathwise_eps")
+        self.master_model.addConstr(
+            theta - eps <= q0 if is_min else theta + eps >= q0, name="pathwise_safety")
+        primary = self.master_model.getObjective()
+        penalty = rho * (self._scenario_weights[ids] @ eps)
+        self.master_model.setObjective(
+            primary + penalty if is_min else primary - penalty, self.master_model.ModelSense)
+        self.master_model.update()
+        self._pathwise_epsilon = eps
+        self._pathwise_rho = rho
+        self._pathwise_q0 = q0
+        print(f"Pathwise safety: soft constraints (rho={rho}) on {len(ids)} scenarios")
+
+    def _pathwise_safety_report(self, active_workers, mode, tol=1e-9):
+        """Violations of ``theta_s >= Q_s(0)`` at the final master action, plus
+        the paired improvement ``Q_s(a*) - Q_s(0)`` (sign flipped for
+        minimization) with its stratified 95% CI: the paths are shared, so
+        the paired difference is the right test of "penalized bound
+        significantly better than zero-penalty bound" on the training paths."""
+        action = np.array(self.action_vars.X, dtype=float)
+        is_min = self.master_model.ModelSense == GRB.MINIMIZE
+        values = np.array([w.solve(action)[1] for w in active_workers], dtype=float)
+        gap = values - self._pathwise_q0 if is_min else self._pathwise_q0 - values
+        violated = int(np.count_nonzero(gap > tol))
+        ids = [w.subproblem_id for w in active_workers]
+        improvement_mean, improvement_half = self._objective_confidence_interval(
+            -gap, weights=self._scenario_weights[ids], strata=self._scenario_strata[ids])
+        report = {'mode': mode, 'violated_paths': violated,
+                  'max_violation': float(max(gap.max(), 0.0)),
+                  'n_scenarios': int(len(values)),
+                  'paired_improvement_mean': float(improvement_mean),
+                  'paired_improvement_ci_half_width': float(improvement_half)}
+        print(f"Pathwise safety at final action: {violated}/{len(values)} paths violate "
+              f"(max violation {report['max_violation']:.6g})")
+        print(f"Paired improvement over zero-penalty bound: {improvement_mean:.4f} "
+              f"+/- {improvement_half:.4f} (95% CI, N={len(values)})"
+              + ("" if improvement_mean - improvement_half > 0 else
+                 " -- NOT significantly positive at 95%"))
+        return report
 
     # ---- Cut construction / registration / purging ----
 

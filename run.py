@@ -844,6 +844,9 @@ def train_penalty_coefficients_for_env(
     inner['generating_function'] = generating_function
     _set_sample_path_proposal(inner)
     inner['sample_path_number'] = sample_path_number
+    # Optional pathwise safety mode for the Benders master (None / 'hard' / rho),
+    # carried in agent_args by generation; not an ApproxQAgent constructor arg.
+    pathwise_safety = inner.pop('pathwise_safety', None)
 
     agent = ApproxQAgent(
         env=env,
@@ -911,6 +914,7 @@ def train_penalty_coefficients_for_env(
             init_state=resolved_init_state,
             checkpoint_path=checkpoint_path,
             resume_checkpoint_path=checkpoint_path,
+            pathwise_safety=pathwise_safety,
         )
     elapsed = time.time() - start
     print(f"  solver={solver_choice}, obj={obj}, elapsed={elapsed:.1f}s")
