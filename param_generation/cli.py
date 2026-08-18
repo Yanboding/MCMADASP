@@ -291,6 +291,9 @@ def build_parser():
         'train', help='Penalty-coefficient training commands (one per variant); '
                       "each variant's scenario count comes from its agent_args.")
     train.add_argument('experiment', choices=sorted(EXPERIMENT_SPECS))
+    train.add_argument('--variants', default=None,
+                       help='comma-separated mutate_val values to keep '
+                            '(default: all variants of the experiment)')
     train.add_argument('--dat', default='table.dat')
     train.add_argument('--init-state-seed', type=int, default=12345)
     train.add_argument('--sample-paths-seed', type=int, default=42,
@@ -309,6 +312,9 @@ def build_parser():
 
     def add_eval_arguments(sub_parser):
         sub_parser.add_argument('experiment', choices=sorted(EXPERIMENT_SPECS))
+        sub_parser.add_argument('--variants', default=None,
+                                help='comma-separated mutate_val values to keep '
+                                     '(default: all variants of the experiment)')
         sub_parser.add_argument('--paths', type=int, default=4096)
         sub_parser.add_argument('--warm-up', type=int, default=0)
         sub_parser.add_argument('--groups', type=int, default=500)
@@ -353,6 +359,23 @@ def build_parser():
     return parser
 
 
+def _select_variants(test_envs, variants):
+    """Keep only the variants whose ``mutate_val`` is listed in ``variants``
+    (a comma-separated CLI string; values are compared as strings so numeric
+    and non-numeric mutate_vals both work). ``None`` keeps everything."""
+    if variants is None:
+        return test_envs
+    wanted = {value.strip() for value in variants.split(',') if value.strip()}
+    selected = {key: variant for key, variant in test_envs.items()
+                if str(key[2]) in wanted}
+    missing = wanted - {str(key[2]) for key in test_envs}
+    if missing:
+        raise ValueError(
+            f"--variants values not found in the experiment: {sorted(missing)}; "
+            f"available: {sorted(str(key[2]) for key in test_envs)}")
+    return selected
+
+
 def _draw_fixed_init_states(env_args, init_state_seed, count):
     """Draw ``count`` initial states from the env's reference distribution,
     reproducibly seeded by ``init_state_seed`` (same sampler as run.py's
@@ -368,7 +391,8 @@ def _draw_fixed_init_states(env_args, init_state_seed, count):
 
 
 def _run_train(args):
-    test_envs = build_variation_test_env(EXPERIMENT_SPECS[args.experiment])
+    test_envs = _select_variants(
+        build_variation_test_env(EXPERIMENT_SPECS[args.experiment]), args.variants)
     path_seeds = [args.sample_paths_seed + offset for offset in range(args.num_path_seeds)]
     records = []
     for key, variant in test_envs.items():
@@ -462,7 +486,8 @@ def _guard_against_retrain(args, test_envs):
 
 
 def _run_eval(args, policy_ids):
-    test_envs = build_variation_test_env(EXPERIMENT_SPECS[args.experiment])
+    test_envs = _select_variants(
+        build_variation_test_env(EXPERIMENT_SPECS[args.experiment]), args.variants)
     if args.policy_spec:
         test_envs = _apply_policy_spec(test_envs, args.policy_spec, policy_ids)
         _guard_against_retrain(args, test_envs)
