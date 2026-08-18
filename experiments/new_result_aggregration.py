@@ -9,7 +9,7 @@ from collections import defaultdict
 
 from scipy.stats import geom
 
-from utils import RunningStats, load_pickle_if_exists
+from utils import RunningStats, StratifiedRunningStats, load_pickle_if_exists
 from visualization import approximate_value_plot_from_running_stats_dict
 from visualization.line_plot import approximate_value_plot_from_running_stats
 
@@ -104,6 +104,8 @@ class SimulateEvaluationResult:
         'uids_by_policy',
         'after_warmup_cost_by_uid',
         'cost_by_uid',
+        'weight_by_uid',
+        'stratum_by_uid',
     )
 
     def __init__(self,directory_path, file_pattern, env, group_ids=None, is_reuse=False):
@@ -116,15 +118,21 @@ class SimulateEvaluationResult:
         # Using named functions instead of lambdas
         self.scenario_results = dd_dd_dd_float_factory()
         
-        # Built-in types (int, list) and Classes (RunningStats) are already picklable
-        self.policy_costs = defaultdict(RunningStats)
-        self.zero_penalized_information_relaxation_cost = defaultdict(RunningStats)
-        self.penalized_information_relaxation_cost = defaultdict(RunningStats)
-        self.zero_penalized_gap = defaultdict(RunningStats)
-        self.penalized_gap = defaultdict(RunningStats)
+        # Built-in types (int, list) and Classes (RunningStats) are already picklable.
+        # Core cross-path statistics use StratifiedRunningStats so records from
+        # stratified proposals aggregate with their path weights (legacy records
+        # without weight fields fall back to the plain equal-weight mean).
+        self.policy_costs = defaultdict(StratifiedRunningStats)
+        self.zero_penalized_information_relaxation_cost = defaultdict(StratifiedRunningStats)
+        self.penalized_information_relaxation_cost = defaultdict(StratifiedRunningStats)
+        self.zero_penalized_gap = defaultdict(StratifiedRunningStats)
+        self.penalized_gap = defaultdict(StratifiedRunningStats)
         self.zero_penalized_improvement = defaultdict(RunningStats)
         self.penalized_improvement = defaultdict(RunningStats)
 
+        # Equal-weight by scope decision: operational metrics below ignore the
+        # stratified path weights for now (revisit if the stratified proposal
+        # is used for operational reporting).
         # Discountred total cost gap after warmup period (if the information relaxation includes the discount factor, then we should use discounted gap.)
         self.after_warmup_policy_costs = defaultdict(RunningStats)
         # Per-sample-path after-warmup cost, keyed (group_id, policy_id) -> {uid: cost}, used for paired comparisons
@@ -132,6 +140,9 @@ class SimulateEvaluationResult:
         # Per-sample-path importance-weighted discounted tail cost (``total_cost``),
         # keyed (group_id, policy_id) -> {uid: cost}, used for paired comparisons
         self.cost_by_uid = defaultdict(dict)
+        # Per-uid stratified-sampling metadata (None -> legacy uniform).
+        self.weight_by_uid = defaultdict(dict)
+        self.stratum_by_uid = defaultdict(dict)
         # Waiting time target violation
         self.waiting_time_target_ptc_by_type_day = defaultdict(dd_dd_rs_factory)
         self.waiting_time_target_ptc_by_day = defaultdict(dd_rs_factory)
@@ -142,7 +153,7 @@ class SimulateEvaluationResult:
         # Average postponement rate
         self.postponement_rate = defaultdict(RunningStats)
         
-        self.gap_to_information_relaxation = defaultdict(RunningStats)
+        self.gap_to_information_relaxation = defaultdict(StratifiedRunningStats)
         self.improvement = defaultdict(RunningStats)
 
         self.one_time_cost_by_policy = dd_dd_rs_factory()
@@ -172,6 +183,10 @@ class SimulateEvaluationResult:
     def _has_valid_cache(self, data):
         if data is None:
             return False
+        # Version gate: stale equal-weight caches must rebuild instead of
+        # silently serving pre-stratification numbers.
+        if data.get('aggregation_version') != 2:
+            return False
         return all(key in data for key in self._CACHE_KEYS)
 
     def _load_from_cache(self, data):
@@ -189,6 +204,7 @@ class SimulateEvaluationResult:
 
     def _save_cache(self, pickle_file):
         res = {key: getattr(self, key) for key in self._CACHE_KEYS}
+        res['aggregation_version'] = 2
         with open(pickle_file, 'wb') as f:
             pickle.dump(res, f)
 
@@ -206,23 +222,37 @@ class SimulateEvaluationResult:
             return
         if uid is not None:
             self.uids_by_policy[policy_id].add((uid, mutate_val))
+        # Stratified-sampling metadata (absent/None on legacy records -> the
+        # stats fall back to weight 1 / a single stratum).
+        path_weight = data.get('path_weight')
+        path_stratum = data.get('path_stratum')
         if policy_id == 'information_relaxation_only':
-            self.gap_to_information_relaxation[(group_id, mutate_val)] += data['penalized_information_relaxation_cost'] - data['zero_information_relaxation_cost']
-            self.zero_penalized_information_relaxation_cost[(group_id, mutate_val)] += data['zero_information_relaxation_cost']
+            self.gap_to_information_relaxation[(group_id, mutate_val)].record(
+                data['penalized_information_relaxation_cost'] - data['zero_information_relaxation_cost'],
+                path_weight, path_stratum)
+            self.zero_penalized_information_relaxation_cost[(group_id, mutate_val)].record(
+                data['zero_information_relaxation_cost'], path_weight, path_stratum)
             return
         if self.group_ids and group_id not in self.group_ids:
             self.group_ids.append(group_id)
-        self.policy_costs[(group_id, policy_id)] += data['total_cost']
+        self.policy_costs[(group_id, policy_id)].record(
+            data['total_cost'], path_weight, path_stratum)
         if uid is not None:
             self.cost_by_uid[(group_id, policy_id)][uid] = data['total_cost']
+            self.weight_by_uid[(group_id, policy_id)][uid] = path_weight
+            self.stratum_by_uid[(group_id, policy_id)][uid] = path_stratum
         # use the first loaded policy as the information relaxation benchmark
         self.information_relaxation_id = policy_id
         # Runs launched with skip_information_relaxation=True carry None here.
         if data['zero_information_relaxation_cost'] is not None:
-            self.zero_penalized_information_relaxation_cost[(group_id, policy_id)] += data['zero_information_relaxation_cost']
-            self.penalized_information_relaxation_cost[(group_id, policy_id)] += data['penalized_information_relaxation_cost']
-            self.zero_penalized_gap[(group_id, policy_id)] += data['gap_to_zero_information_relaxation']
-            self.penalized_gap[(group_id, policy_id)] += data['gap_to_penalized_information_relaxation']
+            self.zero_penalized_information_relaxation_cost[(group_id, policy_id)].record(
+                data['zero_information_relaxation_cost'], path_weight, path_stratum)
+            self.penalized_information_relaxation_cost[(group_id, policy_id)].record(
+                data['penalized_information_relaxation_cost'], path_weight, path_stratum)
+            self.zero_penalized_gap[(group_id, policy_id)].record(
+                data['gap_to_zero_information_relaxation'], path_weight, path_stratum)
+            self.penalized_gap[(group_id, policy_id)].record(
+                data['gap_to_penalized_information_relaxation'], path_weight, path_stratum)
             
         if self.number_of_periods is None:
             self.number_of_periods = len(data['costs'])
@@ -395,16 +425,41 @@ Type
         policy_costs = cost_by_uid[(group_id, policy_id)]
         baseline_costs = cost_by_uid[(group_id, baseline_id)]
         common_uids = policy_costs.keys() & baseline_costs.keys()
-        pc = np.array([policy_costs[uid] for uid in common_uids])
-        bc = np.array([baseline_costs[uid] for uid in common_uids])
         n = len(common_uids)
-        if n < 2 or bc.mean() == 0:
+        if n < 2:
             return 0.0, 0.0, n
+        weights_map = self.weight_by_uid.get((group_id, policy_id), {})
+        strata_map = self.stratum_by_uid.get((group_id, policy_id), {})
+        uids = list(common_uids)
+        weights = np.array([
+            1.0 if weights_map.get(uid) is None else float(weights_map[uid])
+            for uid in uids])
+        strata = np.array([
+            0 if strata_map.get(uid) is None else int(strata_map[uid])
+            for uid in uids])
+        pc = np.array([policy_costs[uid] for uid in uids])
+        bc = np.array([baseline_costs[uid] for uid in uids])
         diff = bc - pc
-        improvement = diff.mean() / bc.mean() * 100
-        cov = np.cov(np.vstack([diff, bc]))
-        dm, bm = diff.mean(), bc.mean()
-        var = (cov[0, 0] / bm ** 2 - 2 * dm * cov[0, 1] / bm ** 3 + dm ** 2 * cov[1, 1] / bm ** 4) / n
+        weight_total = weights.sum()
+        dm = float(weights @ diff) / weight_total
+        bm = float(weights @ bc) / weight_total
+        if bm == 0:
+            return 0.0, 0.0, n
+        improvement = dm / bm * 100
+        # Stratified covariance of the two means:
+        # sum_h What_h^2 * Cov_h / n_h (within-stratum sample covariance).
+        # One stratum with unit weights reduces to cov / n (the old formula).
+        cov_mean = np.zeros((2, 2))
+        for label in np.unique(strata):
+            mask = strata == label
+            n_h = int(mask.sum())
+            if n_h < 2:
+                continue
+            weight_share = float(weights[mask].sum()) / weight_total
+            cov_h = np.cov(np.vstack([diff[mask], bc[mask]]))
+            cov_mean += weight_share ** 2 * cov_h / n_h
+        var = (cov_mean[0, 0] / bm ** 2 - 2 * dm * cov_mean[0, 1] / bm ** 3
+               + dm ** 2 * cov_mean[1, 1] / bm ** 4)
         half_width = norm.ppf((1 + confidence) / 2) * np.sqrt(max(var, 0.0)) * 100
         return improvement, half_width, n
 

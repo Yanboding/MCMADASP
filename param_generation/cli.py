@@ -1,448 +1,33 @@
-"""Command-line recipes for generating experiment parameters and data files.
+"""Command-line interface for generating experiment parameter files.
 
-Each ``recipe_*`` function is a self-contained driver that builds the relevant
-test environments and writes the corresponding ``.dat`` command file. ``main``
-runs the recipe that is currently active for the project; switch the call in
-``main`` (or invoke a recipe directly) to produce a different dataset.
+``main`` exposes argparse subcommands (``train`` / ``eval`` / ``lowerbound``
+plus the two multi-step orchestration recipes); each thin handler drives the
+generation entry points in :mod:`param_generation.datasets` and writes a
+``run.py`` job-array ``.dat`` file.
 """
 
+import argparse
+import copy
+import json
 import os
 import shutil
-from pprint import pprint
 import time
 
 from scipy.stats import geom
+
+import numpy as np
 
 from experiments import get_config_by_type
 from param_generation.caching import load_trained_coefficients_from_folder
 from param_generation.command_files import write_command_file, write_grouped_command_file
 from param_generation.datasets import (
     generate_penalty_coefficient_training_env,
-    generate_policy_efficiency_data,
     generate_test_paths_and_init_state,
-    generate_train_env,
     offset_sample_generation_seeds,
 )
 from param_generation.experiment_specs import build_variation_test_env
 from param_generation.registry import EXPERIMENT_SPECS
 from param_generation.training import train_alp_coefficients
-
-
-def recipe_case_study_099_fixed_length():
-    """Generate test paths + initial states for ``case_study_099_fixed_length``.
-
-    Penalty coefficients are trained per variant (importance-sampling aware),
-    initial states are randomised, and the cases are written to ``table.dat``
-    split into 998 groups.
-    """
-    folder_path = 'case_study_099_fixed_length'
-    test_envs = build_variation_test_env(EXPERIMENT_SPECS[folder_path])
-    print(test_envs)
-    generate_test_paths_and_init_state(
-        test_envs=test_envs,
-        test_sample_path_num=5000,
-        warm_up_periods=0,
-        num_periods=None,
-        dat_file='table.dat',
-        num_groups=998,  # divide into N groups
-        is_require_penalty_coefficients=True,
-        is_random_initial_state=True,
-        policy_ids=[],
-        train_data_dir=os.path.join('experiments', 'results', folder_path),
-    )
-
-
-def recipe_all_experiments_test_envs():
-    """Build (without emitting) the test environments for every experiment."""
-    test_envs = {}
-    for experiment_name in EXPERIMENT_SPECS:
-        test_envs.update(build_variation_test_env(EXPERIMENT_SPECS[experiment_name]))
-    return test_envs
-
-
-def recipe_importance_sampling_098():
-    """IS training recipe: proposal gamma=0.98, target gamma=0.99.
-
-    Builds an env with ``discount_factor=0.99`` and an agent with a geometric IS
-    proposal of 0.98. Because ``is_require_penalty_coefficients=True``,
-    ``train_penalty_coefficients`` runs for each variant and constructs
-    ``ApproxQAgent(sample_path_proposal=GeometricLengthProposal(0.98))`` so every
-    Benders subproblem objective is weighted by ``(0.99/0.98)**(t-1)``.
-    """
-    test_envs = build_variation_test_env(EXPERIMENT_SPECS['case_study_099_is_098'])
-    generate_test_paths_and_init_state(
-        test_envs=test_envs,
-        test_sample_path_num=1,
-        warm_up_periods=750,
-        num_periods=None,
-        dat_file='table.dat',
-        num_groups=998,  # divide into N groups
-        is_require_penalty_coefficients=True,
-        policy_ids=['approx_Q', 'row_gen_alp', 'myopic'],
-    )
-    
-def recipe_toy_study_train_env():
-    """Emit the regression training environments for ``toy_study_base_case``.
-
-    Fits approx_Q value-function coefficients by least-squares regression on the
-    (X, Y) training data in ``experiments/results/toy_study_train``
-    (X=init_state, Y=tight_penalized_lower_bound) and embeds them in the
-    approx_Q ``policy_generating_function_spec`` before emitting the test cases.
-    """
-    test_envs = build_variation_test_env(EXPERIMENT_SPECS['toy_study_base_case'])
-    generate_train_env(
-        test_envs=test_envs,
-        dat_file='table.dat',
-        num_init_states=256,
-        sample_path_number=256,
-        init_state_seed=12345,
-        sample_paths_seed=42,
-    )
-
-
-def recipe_policy_efficiency():
-    """Generate policy-efficiency evaluation data for ``toy_study_base_case``."""
-    test_envs = build_variation_test_env(EXPERIMENT_SPECS['toy_study_base_case'])
-    generate_policy_efficiency_data(
-        test_envs=test_envs,
-        is_require_penalty_coefficients=False,
-        dat_file='table.dat',
-        num_init_states=1,
-        sample_path_number=256,
-        init_state_seed=12345,
-        sample_paths_seed=42,
-    )
-
-def recipe_toy_study_099_mixture_geometric_proposal_095():
-    """Train penalty coefficients on the case study with a mixture-geometric IS proposal.
-
-    Sweeps the mixture mass ``lambda_0 in {0.05, 0.1, 0.15}`` on the long
-    (target gamma=0.99) component; the short component uses proposal
-    discount factor q=0.95. Because ``is_require_penalty_coefficients=True``,
-    ``train_penalty_coefficients`` runs per variant and weights each Benders
-    subproblem by the mixture's per-period likelihood ratio (bounded in
-    ``[1, 1 / lambda_0]``), yielding cheaper-but-unbiased training paths.
-    """
-    test_envs = build_variation_test_env(
-        EXPERIMENT_SPECS['toy_study_099_mixture_geometric_proposal_095_test']
-    )
-    generate_penalty_coefficient_training_env(
-        test_envs,
-        dat_file='table.dat',
-        init_state=None,
-        sample_path_number=256,
-        init_state_seed=12345,
-        sample_paths_seed=42,
-    )
-
-def recipe_toy_study_099_mixture_geometric_proposal_095_policy_evaluation():
-    """IS training recipe: proposal gamma=0.98, target gamma=0.99.
-
-    Builds an env with ``discount_factor=0.99`` and an agent with a geometric IS
-    proposal of 0.98. Because ``is_require_penalty_coefficients=True``,
-    ``train_penalty_coefficients`` runs for each variant and constructs
-    ``ApproxQAgent(sample_path_proposal=GeometricLengthProposal(0.98))`` so every
-    Benders subproblem objective is weighted by ``(0.99/0.98)**(t-1)``.
-    """
-    test_envs = build_variation_test_env(EXPERIMENT_SPECS['toy_study_099_mixture_geometric_proposal_095_test'])
-    generate_test_paths_and_init_state(
-        test_envs=test_envs,
-        test_sample_path_num=1,
-        warm_up_periods=5,
-        num_periods=None,
-        dat_file='table.dat',
-        num_groups=998,  # divide into N groups
-        is_require_penalty_coefficients=True,
-        policy_ids=['approx_penalized_hindsight', 'row_gen_alp', 'myopic'],
-    )
-
-def recipe_case_study_099_mixture_geometric_proposal_095():
-    """Train penalty coefficients on the case study with a mixture-geometric IS proposal.
-
-    Sweeps the mixture mass ``lambda_0 in {0.05, 0.1, 0.15}`` on the long
-    (target gamma=0.99) component; the short component uses proposal
-    discount factor q=0.95. Because ``is_require_penalty_coefficients=True``,
-    ``train_penalty_coefficients`` runs per variant and weights each Benders
-    subproblem by the mixture's per-period likelihood ratio (bounded in
-    ``[1, 1 / lambda_0]``), yielding cheaper-but-unbiased training paths.
-    """
-    test_envs = build_variation_test_env(
-        EXPERIMENT_SPECS['case_study_099_mixture_geometric_proposal_095_overtime_50']
-    )
-    generate_penalty_coefficient_training_env(
-        test_envs,
-        dat_file='table.dat',
-        init_state=None,
-        sample_path_number=256,
-        init_state_seed=12345,
-        sample_paths_seed=42,
-    )
-
-def recipe_case_study_099_mixture_geometric_proposal_095_policy_evaluation():
-    """IS training recipe: proposal gamma=0.98, target gamma=0.99.
-
-    Builds an env with ``discount_factor=0.99`` and an agent with a geometric IS
-    proposal of 0.98. Because ``is_require_penalty_coefficients=True``,
-    ``train_penalty_coefficients`` runs for each variant and constructs
-    ``ApproxQAgent(sample_path_proposal=GeometricLengthProposal(0.98))`` so every
-    Benders subproblem objective is weighted by ``(0.99/0.98)**(t-1)``.
-    """
-    test_envs = build_variation_test_env(EXPERIMENT_SPECS['case_study_099_mixture_geometric_proposal_095'])
-    generate_test_paths_and_init_state(
-        test_envs=test_envs,
-        test_sample_path_num=2,
-        warm_up_periods=300,
-        num_periods=None,
-        dat_file='table.dat',
-        num_groups=500,  # divide into N groups
-        is_require_penalty_coefficients=True,
-        is_random_initial_state=True,
-        policy_ids=['approx_penalized_hindsight'],
-    )
-
-def recipe_toy_study_train_env():
-    """Train penalty coefficients on the case study with a mixture-geometric IS proposal.
-
-    Sweeps the mixture mass ``lambda_0 in {0.05, 0.1, 0.15}`` on the long
-    (target gamma=0.99) component; the short component uses proposal
-    discount factor q=0.95. Because ``is_require_penalty_coefficients=True``,
-    ``train_penalty_coefficients`` runs per variant and weights each Benders
-    subproblem by the mixture's per-period likelihood ratio (bounded in
-    ``[1, 1 / lambda_0]``), yielding cheaper-but-unbiased training paths.
-    """
-    test_envs = build_variation_test_env(
-        EXPERIMENT_SPECS['base_toy_study']
-    )
-    generate_penalty_coefficient_training_env(
-        test_envs,
-        dat_file='table.dat',
-        init_state=None,
-        sample_path_number=256,
-        init_state_seed=12345,
-        sample_paths_seed=42,
-    )
-
-def recipe_toy_study_policy_evaluation():
-    """Train penalty coefficients on the case study with a mixture-geometric IS proposal.
-
-    Sweeps the mixture mass ``lambda_0 in {0.05, 0.1, 0.15}`` on the long
-    (target gamma=0.99) component; the short component uses proposal
-    discount factor q=0.95. Because ``is_require_penalty_coefficients=True``,
-    ``train_penalty_coefficients`` runs per variant and weights each Benders
-    subproblem by the mixture's per-period likelihood ratio (bounded in
-    ``[1, 1 / lambda_0]``), yielding cheaper-but-unbiased training paths.
-    """
-    test_envs = build_variation_test_env(
-        EXPERIMENT_SPECS['base_toy_study']
-    )
-    generate_test_paths_and_init_state(
-            test_envs=test_envs,
-            test_sample_path_num=4096,
-            warm_up_periods=0,
-            num_periods=None,
-            dat_file='table.dat',
-            num_groups=500,  # divide into N groups
-            is_require_penalty_coefficients=True,
-            is_random_initial_state=False,
-            policy_ids=['approx_penalized_hindsight','row_gen_alp', 'myopic'],
-        )
-
-def recipe_steady_state_toy_study_policy_evaluation():
-    """Train penalty coefficients on the case study with a mixture-geometric IS proposal.
-
-    Sweeps the mixture mass ``lambda_0 in {0.05, 0.1, 0.15}`` on the long
-    (target gamma=0.99) component; the short component uses proposal
-    discount factor q=0.95. Because ``is_require_penalty_coefficients=True``,
-    ``train_penalty_coefficients`` runs per variant and weights each Benders
-    subproblem by the mixture's per-period likelihood ratio (bounded in
-    ``[1, 1 / lambda_0]``), yielding cheaper-but-unbiased training paths.
-    """
-    test_envs = build_variation_test_env(
-        EXPERIMENT_SPECS['steady_state_toy_study']
-    )
-    generate_test_paths_and_init_state(
-            test_envs=test_envs,
-            test_sample_path_num=4096,
-            warm_up_periods=100,
-            num_periods=None,
-            dat_file='table.dat',
-            num_groups=500,  # divide into N groups
-            is_require_penalty_coefficients=True,
-            is_random_initial_state=False,
-            policy_ids=['approx_penalized_hindsight','row_gen_alp', 'myopic'],
-        )
-def recipe_alp_steady_state_toy_study_policy_evaluation():
-    """Evaluate all policies from the ALP per-sample-path steady state.
-
-    Same env as ``steady_state_toy_study`` (toy env, initial-state congestion
-    0.5), but with ``warm_up_policy_id='row_gen_alp'``: the runner rolls ONLY
-    the row-generation ALP policy over the first ``warm_up_periods`` periods of
-    each sample path, then starts every policy (including ALP itself) from the
-    resulting warm-up state and accumulates costs on the post-warm-up tail.
-    This isolates steady-state policy performance from the warm-up transient of
-    each individual policy.
-    """
-    experiment_name = 'alp_steady_state_toy_study'
-    # The env is identical to steady_state_toy_study, so its trained ALP and
-    # penalty coefficients apply verbatim; copy the caches over (if present) so
-    # generation does not retrain them from scratch.
-    source_dir = os.path.join('experiments', 'results', 'steady_state_toy_study')
-    target_dir = os.path.join('experiments', 'results', experiment_name)
-    os.makedirs(target_dir, exist_ok=True)
-    for cache_file in ('alp_train.jsonl', 'penalty_coefficients.jsonl'):
-        source_path = os.path.join(source_dir, cache_file)
-        target_path = os.path.join(target_dir, cache_file)
-        if os.path.isfile(source_path) and not os.path.isfile(target_path):
-            shutil.copyfile(source_path, target_path)
-
-    test_envs = build_variation_test_env(EXPERIMENT_SPECS[experiment_name])
-    generate_test_paths_and_init_state(
-            test_envs=test_envs,
-            test_sample_path_num=4096,
-            warm_up_periods=100,
-            num_periods=None,
-            dat_file='table.dat',
-            num_groups=500,  # divide into N groups
-            is_require_penalty_coefficients=True,
-            is_random_initial_state=False,
-            policy_ids=['approx_penalized_hindsight', 'row_gen_alp', 'myopic'],
-            warm_up_policy_id='row_gen_alp',
-        )
-
-def recipe_mixture_probability_toy_study_train_env():
-    """Train penalty coefficients on the case study with a mixture-geometric IS proposal.
-
-    Sweeps the mixture mass ``lambda_0 in {0.05, 0.1, 0.15}`` on the long
-    (target gamma=0.99) component; the short component uses proposal
-    discount factor q=0.95. Because ``is_require_penalty_coefficients=True``,
-    ``train_penalty_coefficients`` runs per variant and weights each Benders
-    subproblem by the mixture's per-period likelihood ratio (bounded in
-    ``[1, 1 / lambda_0]``), yielding cheaper-but-unbiased training paths.
-    """
-    test_envs = build_variation_test_env(
-        EXPERIMENT_SPECS['mixture_probability_toy_study']
-    )
-    generate_penalty_coefficient_training_env(
-        test_envs,
-        dat_file='table.dat',
-        init_state=None,
-        sample_path_number=256,
-        init_state_seed=12345,
-        sample_paths_seed=42,
-    )
-
-def recipe_mixture_probability_toy_study_policy_evaluation():
-    """Train penalty coefficients on the case study with a mixture-geometric IS proposal.
-
-    Sweeps the mixture mass ``lambda_0 in {0.05, 0.1, 0.15}`` on the long
-    (target gamma=0.99) component; the short component uses proposal
-    discount factor q=0.95. Because ``is_require_penalty_coefficients=True``,
-    ``train_penalty_coefficients`` runs per variant and weights each Benders
-    subproblem by the mixture's per-period likelihood ratio (bounded in
-    ``[1, 1 / lambda_0]``), yielding cheaper-but-unbiased training paths.
-    """
-    test_envs = build_variation_test_env(
-        EXPERIMENT_SPECS['mixture_probability_toy_study']
-    )
-    generate_test_paths_and_init_state(
-            test_envs=test_envs,
-            test_sample_path_num=4096,
-            warm_up_periods=0,
-            num_periods=None,
-            dat_file='table.dat',
-            num_groups=500,  # divide into N groups
-            is_require_penalty_coefficients=True,
-            is_random_initial_state=False,
-            policy_ids=['approx_penalized_hindsight'],
-        )
-
-def recipe_case_study_099_mixture_geometric_proposal_095_overtime_50_train_env():
-    test_envs = build_variation_test_env(
-        EXPERIMENT_SPECS['case_study_099_mixture_geometric_proposal_095_overtime_50']
-    )
-    generate_penalty_coefficient_training_env(
-        test_envs,
-        dat_file='table.dat',
-        init_state=None,
-        sample_path_number=256,
-        init_state_seed=12345,
-        sample_paths_seed=42,
-    )
-
-def recipe_case_study_099_mixture_geometric_proposal_095_overtime_50_policy_evaluation():
-    test_envs = build_variation_test_env(
-        EXPERIMENT_SPECS['case_study_099_mixture_geometric_proposal_095_overtime_50']
-    )
-    generate_test_paths_and_init_state(
-        test_envs=test_envs,
-        test_sample_path_num=4096,
-        warm_up_periods=300,
-        num_periods=None,
-        dat_file='table.dat',
-        num_groups=500,  # divide into N groups
-        is_require_penalty_coefficients=True,
-        is_random_initial_state=True,
-        policy_ids=['approx_penalized_hindsight'],
-    )
-
-def recipe_case_study_099_mixture_geometric_proposal_095_overtime_5_train_env():
-    test_envs = build_variation_test_env(
-        EXPERIMENT_SPECS['case_study_099_mixture_geometric_proposal_095_overtime_5']
-    )
-    generate_penalty_coefficient_training_env(
-        test_envs,
-        dat_file='table.dat',
-        init_state=None,
-        sample_path_number=256,
-        init_state_seed=12345,
-        sample_paths_seed=42,
-    )
-
-def recipe_case_study_099_mixture_geometric_proposal_095_overtime_5_policy_evaluation():
-    test_envs = build_variation_test_env(
-        EXPERIMENT_SPECS['case_study_099_mixture_geometric_proposal_095_overtime_5']
-    )
-    generate_test_paths_and_init_state(
-        test_envs=test_envs,
-        test_sample_path_num=4096,
-        warm_up_periods=300,
-        num_periods=None,
-        dat_file='table.dat',
-        num_groups=500,  # divide into N groups
-        is_require_penalty_coefficients=True,
-        is_random_initial_state=True,
-        policy_ids=['approx_penalized_hindsight'],
-    )
-
-def recipe_case_study_099_scenario_number_train_env(dat_file='table.dat'):
-    """Emit penalty-coefficient training commands for the scenario-count sweep.
-
-    One command per ``sample_path_number in {64, 128, 256, 512}`` (experiment
-    ``case_study_099_scenario_number``: 0.99-target case study, mixture-
-    geometric proposal lambda_0=0.1). The runner overrides the agent's
-    ``sample_path_number`` with the record-level value (run.py), so each
-    variant's swept ``val`` is passed through explicitly instead of the flat
-    256 default. Training logs report the per-iteration 95% CI of the
-    subproblem objectives, which is the observable this sweep measures.
-    """
-    test_envs = build_variation_test_env(
-        EXPERIMENT_SPECS['case_study_099_scenario_number']
-    )
-    all_records = []
-    for key, variant in test_envs.items():
-        (_, _, sample_path_number) = key
-        all_records.extend(
-            generate_penalty_coefficient_training_env(
-                {key: variant},
-                dat_file=None,
-                init_state=None,
-                sample_path_number=sample_path_number,
-                init_state_seed=12345,
-                sample_paths_seed=42,
-            )
-        )
-    write_command_file(all_records, dat_file)
-    return all_records
 
 
 def recipe_toy_eval_proposal_comparison(
@@ -696,10 +281,228 @@ def recipe_saure_ejor_case_study(
     return replication_records, steady_state_records
 
 
-def main():
-    """Run the currently-active dataset-generation recipe."""
-    recipe_case_study_099_scenario_number_train_env()
+def build_parser():
+    parser = argparse.ArgumentParser(
+        prog='generate_params',
+        description='Generate run.py parameter (.dat) files for MCMADASP experiments.')
+    sub = parser.add_subparsers(dest='command', required=True)
+
+    train = sub.add_parser(
+        'train', help='Penalty-coefficient training commands (one per variant); '
+                      "each variant's scenario count comes from its agent_args.")
+    train.add_argument('experiment', choices=sorted(EXPERIMENT_SPECS))
+    train.add_argument('--dat', default='table.dat')
+    train.add_argument('--init-state-seed', type=int, default=12345)
+    train.add_argument('--sample-paths-seed', type=int, default=42,
+                       help='first sample-path seed; with --num-path-seeds M '
+                            'the seeds seed, seed+1, ..., seed+M-1 are used')
+    train.add_argument(
+        '--num-init-states', type=int, default=0, metavar='K',
+        help='emit K commands per variant, each training on ONE fixed initial '
+             'state shared by all scenarios (K states drawn from the env\'s '
+             'reference distribution with --init-state-seed); default 0 = '
+             'runner draws one state per scenario')
+    train.add_argument(
+        '--num-path-seeds', type=int, default=1, metavar='M',
+        help='emit M commands per variant (and per initial state), one per '
+             'consecutive sample-path seed starting at --sample-paths-seed')
+
+    def add_eval_arguments(sub_parser):
+        sub_parser.add_argument('experiment', choices=sorted(EXPERIMENT_SPECS))
+        sub_parser.add_argument('--paths', type=int, default=4096)
+        sub_parser.add_argument('--warm-up', type=int, default=0)
+        sub_parser.add_argument('--groups', type=int, default=500)
+        sub_parser.add_argument('--dat', default='table.dat')
+        sub_parser.add_argument('--random-init', action='store_true')
+        sub_parser.add_argument('--warm-up-policy', default=None)
+        sub_parser.add_argument('--penalty-dir', default=None)
+        sub_parser.add_argument('--seed-offset', type=int, default=1001)
+        sub_parser.add_argument('--skip-ir', action='store_true',
+                                help='mark records skip_information_relaxation')
+        sub_parser.add_argument(
+            '--policy-spec', default=None, metavar='JSON',
+            help='JSON file mapping policy_id -> agent_args overrides, '
+                 'deep-merged into every variant\'s agent_args before '
+                 'generation (changes the variant uid; see --allow-retrain)')
+        sub_parser.add_argument(
+            '--allow-retrain', action='store_true',
+            help='with --policy-spec: permit training penalty coefficients '
+                 'when the overridden configuration has no cached ones')
+
+    eval_parser = sub.add_parser('eval', help='Policy-evaluation sample paths.')
+    add_eval_arguments(eval_parser)
+    eval_parser.add_argument('--policies', required=True,
+                             help='comma-separated policy ids')
+
+    lower = sub.add_parser(
+        'lowerbound', help='Information-relaxation lower bounds only (no policies).')
+    add_eval_arguments(lower)
+
+    saure = sub.add_parser('saure-ejor', help='Saure EJOR case-study pair.')
+    saure.add_argument('--paths', type=int, default=4096)
+    saure.add_argument('--warm-up', type=int, default=750)
+    saure.add_argument('--eval-periods', type=int, default=750)
+    saure.add_argument('--groups', type=int, default=500)
+    saure.add_argument('--dat', default='table.dat')
+
+    comparison = sub.add_parser('eval-proposal-comparison',
+                                help='Toy evaluation-proposal comparison arms.')
+    comparison.add_argument('--paths', type=int, default=4096)
+    comparison.add_argument('--groups', type=int, default=500)
+    comparison.add_argument('--dat', default='table.dat')
+    return parser
 
 
-if __name__ == '__main__':
-    main()
+def _draw_fixed_init_states(env_args, init_state_seed, count):
+    """Draw ``count`` initial states from the env's reference distribution,
+    reproducibly seeded by ``init_state_seed`` (same sampler as run.py's
+    per-scenario draw, so state k here equals scenario k's state there)."""
+    sampler_env_args = copy.deepcopy(env_args)
+    sampler_env_args['env_random_seed'] = init_state_seed
+    sampler_env = get_config_by_type('infinite_custom', args=sampler_env_args).env
+    sampler_env.reset_random_seeds()
+    return [
+        tuple(np.array(component) for component in sampler_env.generate_initial_state())
+        for _ in range(count)
+    ]
+
+
+def _run_train(args):
+    test_envs = build_variation_test_env(EXPERIMENT_SPECS[args.experiment])
+    path_seeds = [args.sample_paths_seed + offset for offset in range(args.num_path_seeds)]
+    records = []
+    for key, variant in test_envs.items():
+        # The record-level scenario count overrides the agent's at run time
+        # (run.py), so it must FOLLOW each variant's own agent_args.
+        sample_path_number = (variant.get('agent_args', {})
+                              .get('agent_args', {})
+                              .get('sample_path_number', 256))
+        # None -> the runner draws one state per scenario (default); otherwise
+        # each fixed state yields its own command, shared by all scenarios.
+        init_states = [None]
+        if args.num_init_states > 0:
+            init_states = _draw_fixed_init_states(
+                variant['env_args'], args.init_state_seed, args.num_init_states)
+        for init_state in init_states:
+            for path_seed in path_seeds:
+                records.extend(generate_penalty_coefficient_training_env(
+                    {key: variant},
+                    dat_file=None,
+                    init_state=init_state,
+                    sample_path_number=sample_path_number,
+                    init_state_seed=args.init_state_seed,
+                    sample_paths_seed=path_seed,
+                ))
+    write_command_file(records, args.dat)
+    return records
+
+
+def _deep_update(target, updates):
+    for key, value in updates.items():
+        if isinstance(value, dict) and isinstance(target.get(key), dict):
+            _deep_update(target[key], value)
+        else:
+            target[key] = value
+    return target
+
+
+def _apply_policy_spec(test_envs, policy_spec_path, policy_ids):
+    """Deep-merge per-policy ``agent_args`` overrides into each variant.
+
+    ``policy_spec_path`` is a JSON object ``{policy_id: {agent_args...}}``.
+    Only ids in ``policy_ids`` are honoured (unknown ids raise). The variant's
+    single ``agent_args`` block feeds every penalty-family policy, so overrides
+    for different policy ids are merged into the same block; conflicting keys
+    across ids raise instead of silently winning by order.
+    """
+    with open(policy_spec_path, encoding='utf-8') as handle:
+        spec = json.load(handle)
+    unknown = sorted(set(spec) - set(policy_ids))
+    if unknown:
+        raise ValueError(
+            f"--policy-spec names policy ids not in --policies: {unknown}")
+    merged, sources = {}, {}
+    for policy_id, overrides in spec.items():
+        for key, value in overrides.items():
+            if key in merged and merged[key] != value:
+                raise ValueError(
+                    f"--policy-spec conflict on agent_args['{key}']: "
+                    f"{sources[key]} vs {policy_id}")
+            merged[key], sources[key] = value, policy_id
+    if not merged:
+        return test_envs
+    updated = {}
+    for key, variant in test_envs.items():
+        variant = copy.deepcopy(variant)
+        _deep_update(variant.setdefault('agent_args', {}).setdefault('agent_args', {}), merged)
+        updated[key] = variant
+    return updated
+
+
+def _guard_against_retrain(args, test_envs):
+    """With --policy-spec the overridden config may have no cached penalty
+    coefficients; refuse to fall through to a full Benders training run
+    unless --allow-retrain was passed."""
+    if args.allow_retrain:
+        return
+    for (env_uid, experiment_name, mutate_val), variant in test_envs.items():
+        sample_path_number = variant['agent_args']['agent_args'].get('sample_path_number')
+        cached = load_trained_coefficients_from_folder(
+            experiment_name=experiment_name,
+            mutate_val=mutate_val,
+            sample_path_number=sample_path_number,
+            folder_path=args.penalty_dir,
+        )
+        if cached is None:
+            raise SystemExit(
+                f"No cached penalty coefficients for experiment={experiment_name}, "
+                f"mutate_val={mutate_val}, sample_path_number={sample_path_number} "
+                "under the --policy-spec overrides; generation would trigger a "
+                "full Benders training run. Re-run with --allow-retrain to accept.")
+
+
+def _run_eval(args, policy_ids):
+    test_envs = build_variation_test_env(EXPERIMENT_SPECS[args.experiment])
+    if args.policy_spec:
+        test_envs = _apply_policy_spec(test_envs, args.policy_spec, policy_ids)
+        _guard_against_retrain(args, test_envs)
+    records = generate_test_paths_and_init_state(
+        test_envs=test_envs,
+        test_sample_path_num=args.paths,
+        warm_up_periods=args.warm_up,
+        num_periods=None,
+        dat_file=None,
+        is_require_penalty_coefficients=True,
+        is_random_initial_state=args.random_init,
+        policy_ids=policy_ids,
+        warm_up_policy_id=args.warm_up_policy,
+        penalty_coefficients_dir=args.penalty_dir,
+        sample_gen_seed_offset=args.seed_offset,
+    )
+    if args.skip_ir:
+        for record in records:
+            record['skip_information_relaxation'] = True
+    write_grouped_command_file(results=records, num_groups=args.groups,
+                               dat_file=args.dat)
+    return records
+
+
+def main(argv=None):
+    args = build_parser().parse_args(argv)
+    if args.command == 'train':
+        return _run_train(args)
+    if args.command == 'eval':
+        policy_ids = [p for p in args.policies.split(',') if p]
+        return _run_eval(args, policy_ids)
+    if args.command == 'lowerbound':
+        return _run_eval(args, [])
+    if args.command == 'saure-ejor':
+        return recipe_saure_ejor_case_study(
+            test_sample_path_num=args.paths, warm_up_periods=args.warm_up,
+            evaluation_periods=args.eval_periods, num_groups=args.groups,
+            dat_file=args.dat)
+    if args.command == 'eval-proposal-comparison':
+        return recipe_toy_eval_proposal_comparison(
+            test_sample_path_num=args.paths, num_groups=args.groups,
+            dat_file=args.dat)
+    raise ValueError(f'Unknown command: {args.command}')

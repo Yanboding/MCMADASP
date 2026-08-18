@@ -361,11 +361,25 @@ def generate_test_paths_and_init_state(test_envs, test_sample_path_num, warm_up_
         # ``sample_gen_seed_offset`` from the training seeds, so the evaluation
         # paths stay independent of the training sample paths.
         proposal_tails = None
+        path_weights = path_strata = None
         if num_periods is None and sample_path_proposal is not None:
             proposal_tails, _ = sample_path_proposal.sample_arrival_paths(
                 arrival_generator=env_for_sample_path.arrival_generator,
                 size=test_sample_path_num,
             )
+            # Record order equals proposal order (single batch draw), so the
+            # per-path stratum weights align positionally with the tails.
+            try:
+                path_weights = sample_path_proposal.path_weights(test_sample_path_num)
+                path_strata = sample_path_proposal.path_strata(test_sample_path_num)
+            except ValueError as exc:
+                # Degenerate allocation (e.g. a tiny smoke run that cannot
+                # represent every stratum): emit unweighted records so the
+                # plumbing keeps working; such runs are not statistically
+                # meaningful either way.
+                print(f"WARNING: proposal path weights unavailable ({exc}); "
+                      "records will aggregate equal-weight.")
+                path_weights = path_strata = None
         average_sample_path_length = 0
         for path_index in range(test_sample_path_num):
             init_state = env_for_sample_path.generate_initial_state() if ('init_state' not in env_args.get('reset_params', {})) or is_random_initial_state else env_args['reset_params']['init_state']
@@ -405,6 +419,8 @@ def generate_test_paths_and_init_state(test_envs, test_sample_path_num, warm_up_
                 "mutate_val": mutate_val,
                 **params,
                 "period_weights": period_weights,
+                "path_weight": None if path_weights is None else float(path_weights[path_index]),
+                "path_stratum": None if path_strata is None else int(path_strata[path_index]),
                 "generating_function_spec": {**lowerbound_generating_function_spec, 'coefficients': direct_coefficients},
                 "group_id": env_uid,
                 "policy_specs": policies,

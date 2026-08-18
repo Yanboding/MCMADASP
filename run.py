@@ -496,6 +496,8 @@ def evaluate_policy_costs_with_information_relaxation(uid,
                                                       job_id,
                                                       generating_function_spec,
                                                       period_weights=None,
+                                                      path_weight=None,
+                                                      path_stratum=None,
                                                       warm_up_policy_id=None,
                                                       skip_information_relaxation=False):
     '''
@@ -555,6 +557,8 @@ def evaluate_policy_costs_with_information_relaxation(uid,
         'experiment_name': experiment_name,
         'mutate_val': mutate_val,
         'warm_up_periods': warm_up_periods,
+        'path_weight': path_weight,
+        'path_stratum': path_stratum,
     }
 
     ordered_policy_specs = _order_policy_specs_for_warm_up(policy_specs, warm_up_policy_id)
