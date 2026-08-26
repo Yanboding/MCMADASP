@@ -127,10 +127,37 @@ def test_train_expands_init_states_and_path_seeds():
     assert [r['uid'] for r in again] == [r['uid'] for r in records]
 
 
+def test_variants_filter_selects_mutate_vals():
+    with mock.patch.object(cli, 'generate_test_paths_and_init_state',
+                           return_value=[]) as generator, \
+         mock.patch.object(cli, 'write_grouped_command_file'):
+        cli.main(['lowerbound', 'case_study_099_scenario_number',
+                  '--variants', '512', '--paths', '4'])
+    keys = list(generator.call_args.kwargs['test_envs'])
+    assert [key[2] for key in keys] == [512]
+    try:
+        cli.main(['lowerbound', 'case_study_099_scenario_number',
+                  '--variants', '999', '--paths', '4'])
+    except ValueError as exc:
+        assert '999' in str(exc)
+    else:
+        raise AssertionError('expected ValueError for unknown variant')
+
+
+def test_train_pathwise_safety_records_carry_mode():
+    with mock.patch.object(cli, 'write_command_file'):
+        records = cli.main(['train', 'case_study_099_pathwise_safety', '--dat', 'unused.dat'])
+    modes = sorted(str(r['agent_args']['agent_args']['pathwise_safety']) for r in records)
+    assert modes == ['1.0', 'hard']
+    assert all(r['sample_path_number'] == 256 for r in records)
+
+
 if __name__ == '__main__':
     test_parser_accepts_all_subcommands()
     test_train_resolves_per_variant_sample_path_number()
     test_lowerbound_dispatches_with_empty_policies()
     test_policy_spec_overrides_variant_agent_args_and_guards_retrain()
     test_train_expands_init_states_and_path_seeds()
+    test_variants_filter_selects_mutate_vals()
+    test_train_pathwise_safety_records_carry_mode()
     print('All generate_params CLI tests passed.')

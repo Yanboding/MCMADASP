@@ -12,6 +12,7 @@ from param_generation.mutators import (
     mutate_mixture_target_discount_factor,
     mutate_mixture_target_discount_factor_overtime_5,
     mutate_mixture_target_discount_factor_overtime_50,
+    mutate_pathwise_safety,
     mutate_sample_path_number_mixture_geometric_l01,
 )
 
@@ -47,6 +48,16 @@ EXPERIMENT_SPECS = {
             val_args=[64, 128, 256, 512],
             mutate=mutate_mixture_target_discount_factor,
             agent_mutate=mutate_sample_path_number_mixture_geometric_l01,
+        ),
+        # Pathwise safety sweep on the case study: hard constraint vs soft
+        # (rho=1); the unconstrained baseline is
+        # case_study_099_mixture_geometric_proposal_095. val = mode.
+        ExperimentSpec(
+            name='case_study_099_pathwise_safety',
+            config_type='ejor',
+            val_args=['hard', 1.0],
+            mutate=mutate_mixture_target_discount_factor,
+            agent_mutate=mutate_pathwise_safety,
         ),
         # Saure EJOR case-study pair (spec:
         # docs/superpowers/specs/2026-08-02-saure-ejor-case-study-design.md).

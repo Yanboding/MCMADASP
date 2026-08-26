@@ -92,3 +92,12 @@ def mutate_mixture_geometric_proposal_lambda_0(agent_args, lambda_0):
             'lambda_0': lambda_0,
         }
     })
+
+
+def mutate_pathwise_safety(agent_args, mode):
+    """Turn on Benders pathwise safety (``'hard'`` or a soft rho) under the
+    fixed mixture-geometric proposal (lambda_0 = 0.1) of the case study; the
+    swept ``val`` is the safety mode itself."""
+    mutate_mixture_geometric_proposal_lambda_0(agent_args, 0.1)
+    agent_args['policy_id'] += '_pathwise_' + str(mode).replace('.', '_')
+    agent_args['agent_args']['pathwise_safety'] = mode
