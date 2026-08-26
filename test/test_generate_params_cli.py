@@ -2,6 +2,7 @@
 
 Run from the repo root:  python -m test.test_generate_params_cli
 """
+import json
 from unittest import mock
 
 from param_generation import cli
@@ -46,6 +47,45 @@ def test_lowerbound_dispatches_with_empty_policies():
     kwargs = generator.call_args.kwargs
     assert kwargs['policy_ids'] == []
     assert kwargs['test_sample_path_num'] == 8
+
+
+def test_eval_proposal_flag_passes_spec_to_generator():
+    spec = {'type': 'geometric', 'discount_factor_proposal': 0.99}
+    with mock.patch.object(cli, 'generate_test_paths_and_init_state',
+                           return_value=[{'uid': 'x'}]) as generator, \
+         mock.patch.object(cli, 'write_grouped_command_file'):
+        cli.main(['lowerbound', 'base_toy_study', '--paths', '8',
+                  '--eval-proposal', json.dumps(spec)])
+    assert generator.call_args.kwargs['evaluation_proposal_spec'] == spec
+
+    with mock.patch.object(cli, 'generate_test_paths_and_init_state',
+                           return_value=[{'uid': 'x'}]) as generator, \
+         mock.patch.object(cli, 'write_grouped_command_file'):
+        cli.main(['lowerbound', 'base_toy_study', '--paths', '8'])
+    assert generator.call_args.kwargs['evaluation_proposal_spec'] is None
+
+
+def test_init_occupancy_flag_pins_reset_initial_state_and_rekeys_variant():
+    with mock.patch.object(cli, 'generate_test_paths_and_init_state',
+                           return_value=[{'uid': 'x'}]) as generator, \
+         mock.patch.object(cli, 'write_grouped_command_file'):
+        cli.main(['lowerbound', 'case_study_099_scenario_number',
+                  '--variants', '512', '--paths', '8', '--init-occupancy', '0.5'])
+    test_envs = generator.call_args.kwargs['test_envs']
+    assert len(test_envs) == 1
+    (group_uid, experiment_name, mutate_val), variant = next(iter(test_envs.items()))
+    assert (experiment_name, mutate_val) == ('case_study_099_scenario_number', 512)
+    env_args = variant['env_args']
+    regular, overtime, waitlist = env_args['reset_params']['init_state']
+    # EJOR case: (120 + 15) * 0.5 = 67.5 -> 68 regular slots per day, last day empty
+    assert regular[:-1] == [68] * (len(regular) - 1) and regular[-1] == 0
+    assert overtime == [0] * len(overtime)
+    assert all(isinstance(w, int) for w in waitlist)
+    assert group_uid == cli.get_uid({'env_args': env_args, 'agent_args': variant['agent_args']})
+
+    baseline = cli._select_variants(
+        cli.build_variation_test_env(cli.EXPERIMENT_SPECS['case_study_099_scenario_number']), '512')
+    assert group_uid not in {key[0] for key in baseline}
 
 
 def test_policy_spec_overrides_variant_agent_args_and_guards_retrain():
@@ -156,6 +196,8 @@ if __name__ == '__main__':
     test_parser_accepts_all_subcommands()
     test_train_resolves_per_variant_sample_path_number()
     test_lowerbound_dispatches_with_empty_policies()
+    test_eval_proposal_flag_passes_spec_to_generator()
+    test_init_occupancy_flag_pins_reset_initial_state_and_rekeys_variant()
     test_policy_spec_overrides_variant_agent_args_and_guards_retrain()
     test_train_expands_init_states_and_path_seeds()
     test_variants_filter_selects_mutate_vals()

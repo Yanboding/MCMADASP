@@ -26,8 +26,10 @@ from param_generation.datasets import (
     offset_sample_generation_seeds,
 )
 from param_generation.experiment_specs import build_variation_test_env
+from param_generation.mutators import mutate_initial_state_congestion
 from param_generation.registry import EXPERIMENT_SPECS
 from param_generation.training import train_alp_coefficients
+from utils import get_uid
 
 
 def recipe_toy_eval_proposal_comparison(
@@ -323,6 +325,17 @@ def build_parser():
         sub_parser.add_argument('--warm-up-policy', default=None)
         sub_parser.add_argument('--penalty-dir', default=None)
         sub_parser.add_argument('--seed-offset', type=int, default=1001)
+        sub_parser.add_argument(
+            '--eval-proposal', default=None, metavar='JSON',
+            help='build_proposal-style spec for drawing the EVALUATION tails '
+                 '(e.g. \'{"type": "geometric", "discount_factor_proposal": 0.99}\' '
+                 'for the target horizon); default: the agent\'s own IS proposal')
+        sub_parser.add_argument(
+            '--init-occupancy', type=float, default=None, metavar='FRACTION',
+            help='start every evaluation path from the fixed initial state '
+                 'with this fraction of total (regular + overtime) capacity '
+                 'booked on every day (mutate_initial_state_congestion); '
+                 "default: the experiment's own reset initial state")
         sub_parser.add_argument('--skip-ir', action='store_true',
                                 help='mark records skip_information_relaxation')
         sub_parser.add_argument(
@@ -430,6 +443,21 @@ def _deep_update(target, updates):
     return target
 
 
+def _apply_init_occupancy(test_envs, occupancy):
+    """Pin every variant's reset initial state to ``occupancy`` of total
+    capacity (see ``mutate_initial_state_congestion``) and re-key the variants
+    on the resulting env uid, so ``group_id`` in the emitted records reflects
+    the changed initial state."""
+    updated = {}
+    for (_, experiment_name, mutate_val), variant in test_envs.items():
+        variant = copy.deepcopy(variant)
+        mutate_initial_state_congestion(variant['env_args'], occupancy)
+        group_uid = get_uid({'env_args': variant['env_args'],
+                             'agent_args': variant['agent_args']})
+        updated[(group_uid, experiment_name, mutate_val)] = variant
+    return updated
+
+
 def _apply_policy_spec(test_envs, policy_spec_path, policy_ids):
     """Deep-merge per-policy ``agent_args`` overrides into each variant.
 
@@ -488,6 +516,8 @@ def _guard_against_retrain(args, test_envs):
 def _run_eval(args, policy_ids):
     test_envs = _select_variants(
         build_variation_test_env(EXPERIMENT_SPECS[args.experiment]), args.variants)
+    if args.init_occupancy is not None:
+        test_envs = _apply_init_occupancy(test_envs, args.init_occupancy)
     if args.policy_spec:
         test_envs = _apply_policy_spec(test_envs, args.policy_spec, policy_ids)
         _guard_against_retrain(args, test_envs)
@@ -503,6 +533,8 @@ def _run_eval(args, policy_ids):
         warm_up_policy_id=args.warm_up_policy,
         penalty_coefficients_dir=args.penalty_dir,
         sample_gen_seed_offset=args.seed_offset,
+        evaluation_proposal_spec=(
+            json.loads(args.eval_proposal) if args.eval_proposal else None),
     )
     if args.skip_ir:
         for record in records:

@@ -21,15 +21,20 @@ def mutate_initial_state_congestion(env_args, occupancy_level):
     total_capacity = env_args['regular_capacity'] + env_args['overtime_capacity']
     treatment_pattern = str2treatment_patterns(env_args['patterns'])
     planning_horizon = env_args['booking_window_size'] + treatment_pattern.shape[0] - 1
-    required_slots = total_capacity * occupancy_level
+    # Bookings and waitlist counts are integers: round the slot target and the
+    # per-type arrival rates (a no-op for the toy cases, whose capacities and
+    # rates are already integral; the EJOR case has 135 * 0.5 = 67.5 slots and
+    # fractional arrival rates).
+    required_slots = int(round(total_capacity * occupancy_level))
     regular_booking = min(required_slots, env_args['regular_capacity'])
     overtime_booking = required_slots - regular_booking
     regular_bookings = [regular_booking] * planning_horizon
     regular_bookings[-1] = 0
     overtime_bookings = [overtime_booking] * planning_horizon
     overtime_bookings[-1] = 0
+    waitlist = [int(round(rate)) for rate in env_args['arrival_rates']]
     env_args['reset_params'] = {
-        'init_state': (regular_bookings, overtime_bookings, env_args['arrival_rates']),
+        'init_state': (regular_bookings, overtime_bookings, waitlist),
     }
 
 
