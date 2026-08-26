@@ -65,6 +65,24 @@ mutate_mixture_target_discount_factor_overtime_5 = partial(
     {'discount_factor': MIXTURE_TARGET_DISCOUNT_FACTOR, 'overtime_cost_by_day': 5})
 
 
+def mutate_mixture_target_initial_state_congestion(env_args, occupancy_level):
+    """0.99-target case study whose reset initial state is pinned at
+    ``occupancy_level`` of total capacity (see
+    ``mutate_initial_state_congestion``); the swept ``val`` IS the occupancy.
+    Train from that state with ``generate_params.py train --reset-init-state``."""
+    mutate_mixture_target_discount_factor(env_args, occupancy_level)
+    mutate_initial_state_congestion(env_args, occupancy_level)
+
+
+def mutate_mixture_geometric_scenario_const(agent_args, val, lambda_0, sample_path_number):
+    """Const agent mutator: mixture-geometric proposal with ``lambda_0`` on the
+    long (target) component and ``sample_path_number`` Benders scenarios. The
+    swept ``val`` (an env-side variable such as occupancy) is ignored."""
+    mutate_mixture_geometric_proposal_lambda_0(agent_args, lambda_0)
+    agent_args['policy_id'] += '_scenario_' + str(sample_path_number)
+    agent_args['agent_args']['sample_path_number'] = sample_path_number
+
+
 def mutate_sample_path_number_mixture_geometric_l01(agent_args, sample_path_number):
     """Sweep the Benders scenario count (``sample_path_number``) under the
     fixed mixture-geometric IS proposal (``lambda_0 = 0.1``) of the

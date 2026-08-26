@@ -88,6 +88,73 @@ def test_init_occupancy_flag_pins_reset_initial_state_and_rekeys_variant():
     assert group_uid not in {key[0] for key in baseline}
 
 
+def test_train_reset_init_state_uses_variant_occupancy_state():
+    captured = []
+
+    def fake_generate(test_envs, **kwargs):
+        (variant,) = test_envs.values()
+        captured.append((kwargs['init_state'], kwargs['sample_path_number'], variant))
+        return [{'stub': True}]
+
+    with mock.patch.object(cli, 'generate_penalty_coefficient_training_env',
+                           side_effect=fake_generate), \
+         mock.patch.object(cli, 'write_command_file'):
+        cli.main(['train', 'case_study_099_occupancy_l0125_scenario_512',
+                  '--variants', '0.9', '--reset-init-state', '--dat', 'unused.dat'])
+    ((init_state, sample_path_number, variant),) = captured
+    regular, overtime, waitlist = init_state
+    # EJOR case at 90%: (120 + 15) * 0.9 = 121.5 -> 122 slots = 120 regular + 2 overtime
+    assert list(regular[:-1]) == [120] * (len(regular) - 1) and regular[-1] == 0
+    assert list(overtime[:-1]) == [2] * (len(overtime) - 1) and overtime[-1] == 0
+    assert sample_path_number == 512
+    inner = variant['agent_args']['agent_args']
+    assert inner['sample_path_number'] == 512
+    assert inner['sample_path_length_proposal'] == {
+        'type': 'mixture_geometric', 'target_discount_factor': 0.99,
+        'discount_factor_proposal': 0.95, 'lambda_0': 0.125}
+    assert variant['env_args']['discount_factor'] == 0.99
+
+    try:
+        cli.main(['train', 'case_study_099_occupancy_l0125_scenario_256',
+                  '--reset-init-state', '--num-init-states', '2', '--dat', 'unused.dat'])
+    except ValueError as exc:
+        assert 'mutually exclusive' in str(exc)
+    else:
+        raise AssertionError('expected ValueError for conflicting init-state flags')
+
+
+def test_dat_file_accumulates_across_calls_without_duplicates(tmp_path=None):
+    import os
+    import tempfile
+    from param_generation.command_files import write_command_file, write_grouped_command_file
+    with tempfile.TemporaryDirectory() as folder:
+        dat = os.path.join(folder, 'table.dat')
+        write_command_file([{'uid': 'a'}, {'uid': 'b'}], dat)
+        write_command_file([{'uid': 'c'}], dat)
+        write_command_file([{'uid': 'b'}], dat)            # identical command -> skipped
+        write_grouped_command_file([{'uid': 'd'}], dat_file=dat)
+        with open(dat) as f:
+            lines = f.read().splitlines()
+    assert [line.split(' ', 1)[0] for line in lines] == ['1', '2', '3', '4']
+    payloads = [json.loads(line.split("--params '", 1)[1].rstrip("'")) for line in lines]
+    assert payloads == [{'uid': 'a'}, {'uid': 'b'}, {'uid': 'c'}, [{'uid': 'd'}]]
+
+
+def test_occupancy_grid_registers_every_epsilon_and_scenario_count():
+    from param_generation import registry
+    for epsilon in registry.OCCUPANCY_EPSILONS:
+        for n in registry.OCCUPANCY_SCENARIO_NUMBERS:
+            name = registry.occupancy_experiment_name(epsilon, n)
+            variants = cli.build_variation_test_env(cli.EXPERIMENT_SPECS[name])
+            assert sorted(key[2] for key in variants) == registry.OCCUPANCY_LEVELS
+            for variant in variants.values():
+                inner = variant['agent_args']['agent_args']
+                assert inner['sample_path_number'] == n
+                assert inner['sample_path_length_proposal']['lambda_0'] == epsilon
+    assert registry.occupancy_experiment_name(0.125, 256) == 'case_study_099_occupancy_l0125_scenario_256'
+    assert registry.occupancy_experiment_name(0.05, 512) == 'case_study_099_occupancy_l005_scenario_512'
+
+
 def test_policy_spec_overrides_variant_agent_args_and_guards_retrain():
     import json
     import os
@@ -198,6 +265,9 @@ if __name__ == '__main__':
     test_lowerbound_dispatches_with_empty_policies()
     test_eval_proposal_flag_passes_spec_to_generator()
     test_init_occupancy_flag_pins_reset_initial_state_and_rekeys_variant()
+    test_train_reset_init_state_uses_variant_occupancy_state()
+    test_dat_file_accumulates_across_calls_without_duplicates()
+    test_occupancy_grid_registers_every_epsilon_and_scenario_count()
     test_policy_spec_overrides_variant_agent_args_and_guards_retrain()
     test_train_expands_init_states_and_path_seeds()
     test_variants_filter_selects_mutate_vals()

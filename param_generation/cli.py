@@ -308,6 +308,12 @@ def build_parser():
              'reference distribution with --init-state-seed); default 0 = '
              'runner draws one state per scenario')
     train.add_argument(
+        '--reset-init-state', action='store_true',
+        help="train from the variant's own reset initial state "
+             "(env_args['reset_params']['init_state'], e.g. the fixed-occupancy "
+             'state of the occupancy experiments) shared by all scenarios; '
+             'mutually exclusive with --num-init-states')
+    train.add_argument(
         '--num-path-seeds', type=int, default=1, metavar='M',
         help='emit M commands per variant (and per initial state), one per '
              'consecutive sample-path seed starting at --sample-paths-seed')
@@ -407,6 +413,8 @@ def _run_train(args):
     test_envs = _select_variants(
         build_variation_test_env(EXPERIMENT_SPECS[args.experiment]), args.variants)
     path_seeds = [args.sample_paths_seed + offset for offset in range(args.num_path_seeds)]
+    if args.reset_init_state and args.num_init_states > 0:
+        raise ValueError('--reset-init-state and --num-init-states are mutually exclusive')
     records = []
     for key, variant in test_envs.items():
         # The record-level scenario count overrides the agent's at run time
@@ -420,6 +428,13 @@ def _run_train(args):
         if args.num_init_states > 0:
             init_states = _draw_fixed_init_states(
                 variant['env_args'], args.init_state_seed, args.num_init_states)
+        elif args.reset_init_state:
+            reset_state = variant['env_args'].get('reset_params', {}).get('init_state')
+            if reset_state is None:
+                raise ValueError(
+                    f"--reset-init-state: variant {key} has no "
+                    "env_args['reset_params']['init_state']")
+            init_states = [tuple(np.array(component) for component in reset_state)]
         for init_state in init_states:
             for path_seed in path_seeds:
                 records.extend(generate_penalty_coefficient_training_env(

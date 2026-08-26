@@ -4,17 +4,54 @@ Maps each experiment ``name`` to its :class:`ExperimentSpec`. ``generate_experim
 is the preferred entry point: look up a spec by name and materialize its variants.
 """
 
+from functools import partial
+
 from param_generation.experiment_specs import ExperimentSpec, build_variation_test_env
 from param_generation.mutators import (
     mutate_initial_state_congestion,
     mutate_initial_state_congestion_05_const,
     mutate_mixture_geometric_proposal_lambda_0,
+    mutate_mixture_geometric_scenario_const,
+    mutate_mixture_target_initial_state_congestion,
     mutate_mixture_target_discount_factor,
     mutate_mixture_target_discount_factor_overtime_5,
     mutate_mixture_target_discount_factor_overtime_50,
     mutate_pathwise_safety,
     mutate_sample_path_number_mixture_geometric_l01,
 )
+
+# Initial-occupancy grid for the 0.99-target case study: penalty coefficients
+# trained from ONE fixed initial state at each occupancy level (generate the
+# commands with ``train --reset-init-state``) under a mixture-geometric proposal
+# with long-component mass ``epsilon`` (= lambda_0; short component 0.95) and
+# a fixed Benders scenario count. One experiment per (epsilon, scenario count),
+# named ``case_study_099_occupancy_l<epsilon digits>_scenario_<N>`` (e.g.
+# epsilon 0.125 -> ``l0125``); val = occupancy fraction. Extend the lists to
+# add grid points.
+OCCUPANCY_LEVELS = [0.3, 0.5, 0.9]
+OCCUPANCY_EPSILONS = [0.125, 0.2, 0.5, 1.0]  # 1.0 = no importance sampling (target Geom(0.99))
+OCCUPANCY_SCENARIO_NUMBERS = [256, 512]
+
+
+def occupancy_experiment_name(epsilon, sample_path_number):
+    return (f"case_study_099_occupancy_l{str(epsilon).replace('.', '')}"
+            f"_scenario_{sample_path_number}")
+
+
+def _occupancy_experiment_specs():
+    return [
+        ExperimentSpec(
+            name=occupancy_experiment_name(epsilon, sample_path_number),
+            config_type='ejor',
+            val_args=list(OCCUPANCY_LEVELS),
+            mutate=mutate_mixture_target_initial_state_congestion,
+            agent_mutate=partial(mutate_mixture_geometric_scenario_const,
+                                 lambda_0=epsilon, sample_path_number=sample_path_number),
+        )
+        for epsilon in OCCUPANCY_EPSILONS
+        for sample_path_number in OCCUPANCY_SCENARIO_NUMBERS
+    ]
+
 
 EXPERIMENT_SPECS = {
     spec.name: spec for spec in [
@@ -49,6 +86,9 @@ EXPERIMENT_SPECS = {
             mutate=mutate_mixture_target_discount_factor,
             agent_mutate=mutate_sample_path_number_mixture_geometric_l01,
         ),
+        # Initial-occupancy grid (see ``_occupancy_experiment_specs``): one
+        # experiment per (epsilon, scenario count), sweeping the occupancy.
+        *_occupancy_experiment_specs(),
         # Pathwise safety sweep on the case study: hard constraint vs soft
         # (rho=1); the unconstrained baseline is
         # case_study_099_mixture_geometric_proposal_095. val = mode.
