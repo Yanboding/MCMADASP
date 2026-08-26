@@ -8,7 +8,7 @@ import numpy as np
 from gurobipy import GRB
 from tqdm.auto import tqdm
 
-from utils import solve_and_handle_errors, set_link_rhs
+from utils import get_status_string, solve_and_handle_errors, set_link_rhs
 from concurrent.futures import ThreadPoolExecutor
 
 
@@ -646,8 +646,27 @@ class BendersDecompositionSolver:
         with the minimum-L1 point on the same optimal face.
         """
         start = time.time()
-        if not solve_and_handle_errors(self.master_model, verbose=verbose):
-            raise RuntimeError("Master model optimal solution not found")
+        solved = solve_and_handle_errors(self.master_model, verbose=verbose)
+        if not solved and self.master_model.Status == GRB.INFEASIBLE:
+            # A badly scaled cut matrix can make Gurobi presolve report a false
+            # INFEASIBLE status even though, for example, action=0 with
+            # sufficiently low theta is feasible. Keep presolve disabled for
+            # subsequent master solves after this occurs; the saved case that
+            # motivated this retry solves to OPTIMAL with identical tolerances
+            # once presolve is bypassed.
+            print(
+                "Master reported INFEASIBLE; retrying with Presolve=0 to rule out "
+                "a numerical presolve misclassification."
+            )
+            self.master_model.reset()
+            self.master_model.Params.Presolve = 0
+            solved = solve_and_handle_errors(self.master_model, verbose=verbose)
+        if not solved:
+            diagnostics = self._save_master_failure_diagnostics(global_iteration)
+            raise RuntimeError(
+                f"Master model optimal solution not found: {diagnostics['reason']} "
+                f"Diagnostics saved to {diagnostics['directory']}"
+            )
         print(f"Iteration {global_iteration}, master solved in {time.time() - start} seconds")
         self._report_memory_usage(global_iteration)
         action = self.action_vars.X
@@ -661,6 +680,137 @@ class BendersDecompositionSolver:
             # so the endgame is untouched.
             action = self._min_norm_master_action(action, verbose=verbose)
         return action, master_obj
+
+    def _save_master_failure_diagnostics(self, global_iteration):
+        """Persist a failed master and identify the most likely failure mode."""
+        model = self.master_model
+        original_status = int(model.Status)
+        clarified_status = original_status
+        errors = []
+
+        # Presolve reductions can make infeasible and unbounded indistinguishable.
+        # Re-solving without dual reductions is Gurobi's documented way to
+        # distinguish the two before producing an IIS or an unbounded diagnosis.
+        if original_status == GRB.INF_OR_UNBD:
+            try:
+                original_dual_reductions = model.Params.DualReductions
+                model.Params.DualReductions = 0
+                model.optimize()
+                clarified_status = int(model.Status)
+                model.Params.DualReductions = original_dual_reductions
+            except Exception as exc:
+                errors.append(f"status clarification failed: {exc}")
+
+        model_name = model.ModelName.strip() or "unnamed_master"
+        safe_model_name = ''.join(
+            character if character.isalnum() or character in ('-', '_') else '_'
+            for character in model_name
+        )
+        timestamp = time.strftime("%Y%m%d-%H%M%S")
+        directory = os.path.abspath(os.path.join(
+            "master_failure_diagnostics",
+            f"{safe_model_name}_iter_{global_iteration}_{timestamp}_pid_{os.getpid()}",
+        ))
+        os.makedirs(directory, exist_ok=True)
+
+        for extension in ("lp", "mps", "prm"):
+            path = os.path.join(directory, f"master.{extension}")
+            try:
+                model.write(path)
+            except Exception as exc:
+                errors.append(f"could not write {extension}: {exc}")
+
+        def read_attr(attribute):
+            try:
+                return model.getAttr(attribute)
+            except Exception:
+                return None
+
+        min_coefficient = read_attr(GRB.Attr.MinCoeff)
+        max_coefficient = read_attr(GRB.Attr.MaxCoeff)
+        coefficient_ratio = (
+            float(max_coefficient / min_coefficient)
+            if min_coefficient is not None and max_coefficient is not None and min_coefficient > 0
+            else None
+        )
+        variables = model.getVars()
+        unbounded_below = sum(variable.LB <= -0.5 * GRB.INFINITY for variable in variables)
+        unbounded_above = sum(variable.UB >= 0.5 * GRB.INFINITY for variable in variables)
+        analysis = []
+        if coefficient_ratio is not None and coefficient_ratio >= 1e9:
+            analysis.append(
+                f"matrix coefficients span a ratio of {coefficient_ratio:.3e}, which can cause numerical instability"
+            )
+        if unbounded_below or unbounded_above:
+            analysis.append(
+                f"the model has {unbounded_below} variables unbounded below and "
+                f"{unbounded_above} variables unbounded above"
+            )
+
+        status_name = get_status_string(clarified_status)
+        if clarified_status == GRB.INFEASIBLE:
+            reason = "the master is infeasible; inspect master.ilp for the conflicting constraints or variable bounds"
+            try:
+                model.computeIIS()
+                model.write(os.path.join(directory, "master.ilp"))
+            except Exception as exc:
+                errors.append(f"IIS computation failed: {exc}")
+        elif clarified_status == GRB.UNBOUNDED:
+            reason = "the master objective is unbounded; theta/action variables are missing a supporting cut, bound, or valid objective direction"
+        elif clarified_status == GRB.NUMERIC:
+            scaling_detail = f" (matrix coefficient ratio {coefficient_ratio:.3e})" if coefficient_ratio else ""
+            reason = f"Gurobi stopped because of numerical difficulties{scaling_detail}; inspect the saved model"
+        elif clarified_status == GRB.INTERRUPTED:
+            reason = "the master optimization was interrupted before proving optimality"
+        elif clarified_status in (GRB.TIME_LIMIT, GRB.NODE_LIMIT, GRB.ITERATION_LIMIT, GRB.SOLUTION_LIMIT):
+            reason = f"the master stopped at its configured {status_name.lower()} before proving optimality"
+        elif clarified_status == GRB.INF_OR_UNBD:
+            reason = "the master is infeasible or unbounded; the diagnostic re-solve could not distinguish the two"
+        else:
+            reason = f"Gurobi returned non-optimal status {status_name} ({clarified_status})"
+
+        summary = {
+            "model_name": model_name,
+            "iteration": int(global_iteration),
+            "original_status": {
+                "code": original_status,
+                "name": get_status_string(original_status),
+            },
+            "clarified_status": {
+                "code": clarified_status,
+                "name": status_name,
+            },
+            "reason": reason,
+            "model_sense": "minimize" if model.ModelSense == GRB.MINIMIZE else "maximize",
+            "solution_count": read_attr(GRB.Attr.SolCount),
+            "variables": read_attr(GRB.Attr.NumVars),
+            "constraints": read_attr(GRB.Attr.NumConstrs),
+            "nonzeros": read_attr(GRB.Attr.NumNZs),
+            "unbounded_variable_counts": {
+                "below": unbounded_below,
+                "above": unbounded_above,
+            },
+            "coefficient_ranges": {
+                "matrix_min": min_coefficient,
+                "matrix_max": max_coefficient,
+                "matrix_ratio": coefficient_ratio,
+                "objective_min": read_attr(GRB.Attr.MinObjCoeff),
+                "objective_max": read_attr(GRB.Attr.MaxObjCoeff),
+                "rhs_min": read_attr(GRB.Attr.MinRHS),
+                "rhs_max": read_attr(GRB.Attr.MaxRHS),
+                "bound_min": read_attr(GRB.Attr.MinBound),
+                "bound_max": read_attr(GRB.Attr.MaxBound),
+            },
+            "analysis": analysis,
+            "errors": errors,
+        }
+        summary_path = os.path.join(directory, "summary.json")
+        with open(summary_path, "w", encoding="utf-8") as handle:
+            json.dump(summary, handle, indent=2)
+
+        print(f"Master failure diagnosis: {reason}")
+        print(f"Master failure artifacts: {directory}")
+        return {"directory": directory, "reason": reason, "summary": summary}
 
     def _min_norm_master_action(self, fallback_action, verbose=False):
         """Return the minimum-L1-norm action on the master's optimal face.
