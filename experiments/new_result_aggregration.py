@@ -106,6 +106,10 @@ class SimulateEvaluationResult:
         'cost_by_uid',
         'weight_by_uid',
         'stratum_by_uid',
+        'ir_zero_by_uid',
+        'ir_penalized_by_uid',
+        'ir_weight_by_uid',
+        'ir_stratum_by_uid',
     )
 
     def __init__(self,directory_path, file_pattern, env, group_ids=None, is_reuse=False):
@@ -143,6 +147,13 @@ class SimulateEvaluationResult:
         # Per-uid stratified-sampling metadata (None -> legacy uniform).
         self.weight_by_uid = defaultdict(dict)
         self.stratum_by_uid = defaultdict(dict)
+        # Per-path lower bounds of ``information_relaxation_only`` records,
+        # keyed (group_id, mutate_val) -> {uid: value}, for the paired
+        # (delta-method) relative improvement of the penalized bound.
+        self.ir_zero_by_uid = defaultdict(dict)
+        self.ir_penalized_by_uid = defaultdict(dict)
+        self.ir_weight_by_uid = defaultdict(dict)
+        self.ir_stratum_by_uid = defaultdict(dict)
         # Waiting time target violation
         self.waiting_time_target_ptc_by_type_day = defaultdict(dd_dd_rs_factory)
         self.waiting_time_target_ptc_by_day = defaultdict(dd_rs_factory)
@@ -185,7 +196,7 @@ class SimulateEvaluationResult:
             return False
         # Version gate: stale equal-weight caches must rebuild instead of
         # silently serving pre-stratification numbers.
-        if data.get('aggregation_version') != 2:
+        if data.get('aggregation_version') != 3:
             return False
         return all(key in data for key in self._CACHE_KEYS)
 
@@ -204,12 +215,17 @@ class SimulateEvaluationResult:
 
     def _save_cache(self, pickle_file):
         res = {key: getattr(self, key) for key in self._CACHE_KEYS}
-        res['aggregation_version'] = 2
+        res['aggregation_version'] = 3
         with open(pickle_file, 'wb') as f:
             pickle.dump(res, f)
 
         
     def load(self, data):
+        # Results folders can also hold penalty-coefficient training records
+        # (``coefficients`` / ``tight_penalized_lower_bound``); those carry no
+        # ``policy_id`` and are not evaluation records.
+        if 'policy_id' not in data:
+            return
         uid = data.get('uid')
         policy_id = data['policy_id']
         group_id = data['group_id']
@@ -232,6 +248,14 @@ class SimulateEvaluationResult:
                 path_weight, path_stratum)
             self.zero_penalized_information_relaxation_cost[(group_id, mutate_val)].record(
                 data['zero_information_relaxation_cost'], path_weight, path_stratum)
+            self.penalized_information_relaxation_cost[(group_id, mutate_val)].record(
+                data['penalized_information_relaxation_cost'], path_weight, path_stratum)
+            if uid is not None:
+                key = (group_id, mutate_val)
+                self.ir_zero_by_uid[key][uid] = data['zero_information_relaxation_cost']
+                self.ir_penalized_by_uid[key][uid] = data['penalized_information_relaxation_cost']
+                self.ir_weight_by_uid[key][uid] = path_weight
+                self.ir_stratum_by_uid[key][uid] = path_stratum
             return
         if self.group_ids and group_id not in self.group_ids:
             self.group_ids.append(group_id)
@@ -419,7 +443,6 @@ Type
 
         Returns (improvement_pct, half_width_pct, n_pairs).
         """
-        from scipy.stats import norm
         if cost_by_uid is None:
             cost_by_uid = self.after_warmup_cost_by_uid
         policy_costs = cost_by_uid[(group_id, policy_id)]
@@ -428,39 +451,36 @@ Type
         n = len(common_uids)
         if n < 2:
             return 0.0, 0.0, n
-        weights_map = self.weight_by_uid.get((group_id, policy_id), {})
-        strata_map = self.stratum_by_uid.get((group_id, policy_id), {})
         uids = list(common_uids)
-        weights = np.array([
-            1.0 if weights_map.get(uid) is None else float(weights_map[uid])
-            for uid in uids])
-        strata = np.array([
-            0 if strata_map.get(uid) is None else int(strata_map[uid])
-            for uid in uids])
+        weights, strata = _uid_weights_and_strata(
+            uids, self.weight_by_uid.get((group_id, policy_id), {}),
+            self.stratum_by_uid.get((group_id, policy_id), {}))
         pc = np.array([policy_costs[uid] for uid in uids])
         bc = np.array([baseline_costs[uid] for uid in uids])
-        diff = bc - pc
-        weight_total = weights.sum()
-        dm = float(weights @ diff) / weight_total
-        bm = float(weights @ bc) / weight_total
-        if bm == 0:
+        improvement, half_width = _stratified_relative_improvement(
+            bc - pc, bc, weights, strata, confidence)
+        return improvement, half_width, n
+
+    def information_relaxation_improvement(self, group_id, mutate_val, confidence=0.95):
+        """Paired relative improvement (%) of the penalized over the
+        zero-penalty information-relaxation lower bound on the
+        ``information_relaxation_only`` records of ``(group_id, mutate_val)``:
+        mean(penalized - zero) / mean(zero) with a stratified delta-method
+        confidence-interval half-width. Returns (improvement_pct,
+        half_width_pct, n_paths)."""
+        key = (group_id, mutate_val)
+        zero_costs = self.ir_zero_by_uid.get(key, {})
+        penalized_costs = self.ir_penalized_by_uid.get(key, {})
+        uids = list(zero_costs.keys() & penalized_costs.keys())
+        n = len(uids)
+        if n < 2:
             return 0.0, 0.0, n
-        improvement = dm / bm * 100
-        # Stratified covariance of the two means:
-        # sum_h What_h^2 * Cov_h / n_h (within-stratum sample covariance).
-        # One stratum with unit weights reduces to cov / n (the old formula).
-        cov_mean = np.zeros((2, 2))
-        for label in np.unique(strata):
-            mask = strata == label
-            n_h = int(mask.sum())
-            if n_h < 2:
-                continue
-            weight_share = float(weights[mask].sum()) / weight_total
-            cov_h = np.cov(np.vstack([diff[mask], bc[mask]]))
-            cov_mean += weight_share ** 2 * cov_h / n_h
-        var = (cov_mean[0, 0] / bm ** 2 - 2 * dm * cov_mean[0, 1] / bm ** 3
-               + dm ** 2 * cov_mean[1, 1] / bm ** 4)
-        half_width = norm.ppf((1 + confidence) / 2) * np.sqrt(max(var, 0.0)) * 100
+        weights, strata = _uid_weights_and_strata(
+            uids, self.ir_weight_by_uid.get(key, {}), self.ir_stratum_by_uid.get(key, {}))
+        zero = np.array([zero_costs[uid] for uid in uids])
+        penalized = np.array([penalized_costs[uid] for uid in uids])
+        improvement, half_width = _stratified_relative_improvement(
+            penalized - zero, zero, weights, strata, confidence)
         return improvement, half_width, n
 
     def overall_performance_table(self, gamma='0.99', baseline_id='myopic', confidence=0.95):
@@ -631,6 +651,50 @@ Defensive mixing probability \\(\\varepsilon\\)
                                                 title=None,
                                                 save_file=os.path.join(self.directory_path,
                                                                         file_name))
+
+
+def _uid_weights_and_strata(uids, weights_map, strata_map):
+    """Per-uid path weights / strata as arrays; legacy records (``None``)
+    fall back to weight 1 and stratum 0."""
+    weights = np.array([
+        1.0 if weights_map.get(uid) is None else float(weights_map[uid])
+        for uid in uids])
+    strata = np.array([
+        0 if strata_map.get(uid) is None else int(strata_map[uid])
+        for uid in uids])
+    return weights, strata
+
+
+def _stratified_relative_improvement(diff, base, weights, strata, confidence):
+    """Ratio-of-paired-means estimator ``mean(diff) / mean(base)`` in percent
+    with a stratified delta-method confidence-interval half-width (percent).
+
+    The covariance of the two weighted means is
+    ``sum_h What_h^2 * Cov_h / n_h`` (within-stratum sample covariance);
+    one stratum with unit weights reduces to ``cov / n``.
+    """
+    from scipy.stats import norm
+    diff = np.asarray(diff, dtype=float)
+    base = np.asarray(base, dtype=float)
+    weight_total = weights.sum()
+    dm = float(weights @ diff) / weight_total
+    bm = float(weights @ base) / weight_total
+    if bm == 0:
+        return 0.0, 0.0
+    improvement = dm / bm * 100
+    cov_mean = np.zeros((2, 2))
+    for label in np.unique(strata):
+        mask = strata == label
+        n_h = int(mask.sum())
+        if n_h < 2:
+            continue
+        weight_share = float(weights[mask].sum()) / weight_total
+        cov_h = np.cov(np.vstack([diff[mask], base[mask]]))
+        cov_mean += weight_share ** 2 * cov_h / n_h
+    var = (cov_mean[0, 0] / bm ** 2 - 2 * dm * cov_mean[0, 1] / bm ** 3
+           + dm ** 2 * cov_mean[1, 1] / bm ** 4)
+    half_width = norm.ppf((1 + confidence) / 2) * np.sqrt(max(var, 0.0)) * 100
+    return improvement, half_width
 
 
 def _merge_stats_by_policy(stats_dict, policy_id):
@@ -1084,6 +1148,52 @@ Policy
 
 
 # I want to plot discount improvement
+def report_information_relaxation_lower_bounds(experiment_name, config_type='ejor',
+                                               confidence=0.95, is_reuse=False):
+    """Print, per (group_id, mutate_val) of the ``information_relaxation_only``
+    records in ``experiments/results/<experiment_name>``, the zero-penalty and
+    penalized information-relaxation lower bounds (stratified, path-weighted
+    mean +/- CI half-window) and their paired per-path improvement
+    (penalized - zero), absolute and relative to the zero-penalty bound (the
+    relative CI is a stratified delta-method interval, see
+    :meth:`SimulateEvaluationResult.information_relaxation_improvement`).
+    Returns the rows as a list of dicts."""
+    from experiments import get_config_by_type
+    ser = SimulateEvaluationResult(
+        os.path.join('.', 'experiments', 'results', experiment_name),
+        '[0-9]*.jsonl',
+        get_config_by_type(config_type).env,
+        is_reuse=is_reuse,
+    )
+    rows = []
+    for key in sorted(ser.gap_to_information_relaxation, key=str):
+        group_id, mutate_val = key
+        zero = ser.zero_penalized_information_relaxation_cost[key]
+        penalized = ser.penalized_information_relaxation_cost[key]
+        improvement = ser.gap_to_information_relaxation[key]
+        relative_pct, relative_half_window_pct, _ = ser.information_relaxation_improvement(
+            group_id, mutate_val, confidence)
+        rows.append({
+            'group_id': group_id, 'mutate_val': mutate_val, 'n': zero.n,
+            'zero_mean': zero.mean, 'zero_half_window': zero.half_window(confidence),
+            'penalized_mean': penalized.mean,
+            'penalized_half_window': penalized.half_window(confidence),
+            'improvement_mean': improvement.mean,
+            'improvement_half_window': improvement.half_window(confidence),
+            'relative_improvement_pct': relative_pct,
+            'relative_improvement_half_window_pct': relative_half_window_pct,
+        })
+    level = round(confidence * 100)
+    print(f"{experiment_name}: information-relaxation lower bounds ({level}% CI)")
+    for row in rows:
+        print(f"  group {row['group_id']}  mutate_val={row['mutate_val']}  n={row['n']}")
+        print(f"    zero-penalty LB      : {row['zero_mean']:,.2f} +/- {row['zero_half_window']:,.2f}")
+        print(f"    penalized LB         : {row['penalized_mean']:,.2f} +/- {row['penalized_half_window']:,.2f}")
+        print(f"    improvement (paired) : {row['improvement_mean']:,.2f} +/- {row['improvement_half_window']:,.2f}"
+              f"  ({row['relative_improvement_pct']:.2f}% +/- {row['relative_improvement_half_window_pct']:.2f}% of zero-penalty LB)")
+    return rows
+
+
 if __name__ == "__main__":
     # from experiments import get_config_by_type
     # config = get_config_by_type('toy')
