@@ -1,6 +1,10 @@
 """Normalization and construction of penalty generating functions."""
 
-from generating_function import LinearPenaltyFunction, MulticlassQuadraticPenaltyFunction
+from generating_function import AbsorptionLinearPenaltyFunction, LinearPenaltyFunction
+
+GENERATING_FUNCTION_CLASSES = {
+    cls.spec_name: cls for cls in (LinearPenaltyFunction, AbsorptionLinearPenaltyFunction)
+}
 
 
 def normalize_generating_function_spec(spec):
@@ -22,12 +26,9 @@ def build_generating_function(env, spec, coefficients=None):
     name = spec.get('name')
     if coefficients is None:
         coefficients = spec.get('coefficients')
-    if name == 'linear_penalty':
-        generating_function = LinearPenaltyFunction(env=env, coefficients=coefficients)
-    elif name in {'multiclass_quadratic_penalty', 'quadratic_penalty'}:
-        generating_function = MulticlassQuadraticPenaltyFunction(env=env, coefficients=coefficients)
-    else:
-        raise ValueError(f"Unsupported generating function name: {name}")
+    if name not in GENERATING_FUNCTION_CLASSES:
+        raise ValueError(f"Unsupported generating function name: {name}; use one of {sorted(GENERATING_FUNCTION_CLASSES)}")
+    generating_function = GENERATING_FUNCTION_CLASSES[name](env=env, coefficients=coefficients)
     if coefficients is None:
         # No coefficients supplied anywhere -> treat all coefficients as zeros.
         generating_function.set_coefficients([0.0] * generating_function.number_of_coefficients)

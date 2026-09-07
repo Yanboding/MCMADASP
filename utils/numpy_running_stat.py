@@ -10,47 +10,37 @@ class RunningStats:
     """
 
     def __init__(self, n=0, mean=0.0, m2=0.0):
-        self._n: int = n
-        self._mean: float = mean
-        self._m2: float = m2
+        # Sample count, running mean and sum of squared deviations (m2);
+        # ``record``/``__iadd__`` keep all three up to date.
+        self.n = n
+        self.mean = mean
+        self.m2 = m2
 
-    # ... (All properties: .n, .mean, .variance, .std remain the same) ...
-    @property
-    def n(self) -> int:
-        return self._n
+    def var_sum(self):
+        return self.m2 if self.n > 0 else 0.0
 
-    @property
-    def mean(self) -> float:
-        return self._mean if self._n > 0 else 0.0
+    def variance(self):
+        if self.n < 2: return 0.0
+        return self.m2 / (self.n - 1)
 
-    @property
-    def var_sum(self) -> float:
-        return self._m2 if self._n > 0 else 0.0
-
-    @property
-    def variance(self) -> float:
-        if self._n < 2: return 0.0
-        return self._m2 / (self._n - 1)
-
-    @property
-    def std(self) -> float:
-        return sqrt(self.variance)
+    def std(self):
+        return sqrt(self.variance())
 
     def copy(self) -> 'RunningStats':
         """Creates a copy of the RunningStats instance."""
         new_stat = RunningStats()
-        new_stat._n = self._n
-        new_stat._mean = self._mean
-        new_stat._m2 = self._m2
+        new_stat.n = self.n
+        new_stat.mean = self.mean
+        new_stat.m2 = self.m2
         return new_stat
 
     def record(self, value: float):
         """Adds a new sample to the running calculation."""
-        self._n += 1
-        delta = value - self._mean
-        self._mean += delta / self._n
-        delta2 = value - self._mean
-        self._m2 += delta * delta2
+        self.n += 1
+        delta = value - self.mean
+        self.mean += delta / self.n
+        delta2 = value - self.mean
+        self.m2 += delta * delta2
 
     def record_batch(self, values, counts):
         """
@@ -73,19 +63,19 @@ class RunningStats:
 
     def half_window(self, confidence):
         half = 0
-        if self._n > 1:
-            t_crit = np.abs(st.t.ppf((1 - confidence) / 2, self._n - 1))
-            half = t_crit * self.std / np.sqrt(self._n)
+        if self.n > 1:
+            t_crit = np.abs(st.t.ppf((1 - confidence) / 2, self.n - 1))
+            half = t_crit * self.std() / np.sqrt(self.n)
         return half
 
     # ... (confidence_interval and __repr__ remain the same) ...
     def confidence_interval(self, confidence: float = 0.95) -> str:
-        if self._n < 2: return f"{self.mean} \pm 0.0"
+        if self.n < 2: return f"{self.mean} \pm 0.0"
         half_window = self.half_window(confidence)
         return f"{round(self.mean)} \pm {round(half_window,1)}"
 
     def __repr__(self) -> str:
-        return f"RunningStats(n={self.n}, mean={self.mean:.4f}, std={self.std:.4f}, 95% CI={self.mean:.4f} \pm {self.half_window(0.95):.4f})"
+        return f"RunningStats(n={self.n}, mean={self.mean:.4f}, std={self.std():.4f}, 95% CI={self.mean:.4f} \pm {self.half_window(0.95):.4f})"
 
     def __iadd__(self, other):
         """Handles in-place addition (+=)."""
@@ -100,9 +90,9 @@ class RunningStats:
 
         new_n = self.n + other.n
         delta = other.mean - self.mean
-        self._mean = (self.mean * self.n + other.mean * other.n) / new_n
-        self._m2 += other._m2 + (delta ** 2 * self.n * other.n) / new_n
-        self._n = new_n
+        self.mean = (self.mean * self.n + other.mean * other.n) / new_n
+        self.m2 += other.m2 + (delta ** 2 * self.n * other.n) / new_n
+        self.n = new_n
         return self
 
     # --- [MODIFIED] __add__ method ---
@@ -127,12 +117,12 @@ class RunningStats:
     def __str__(self) -> str:
         if self.n == 0: return "RunningStats(empty)"
         lower, upper = self.confidence_interval()
-        return f"RunningStats(n={self.n}, mean={self.mean:.4f}, std={self.std:.4f}, 95% CI={self.mean:.4f} \pm {self.half_window(0.95):.4f})"
+        return f"RunningStats(n={self.n}, mean={self.mean:.4f}, std={self.std():.4f}, 95% CI={self.mean:.4f} \pm {self.half_window(0.95):.4f})"
 
     def mean_difference(self, other, confidence):
         meanDiff = self.mean - other.mean
-        sampleVar1, sampleSize1 = self.variance, self.n
-        sampleVar2, sampleSize2 = other.variance, other.n
+        sampleVar1, sampleSize1 = self.variance(), self.n
+        sampleVar2, sampleSize2 = other.variance(), other.n
         t_crit = np.abs(st.t.ppf((1-confidence)/2, sampleSize1 + sampleSize2 - 2))
         halfWindow = t_crit * np.sqrt(sampleVar1/sampleSize1 + sampleVar2/sampleSize2)
         return meanDiff, halfWindow
@@ -154,7 +144,7 @@ class RunningStats:
                 raise ZeroDivisionError("Cannot divide by zero.")
             # scale mean, scale variance
             new_mean = self.mean / other
-            new_var = self.variance / (other**2)
+            new_var = self.variance() / (other**2)
             eff_n = self.n
             new_m2 = new_var * (eff_n - 1)
             return RunningStats(n=eff_n, mean=new_mean, m2=new_m2)
@@ -166,8 +156,8 @@ class RunningStats:
                 raise ValueError("Need at least 2 samples in both RunningStats.")
 
             ratio_mean = self.mean / other.mean
-            var_ratio = (self.variance / self.n) / (other.mean**2) \
-                      + (self.mean**2 / other.mean**4) * (other.variance / other.n)
+            var_ratio = (self.variance() / self.n) / (other.mean**2) \
+                      + (self.mean**2 / other.mean**4) * (other.variance() / other.n)
 
             eff_n = min(self.n, other.n)  # conservative choice
             ratio_m2 = var_ratio * (eff_n - 1)

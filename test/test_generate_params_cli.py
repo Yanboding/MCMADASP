@@ -251,12 +251,182 @@ def test_variants_filter_selects_mutate_vals():
         raise AssertionError('expected ValueError for unknown variant')
 
 
-def test_train_pathwise_safety_records_carry_mode():
-    with mock.patch.object(cli, 'write_command_file'):
-        records = cli.main(['train', 'case_study_099_pathwise_safety', '--dat', 'unused.dat'])
-    modes = sorted(str(r['agent_args']['agent_args']['pathwise_safety']) for r in records)
-    assert modes == ['1.0', 'hard']
-    assert all(r['sample_path_number'] == 256 for r in records)
+def test_lowerbound_penalty_ratios_flag():
+    with mock.patch.object(cli, 'generate_test_paths_and_init_state',
+                           return_value=[{'uid': 'x'}]) as generator, \
+         mock.patch.object(cli, 'write_grouped_command_file'):
+        cli.main(['lowerbound', 'base_toy_study', '--paths', '8',
+                  '--penalty-ratios', '1,0.5,0,0.5'])
+    assert generator.call_args.kwargs['penalty_ratios'] == [0.0, 0.5, 1.0]
+
+    with mock.patch.object(cli, 'generate_test_paths_and_init_state',
+                           return_value=[{'uid': 'x'}]) as generator, \
+         mock.patch.object(cli, 'write_grouped_command_file'):
+        cli.main(['lowerbound', 'base_toy_study', '--paths', '8'])
+    assert generator.call_args.kwargs['penalty_ratios'] is None
+
+    for bad in ('1,-1', '1,,2', 'abc'):
+        try:
+            cli.main(['lowerbound', 'base_toy_study', '--paths', '8',
+                      '--penalty-ratios', bad])
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f'expected ValueError for --penalty-ratios {bad!r}')
+
+    # ``eval`` does not accept the flag (argparse exits).
+    try:
+        cli.build_parser().parse_args(['eval', 'base_toy_study', '--policies',
+                                       'myopic', '--penalty-ratios', '0,1'])
+    except SystemExit:
+        pass
+    else:
+        raise AssertionError('eval must reject --penalty-ratios')
+
+
+def test_train_regularization_flags():
+    captured = []
+
+    def fake_generate(test_envs, **kwargs):
+        captured.append(test_envs)
+        return [{'stub': True}]
+
+    base = ['train', 'case_study_099_scenario_number', '--variants', '256', '--dat', 'unused.dat']
+    with mock.patch.object(cli, 'generate_penalty_coefficient_training_env',
+                           side_effect=fake_generate), \
+         mock.patch.object(cli, 'write_command_file'):
+        cli.main(base + ['--regularization', 'l2', '--regularization-lambda', '1e-2,1e-3'])
+    names = sorted(key[1] for envs in captured for key in envs)
+    assert names == ['case_study_099_scenario_number_l2_0_001',
+                     'case_study_099_scenario_number_l2_0_01'], names
+    for envs in captured:
+        for (uid, name, mutate_val), variant in envs.items():
+            reg = variant['agent_args']['agent_args']['regularization']
+            assert reg['type'] == 'l2' and reg['scale'] == 'feature_std'
+            assert reg['lambda'] in (0.001, 0.01) and mutate_val == 256
+            tag = name[len('case_study_099_scenario_number_'):]
+            assert variant['agent_args']['policy_id'].endswith('_' + tag)
+    assert cli._regularization_tag('l1', 1e-5) == 'l1_1em05'
+
+    for extra in (['--regularization', 'l1'], ['--regularization-lambda', '0.1'],
+                  ['--regularization', 'l1', '--regularization-lambda', '-1']):
+        try:
+            cli.main(base + extra)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f'expected ValueError for {extra}')
+
+    captured.clear()
+    with mock.patch.object(cli, 'generate_penalty_coefficient_training_env',
+                           side_effect=fake_generate), \
+         mock.patch.object(cli, 'write_command_file'):
+        cli.main(base)
+    for envs in captured:
+        for (uid, name, mutate_val), variant in envs.items():
+            assert name == 'case_study_099_scenario_number'
+            assert 'regularization' not in variant['agent_args']['agent_args']
+
+
+def test_penalty_function_flag_stamps_specs_and_suffixes_names():
+    captured = {}
+
+    def fake_generate(test_envs, **kwargs):
+        captured['envs'] = test_envs
+        return [{'uid': 'x'}]
+
+    spec = {'type': 'geometric', 'discount_factor_proposal': 0.99}
+    with mock.patch.object(cli, 'generate_test_paths_and_init_state', side_effect=fake_generate), \
+         mock.patch.object(cli, 'write_grouped_command_file'):
+        cli.main(['lowerbound', 'base_toy_study', '--paths', '8', '--eval-proposal', json.dumps(spec),
+                  '--penalty-function', 'absorption_linear_penalty'])
+    (uid, name, mutate_val), variant = next(iter(captured['envs'].items()))
+    assert name == 'base_toy_study_bh' and mutate_val == 0.5
+    assert variant['agent_args']['policy_id'].endswith('_bh')
+    inner = variant['agent_args']['agent_args']
+    for key in cli._PENALTY_SPEC_KEYS:
+        assert inner[key]['name'] == 'absorption_linear_penalty', key
+    # The legacy default stamps the name but changes neither names nor keys.
+    with mock.patch.object(cli, 'generate_test_paths_and_init_state', side_effect=fake_generate), \
+         mock.patch.object(cli, 'write_grouped_command_file'):
+        cli.main(['lowerbound', 'base_toy_study', '--paths', '8', '--penalty-function', 'linear_penalty'])
+    (uid, name, _), variant = next(iter(captured['envs'].items()))
+    assert name == 'base_toy_study' and not variant['agent_args']['policy_id'].endswith('_bh')
+    assert all(variant['agent_args']['agent_args'][key]['name'] == 'linear_penalty' for key in cli._PENALTY_SPEC_KEYS)
+    # No flag: untouched (only the default generating_function_spec exists).
+    with mock.patch.object(cli, 'generate_test_paths_and_init_state', side_effect=fake_generate), \
+         mock.patch.object(cli, 'write_grouped_command_file'):
+        cli.main(['lowerbound', 'base_toy_study', '--paths', '8'])
+    (uid, name, _), variant = next(iter(captured['envs'].items()))
+    assert name == 'base_toy_study'
+    assert set(cli._PENALTY_SPEC_KEYS) & set(variant['agent_args']['agent_args']) == {'generating_function_spec'}
+    assert variant['agent_args']['agent_args']['generating_function_spec'] == {'name': 'linear_penalty'}
+    # Canonical policy ids are forwarded unchanged.
+    with mock.patch.object(cli, 'generate_test_paths_and_init_state', side_effect=fake_generate) as generator, \
+         mock.patch.object(cli, 'write_grouped_command_file'):
+        cli.main(['eval', 'base_toy_study', '--paths', '8', '--policies', 'approx_penalized_hindsight,myopic',
+                  '--eval-proposal', json.dumps(spec), '--penalty-function', 'absorption_linear_penalty'])
+    assert generator.call_args.kwargs['policy_ids'] == ['approx_penalized_hindsight', 'myopic']
+
+
+def test_train_penalty_function_flag_composes_with_regularization():
+    captured = []
+
+    def fake_generate(test_envs, **kwargs):
+        captured.append(test_envs)
+        return [{'stub': True}]
+
+    base = ['train', 'base_toy_study', '--dat', 'unused.dat', '--penalty-function', 'absorption_linear_penalty']
+    with mock.patch.object(cli, 'generate_penalty_coefficient_training_env', side_effect=fake_generate), \
+         mock.patch.object(cli, 'write_command_file'):
+        cli.main(base)
+    names = sorted(key[1] for envs in captured for key in envs)
+    assert names == ['base_toy_study_bh'], names
+    for envs in captured:
+        for _, variant in envs.items():
+            assert variant['agent_args']['agent_args']['training_generating_function_spec'] == {'name': 'absorption_linear_penalty'}
+            assert variant['agent_args']['agent_args']['generating_function_spec']['name'] == 'absorption_linear_penalty'
+    captured.clear()
+    with mock.patch.object(cli, 'generate_penalty_coefficient_training_env', side_effect=fake_generate), \
+         mock.patch.object(cli, 'write_command_file'):
+        cli.main(base + ['--regularization', 'l1', '--regularization-lambda', '1e-3'])
+    names = sorted(key[1] for envs in captured for key in envs)
+    assert names == ['base_toy_study_bh_l1_0_001'], names
+
+
+def test_absorption_records_need_a_length_proposal():
+    from param_generation.datasets import generate_test_paths_and_init_state
+    from param_generation.experiment_specs import build_variation_test_env
+    from param_generation.registry import EXPERIMENT_SPECS
+
+    envs = cli._apply_penalty_function(build_variation_test_env(EXPERIMENT_SPECS['base_toy_study']),
+                                       'absorption_linear_penalty')
+    common = dict(test_envs=envs, test_sample_path_num=4, warm_up_periods=0, dat_file=None,
+                  is_require_penalty_coefficients=False, is_random_initial_state=False,
+                  policy_ids=['approx_penalized_hindsight'])
+    for extra in (dict(num_periods=None), dict(num_periods=5)):
+        try:
+            generate_test_paths_and_init_state(**common, **extra)
+        except ValueError as exc:
+            assert '--eval-proposal' in str(exc)
+        else:
+            raise AssertionError(f'absorption records were generated without a length proposal ({extra})')
+    records = generate_test_paths_and_init_state(
+        **common, num_periods=None,
+        evaluation_proposal_spec={'type': 'geometric', 'discount_factor_proposal': 0.99})
+    assert len(records) == 4
+    for record in records:
+        assert record['terminal'] == 'absorbed'
+        assert len(record['period_weights']) == len(record['sample_path']) + 1
+        assert record['generating_function_spec']['name'] == 'absorption_linear_penalty'
+        assert record['policy_specs'][0]['agent_args']['generating_function_spec']['name'] == 'absorption_linear_penalty'
+        assert record['experiment_name'] == 'base_toy_study_bh'
+    # Legacy records keep None terminals.
+    legacy = generate_test_paths_and_init_state(
+        test_envs=build_variation_test_env(EXPERIMENT_SPECS['base_toy_study']), test_sample_path_num=2,
+        warm_up_periods=0, num_periods=None, dat_file=None, is_require_penalty_coefficients=False,
+        is_random_initial_state=False, policy_ids=['myopic'])
+    assert all(record['terminal'] is None and record['period_weights'] is None for record in legacy)
 
 
 if __name__ == '__main__':
@@ -271,5 +441,9 @@ if __name__ == '__main__':
     test_policy_spec_overrides_variant_agent_args_and_guards_retrain()
     test_train_expands_init_states_and_path_seeds()
     test_variants_filter_selects_mutate_vals()
-    test_train_pathwise_safety_records_carry_mode()
+    test_lowerbound_penalty_ratios_flag()
+    test_train_regularization_flags()
+    test_penalty_function_flag_stamps_specs_and_suffixes_names()
+    test_train_penalty_function_flag_composes_with_regularization()
+    test_absorption_records_need_a_length_proposal()
     print('All generate_params CLI tests passed.')

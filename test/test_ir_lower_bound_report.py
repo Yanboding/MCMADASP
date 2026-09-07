@@ -86,7 +86,77 @@ def test_ir_only_records_two_strata_weighted_mean():
     assert hw > 0
 
 
+def _ratio_record(uid, costs_by_ratio, weight, stratum, source=None):
+    record = _ir_record(uid, costs_by_ratio[0.0], costs_by_ratio[1.0], weight, stratum)
+    record['penalty_ratios'] = sorted(costs_by_ratio)
+    record['information_relaxation_cost_by_penalty_ratio'] = [
+        [t, costs_by_ratio[t]] for t in sorted(costs_by_ratio)]
+    record['coefficients_source'] = source or {'uid': 'train-uid', 'tight_penalized_lower_bound': 1500.0}
+    return record
+
+
+def test_penalty_shrinkage_rows_match_numpy():
+    from experiments.new_result_aggregration import penalty_shrinkage_rows, print_penalty_shrinkage
+    rng = np.random.default_rng(1)
+    n = 60
+    zero = rng.normal(1000, 50, n)
+    # Concave-in-t shape peaking at t=0.5, with t=1 below zero penalty.
+    costs = {0.0: zero, 0.5: zero + 40 + rng.normal(0, 10, n), 1.0: zero - 30 + rng.normal(0, 10, n)}
+    weights = np.where(np.arange(n) < 20, 0.2 / 20, 0.8 / 40)
+    strata = np.where(np.arange(n) < 20, 0, 1)
+    records = [_ratio_record(f'u{i}', {t: float(costs[t][i]) for t in costs}, float(weights[i]), int(strata[i]))
+               for i in range(n)]
+    # A legacy record without the grid must be ignored by the shrinkage report
+    # but still feed the classic report.
+    records.append(_ir_record('legacy', 1000.0, 1010.0, 0.01, 0))
+    ser = _load(records)
+    key = ('g', 512)
+    rows, summary = penalty_shrinkage_rows(ser, key, zetas=(0.0, 0.05))
+    assert [row['penalty_ratio'] for row in rows] == [0.0, 0.5, 1.0]
+    assert all(row['n'] == n for row in rows)
+    for row in rows:
+        t = row['penalty_ratio']
+        assert np.isclose(row['mean'], weights @ costs[t] / weights.sum())
+        assert np.isclose(row['diff_vs_zero_mean'], weights @ (costs[t] - zero) / weights.sum())
+        share = weights @ (costs[t] < 0.95 * zero) / weights.sum()
+        assert np.isclose(row['violation_share'][0.05], share)
+    assert rows[0]['violation_share'][0.0] == 0.0
+    assert summary['t_star'] == 0.5
+    assert np.isclose(summary['gain_over_unit_mean'], weights @ (costs[0.5] - costs[1.0]) / weights.sum())
+    assert summary['overfitting'] is True and summary['unit_below_zero'] is True
+    assert summary['coefficients_source']['uid'] == 'train-uid'
+    # The classic report still sees all n + 1 records.
+    assert ser.zero_penalized_information_relaxation_cost[key].n == n + 1
+    printed_rows, summaries = print_penalty_shrinkage(ser, 'unit', zetas=(0.0, 0.05))
+    assert len(printed_rows) == 3 and summaries[key]['t_star'] == 0.5
+
+
+def test_penalty_shrinkage_no_overfitting_verdict():
+    from experiments.new_result_aggregration import penalty_shrinkage_rows
+    rng = np.random.default_rng(2)
+    n = 40
+    zero = rng.normal(1000, 50, n)
+    costs = {0.0: zero, 0.5: zero + 20, 1.0: zero + 45}
+    records = [_ratio_record(f'u{i}', {t: float(costs[t][i]) for t in costs}, 1.0 / n, 0) for i in range(n)]
+    _, summary = penalty_shrinkage_rows(_load(records), ('g', 512))
+    assert summary['t_star'] == 1.0 and summary['overfitting'] is False
+    assert summary['unit_below_zero'] is False
+
+
+def test_cache_version_gate_rebuilds_old_caches():
+    from experiments.new_result_aggregration import SimulateEvaluationResult
+    ser = _load([_ir_record('u0', 1.0, 2.0, 1.0, 0)])
+    stale = {key: getattr(ser, key) for key in SimulateEvaluationResult._CACHE_KEYS}
+    stale['aggregation_version'] = 3
+    assert ser._has_valid_cache(stale) is False
+    stale['aggregation_version'] = 4
+    assert ser._has_valid_cache(stale) is True
+
+
 if __name__ == '__main__':
     test_ir_only_records_uniform_match_numpy_and_delta_method()
+    test_penalty_shrinkage_rows_match_numpy()
+    test_penalty_shrinkage_no_overfitting_verdict()
+    test_cache_version_gate_rebuilds_old_caches()
     test_ir_only_records_two_strata_weighted_mean()
     print('All IR lower-bound report tests passed.')

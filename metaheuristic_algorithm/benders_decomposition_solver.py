@@ -352,6 +352,40 @@ class SubproblemWorker:
             lp_model.dispose()
 
 
+def objective_confidence_interval(values, weights=None, strata=None):
+    """Weighted mean and 95% half-width (normal approximation) of values.
+
+    With ``weights``/``strata`` from a stratified proposal, the mean is
+    ``sum(w_i v_i)`` and the variance uses the stratified formula
+    ``sum_h W_h^2 s_h^2 / n_h`` (within-stratum sample variance only,
+    ddof=1). Uniform weights with a single stratum reduce exactly to the
+    classic ``1.96 s / sqrt(N)`` interval. Within-stratum QMC sampling
+    breaks iid, so the interval is approximate (typically conservative).
+    """
+    values = np.asarray(values, dtype=float)
+    if values.size == 0:
+        return 0.0, 0.0
+    if weights is None:
+        weights = np.full(values.size, 1.0 / values.size)
+    else:
+        weights = np.asarray(weights, dtype=float)
+    if strata is None:
+        strata = np.zeros(values.size, dtype=int)
+    else:
+        strata = np.asarray(strata)
+    mean = float(np.dot(weights, values))
+    variance = 0.0
+    for label in np.unique(strata):
+        in_stratum = strata == label
+        n_h = int(np.count_nonzero(in_stratum))
+        if n_h <= 1:
+            continue
+        total_weight = float(weights[in_stratum].sum())
+        sample_var = float(values[in_stratum].var(ddof=1))
+        variance += total_weight ** 2 * sample_var / n_h
+    return mean, 1.96 * float(np.sqrt(variance))
+
+
 class BendersDecompositionSolver:
     """Benders decomposition for two-stage stochastic programs.
 
@@ -372,6 +406,13 @@ class BendersDecompositionSolver:
             to 1 (stratified IS proposals); uniform 1/N when omitted.
         scenario_strata: optional integer stratum label per scenario, used by
             the confidence-interval reporting; single stratum when omitted.
+
+    The master objective may carry any further action-only terms (a
+    regularizer, a first-stage cost); the solver never looks at them.
+    Convergence is judged per iteration on the cut-model gap
+    ``sum_s w_s (theta_s - Q_s(a_k))`` between the master's epigraph values
+    at its proposed action ``a_k`` and that action's subproblem values, a
+    quantity in which every other master term cancels.
 
     Entry points: ``solve`` (iterative cutting-plane loop with optional
     checkpointing, cut purging, Pareto cuts) and ``solve_with_callback``
@@ -404,10 +445,6 @@ class BendersDecompositionSolver:
         self._cut_purge_enabled = False
         self._cut_registry = []
         self._latest_cut_by_scenario = {}
-        # Pathwise safety state (see _add_pathwise_safety); None when off.
-        self._pathwise_epsilon = None
-        self._pathwise_rho = 0.0
-        self._pathwise_q0 = None
 
     # ---- Public API ----
 
@@ -426,9 +463,20 @@ class BendersDecompositionSolver:
               resume_checkpoint_path=None,
               min_norm_action=False,
               purge_after=None,
-              purge_slack_tol=1e-6,
-              pathwise_safety=None):
+              purge_slack_tol=1e-6):
+        """Cutting-plane loop. Stops when the current iteration's cut-model gap
+        (see the class docstring) is below ``tol`` (absolute); the last master
+        action is then tol-optimal. ``init_solution`` pins the first
+        iteration's action (the master is solved with the action fixed, so
+        its gap and, with ``is_hard_bound``, its exact objective value are
+        available like in any other iteration). Returns ``(upper_bound, info)``
+        where ``upper_bound`` is the last master objective (maximization);
+        ``info`` carries ``master_objective``, ``evaluated_value`` (the last
+        action's value under the full master objective, i.e. master objective
+        minus gap), ``gap`` and ``iterations`` of the last completed
+        iteration, plus ``debug`` on failure."""
         info = {}
+        summary = {}
         lower_bound = -GRB.INFINITY
         upper_bound = GRB.INFINITY
         core_point = None  # For Pareto cuts; initialized after the first master solve.
@@ -463,6 +511,8 @@ class BendersDecompositionSolver:
         upper_bound = checkpoint_state.get('upper_bound', upper_bound) or upper_bound
         iteration_offset = int(checkpoint_state.get('iteration', 0) or 0)
         cut_count = int(checkpoint_state.get('cut_count', 0) or 0)
+        # Restored bounds are reporting only: the first iteration's master
+        # solve and gap overwrite both before any convergence decision.
 
         # Seed the master with the build-time (a=0) Benders cuts -- one per
         # scenario -- before the first master solve. They were produced for free
@@ -480,29 +530,25 @@ class BendersDecompositionSolver:
             lower_bound, upper_bound, cut_count = self._seed_initial_cuts(
                 active_workers, iteration_offset, lower_bound, upper_bound,
                 cut_count, checkpoint_path, core_point)
-        # Pathwise safety rows are NOT Benders cuts: not registered, not
-        # purged, not checkpointed -- so they are (re)added on every solve()
-        # call, including resumes that skip seeding.
-        self._pathwise_epsilon = None
-        if pathwise_safety is not None:
-            self._add_pathwise_safety(active_workers, pathwise_safety)
         try:
             for iteration in range(1, max_iter + 1):
                 global_iteration = iteration_offset + iteration
                 if init_solution is not None and iteration == 1:
-                    # Use the provided initial solution instead of solving the master.
-                    action = np.asarray(init_solution, dtype=float)
-                    core_point = copy.deepcopy(action)
-                    print(f"Iteration {global_iteration}, using init_solution (skipping master solve)")
+                    # Solve the master with the action pinned at init_solution:
+                    # its epigraph values give this iteration's gap exactly as
+                    # in any other iteration.
+                    action, master_obj, theta_values = self._solve_master_with_fixed_action(
+                        init_solution, global_iteration, purge_slack_tol, verbose)
+                    print(f"Iteration {global_iteration}, action pinned at init_solution")
                 else:
-                    action, master_obj = self._solve_master_step(
+                    action, master_obj, theta_values = self._solve_master_step(
                         global_iteration, purge_slack_tol, min_norm_action, verbose)
-                    if is_min:
-                        lower_bound = master_obj
-                    else:
-                        upper_bound = master_obj
-                    if core_point is None:
-                        core_point = copy.deepcopy(action)
+                if is_min:
+                    lower_bound = master_obj
+                else:
+                    upper_bound = master_obj
+                if core_point is None:
+                    core_point = copy.deepcopy(action)
 
                 print(f"Iteration {global_iteration}, action from master: {action.tolist()}")
 
@@ -534,25 +580,32 @@ class BendersDecompositionSolver:
                 # All scenarios feasible: add optimality cuts and refresh bounds.
                 self._add_cuts_to_master(optimality_cuts, new_cut_records,
                                          global_iteration, 'optimality')
-                first_stage_cost = self.imm_cost.getValue() if hasattr(self.imm_cost, 'getValue') else float(self.imm_cost or 0.0)
-                # Keep the incumbent (subproblem-evaluated) bound monotone so the
-                # build-time a=0 seed bound is never lost and the gap shrinks
-                # monotonically: the evaluated value at any action is a valid
-                # lower bound (maximization) / upper bound (minimization).
-                evaluated_value = first_stage_cost + cost_to_go_estimation
-                if self._pathwise_epsilon is not None:
-                    # Soft mode: the master objective carries the violation
-                    # penalty, so the evaluated incumbent must too or the
-                    # UB/LB gap compares different quantities.
-                    values = np.array([v for (_, v, _) in results], dtype=float)
-                    violation = (np.maximum(0.0, values - self._pathwise_q0) if is_min
-                                 else np.maximum(0.0, self._pathwise_q0 - values))
-                    penalty_value = self._pathwise_rho * float(self._scenario_weights @ violation)
-                    evaluated_value = evaluated_value + penalty_value if is_min else evaluated_value - penalty_value
+                # Convergence is judged on THIS iteration only, through the
+                # cut-model gap at the master's action: the weighted sum of
+                # (master epigraph value - subproblem value) per scenario. Cuts
+                # bound every Q_s from the master's side, so the gap is >= 0 in
+                # exact arithmetic; every other master term (first-stage cost,
+                # regularizer) is the same on both sides and cancels. When the
+                # gap is within tol the cut model is exact at the returned
+                # action and that action is tol-optimal. No historical best is
+                # kept: an earlier, better incumbent would not be the returned
+                # solution.
+                scenario_gaps = self._scenario_gaps(results, active_workers, theta_values)
+                scenario_ids = [worker.subproblem_id for worker in active_workers]
+                gap = float(self._scenario_weights[scenario_ids] @ scenario_gaps)
+                model_cost_to_go = float(self._scenario_weights @ theta_values)
+                # Evaluated value of the master's action under the full master
+                # objective (master value minus the gap).
                 if is_min:
-                    upper_bound = min(upper_bound, evaluated_value)
+                    upper_bound = master_obj + gap
                 else:
-                    lower_bound = max(lower_bound, evaluated_value)
+                    lower_bound = master_obj - gap
+                summary = {
+                    'master_objective': float(master_obj),
+                    'evaluated_value': float(upper_bound if is_min else lower_bound),
+                    'gap': gap,
+                    'iterations': global_iteration,
+                }
 
                 # If an init_solution was supplied, its evaluated cost is a valid
                 # bound on the master's optimum. Add it once as a hard constraint
@@ -569,12 +622,13 @@ class BendersDecompositionSolver:
                 # Update core point AFTER we have a valid x_k from the master.
                 core_point = self.update_core_point(core_point, action, iteration, alpha=core_alpha)
 
-                print(f"UB: {upper_bound}, LB: {lower_bound}, Gap: {abs(upper_bound - lower_bound)}, "
-                      f"First-stage cost: {first_stage_cost}, Cost-to-go estimate: {cost_to_go_estimation}")
+                print(f"UB: {upper_bound}, LB: {lower_bound}, Gap: {gap}, "
+                      f"Master cost-to-go: {model_cost_to_go}, Subproblem cost-to-go: {cost_to_go_estimation}, "
+                      f"max scenario gap: {float(np.max(scenario_gaps)):.6g}")
 
                 # Monte Carlo error of the scenario average: a wide interval
                 # means the scenario sample, not the cuts, limits accuracy.
-                obj_mean, obj_half_width = self._objective_confidence_interval(
+                obj_mean, obj_half_width = objective_confidence_interval(
                     [v for (is_feasible, v, _) in results if is_feasible],
                     weights=self._scenario_weights, strata=self._scenario_strata)
                 print(f"Iteration {global_iteration}, subproblem objective mean {obj_mean:.4f} "
@@ -584,11 +638,21 @@ class BendersDecompositionSolver:
                     checkpoint_path, global_iteration, lower_bound, upper_bound,
                     core_point, cut_count, new_cut_records, purge_after)
 
-                if abs(upper_bound - lower_bound) < tol:
+                if abs(gap) < tol:
                     info = {}
                     break
-                if lower_bound > upper_bound:
-                    print("Error: Lower bound exceeded upper bound (check dual rays/bounds).")
+                if gap < 0:
+                    # A negative gap beyond tol means some master epigraph value
+                    # lies on the wrong side of its subproblem value: an invalid
+                    # cut (dual rays / gradients / scenario weights) or LP
+                    # tolerances far beyond the master's. Print the raw pieces.
+                    worst = int(np.argmin(scenario_gaps))
+                    print("Error: Lower bound exceeded upper bound (check dual rays/bounds). "
+                          f"master objective {master_obj:.10g}, "
+                          f"master cost-to-go {model_cost_to_go:.10g}, "
+                          f"subproblem cost-to-go {cost_to_go_estimation:.10g}, "
+                          f"gap {gap:.6g} (tol {tol:g}), "
+                          f"worst scenario {scenario_ids[worst]} gap {float(scenario_gaps[worst]):.6g}")
                     info = {'debug': 'lower_bound_exceeded_upper_bound'}
                     break
                 print('-' * 20)
@@ -597,9 +661,7 @@ class BendersDecompositionSolver:
         finally:
             if executor is not None:
                 executor.shutdown(wait=False)
-        if pathwise_safety is not None:
-            info = dict(info)
-            info['pathwise_safety'] = self._pathwise_safety_report(active_workers, pathwise_safety)
+        info.update(summary)
         return upper_bound, info
 
     def solve_with_callback(self, tol=1e-6,
@@ -658,16 +720,43 @@ class BendersDecompositionSolver:
             return self.master_model.ObjVal, info
         return None, info
 
+    def evaluate_action(self, action, parallel=True, max_workers=None):
+        """Solve every worker at ``action``; return ``(values, weighted_mean)``.
+
+        ``values`` are the per-scenario subproblem objectives (unregularized),
+        ``weighted_mean`` their scenario-weight average. Raises if any
+        scenario is infeasible at ``action``."""
+        action = np.asarray(action, dtype=float)
+        active_workers = self.workers[:self.theta_vars.shape[0]]
+        env_groups = _group_workers_by_env(active_workers)
+        executor = None
+        if parallel and len(env_groups) > 1:
+            executor = ThreadPoolExecutor(
+                max_workers=_resolve_parallel_workers(max_workers, len(env_groups)))
+        try:
+            results = _dispatch_subproblem_solves(
+                env_groups, active_workers, lambda w: w.solve(action), executor)
+        finally:
+            if executor is not None:
+                executor.shutdown(wait=False)
+        infeasible = [w.subproblem_id for w, (ok, _, _) in zip(active_workers, results) if not ok]
+        if infeasible:
+            raise RuntimeError(f"evaluate_action: scenarios {infeasible[:5]} infeasible at the given action")
+        values = np.array([v for (_, v, _) in results], dtype=float)
+        return values, float(self._scenario_weights @ values)
+
     # ---- Master step ----
 
     def _solve_master_step(self, global_iteration, purge_slack_tol, min_norm_action, verbose):
-        """Solve the master and return ``(action, master_obj)``.
+        """Solve the master and return ``(action, master_obj, theta_values)``.
 
-        Cut activity is captured HERE, right after the solve: Gurobi drops
-        solution attributes (Slack) as soon as the model is modified, and the
-        min-norm re-solve below may do exactly that. ``master_obj`` is read
-        before the min-norm re-solve, which only replaces a degenerate action
-        with the minimum-L1 point on the same optimal face.
+        ``theta_values`` are the epigraph variables' values at ``action``
+        (the master's per-scenario cost-to-go estimates), read right after
+        the solve because Gurobi drops solution attributes once the model is
+        modified and updated. Cut activity is captured here for the same
+        reason. ``master_obj`` is read before the min-norm re-solve, which
+        only replaces a degenerate action with the minimum-L1 point on the
+        same optimal face (and returns that point's epigraph values).
         """
         start = time.time()
         solved = solve_and_handle_errors(self.master_model, verbose=verbose)
@@ -693,7 +782,8 @@ class BendersDecompositionSolver:
             )
         print(f"Iteration {global_iteration}, master solved in {time.time() - start} seconds")
         self._report_memory_usage(global_iteration)
-        action = self.action_vars.X
+        action = np.array(self.action_vars.X, dtype=float)
+        theta_values = np.array(self.theta_vars.X, dtype=float)
         if self._cut_purge_enabled:
             self._update_cut_activity(global_iteration, purge_slack_tol)
         master_obj = self.master_model.ObjVal
@@ -702,8 +792,48 @@ class BendersDecompositionSolver:
             # re-solve for the minimum-norm optimal action (bounds use the
             # primary ObjVal captured above). Sane actions skip the re-solve
             # so the endgame is untouched.
-            action = self._min_norm_master_action(action, verbose=verbose)
-        return action, master_obj
+            action, theta_values = self._min_norm_master_action(
+                action, theta_values, verbose=verbose)
+        return action, master_obj, theta_values
+
+    def _solve_master_with_fixed_action(self, fixed_action, global_iteration,
+                                        purge_slack_tol, verbose):
+        """Solve the master with the action variables pinned at
+        ``fixed_action`` and return ``(action, master_obj, theta_values)``.
+
+        Used for a caller-supplied ``init_solution``: the master's objective at
+        the pinned action minus this iteration's gap is the action's exact
+        value under the full master objective, whatever action-only terms the
+        objective carries. The original variable bounds are restored without
+        ``update()`` so the solution attributes stay readable until the next
+        solve.
+        """
+        fixed = np.asarray(fixed_action, dtype=float).reshape(-1)
+        if fixed.shape != (self.action_vars.shape[0],):
+            raise ValueError(f"init_solution must have {self.action_vars.shape[0]} entries; got {fixed.shape}")
+        original_lb = np.array(self.action_vars.lb, dtype=float)
+        original_ub = np.array(self.action_vars.ub, dtype=float)
+        self.action_vars.lb = fixed
+        self.action_vars.ub = fixed
+        try:
+            _, master_obj, theta_values = self._solve_master_step(
+                global_iteration, purge_slack_tol, False, verbose)
+        finally:
+            self.action_vars.lb = original_lb
+            self.action_vars.ub = original_ub
+        return fixed, master_obj, theta_values
+
+    def _scenario_gaps(self, results, active_workers, theta_values):
+        """Per-scenario ``theta_s - Q_s`` (maximization) or ``Q_s - theta_s``
+        (minimization) for the given feasible subproblem ``results``, in
+        ``active_workers`` order; >= 0 in exact arithmetic for valid cuts."""
+        is_min = self.master_model.ModelSense == GRB.MINIMIZE
+        gaps = np.empty(len(active_workers), dtype=float)
+        for i, (worker, (is_feasible, v, _)) in enumerate(zip(active_workers, results)):
+            assert is_feasible
+            theta = float(theta_values[worker.subproblem_id])
+            gaps[i] = (v - theta) if is_min else (theta - v)
+        return gaps
 
     def _save_master_failure_diagnostics(self, global_iteration):
         """Persist a failed master and identify the most likely failure mode."""
@@ -836,8 +966,9 @@ class BendersDecompositionSolver:
         print(f"Master failure artifacts: {directory}")
         return {"directory": directory, "reason": reason, "summary": summary}
 
-    def _min_norm_master_action(self, fallback_action, verbose=False):
-        """Return the minimum-L1-norm action on the master's optimal face.
+    def _min_norm_master_action(self, fallback_action, fallback_theta, verbose=False):
+        """Return ``(action, theta_values)`` at the minimum-L1-norm action on
+        the master's optimal face.
 
         The master objective only involves the theta epigraph variables, so
         with few cuts its optimal face is typically unbounded in the action
@@ -850,7 +981,7 @@ class BendersDecompositionSolver:
 
         Any Benders optimality cut is valid at any action point, so cutting at
         the min-norm optimum preserves correctness. On any failure the
-        first-phase ``fallback_action`` is returned unchanged.
+        first-phase ``(fallback_action, fallback_theta)`` is returned unchanged.
         """
         model = self.master_model
         original_sense = model.ModelSense
@@ -881,10 +1012,11 @@ class BendersDecompositionSolver:
             model.setObjective(self._action_abs_vars.sum(), GRB.MINIMIZE)
             model.optimize()
             if model.Status == GRB.OPTIMAL:
-                return np.array(self.action_vars.X, dtype=float)
+                return (np.array(self.action_vars.X, dtype=float),
+                        np.array(self.theta_vars.X, dtype=float))
             print(f"Min-norm re-solve not optimal (Status {model.Status}); "
                   f"keeping first-phase master action")
-            return fallback_action
+            return fallback_action, fallback_theta
         finally:
             model.remove(guard)
             model.setObjective(primary_objective, original_sense)
@@ -945,7 +1077,7 @@ class BendersDecompositionSolver:
         print(f"Seeded master with {len(optimality_cuts)} build-time (a=0) cuts"
               + (f"; bound at zero coefficients = {bound_at_zero}" if bound_at_zero is not None else ""))
         seeded_ids = [worker.subproblem_id for worker in seeded_workers]
-        zero_mean, zero_half_width = self._objective_confidence_interval(
+        zero_mean, zero_half_width = objective_confidence_interval(
             [v for _, v, _ in seeded_results],
             weights=self._scenario_weights[seeded_ids],
             strata=self._scenario_strata[seeded_ids])
@@ -973,76 +1105,6 @@ class BendersDecompositionSolver:
                 new_cut_records=cut_records,
             )
         return lower_bound, upper_bound, cut_count
-
-    def _add_pathwise_safety(self, active_workers, mode):
-        """Constrain each scenario's epigraph variable by its zero-action value.
-
-        ``mode='hard'``: ``theta_s >= Q_s(0)`` (``<=`` for minimization).
-        ``mode=rho`` (float >= 0): soft/exact-penalty version with slack
-        ``epsilon_s >= 0`` -- ``theta_s + epsilon_s >= Q_s(0)`` -- and the
-        objective penalized by ``rho * sum_s omega_s epsilon_s``. Always
-        feasible (a = 0 satisfies every row with zero slack). ``Q_s(0)`` comes
-        from each worker's build-time ``initial_cut``.
-        """
-        missing = [w.subproblem_id for w in active_workers
-                   if getattr(w, 'initial_cut', None) is None]
-        if missing:
-            raise ValueError(
-                f"pathwise_safety requires initial_cut on every worker; missing "
-                f"for scenarios {missing[:5]}{'...' if len(missing) > 5 else ''}")
-        is_min = self.master_model.ModelSense == GRB.MINIMIZE
-        q0 = np.array([float(w.initial_cut[0]) for w in active_workers], dtype=float)
-        ids = [w.subproblem_id for w in active_workers]
-        theta = self.theta_vars[ids]
-        if mode == 'hard':
-            self.master_model.addConstr(
-                theta <= q0 if is_min else theta >= q0, name="pathwise_safety")
-            self.master_model.update()
-            self._pathwise_q0 = q0
-            print(f"Pathwise safety: hard constraints on {len(ids)} scenarios")
-            return
-        rho = float(mode)
-        if rho < 0:
-            raise ValueError(f"pathwise_safety rho must be >= 0 or 'hard'; got {mode}")
-        eps = self.master_model.addMVar(len(ids), lb=0.0, name="pathwise_eps")
-        self.master_model.addConstr(
-            theta - eps <= q0 if is_min else theta + eps >= q0, name="pathwise_safety")
-        primary = self.master_model.getObjective()
-        penalty = rho * (self._scenario_weights[ids] @ eps)
-        self.master_model.setObjective(
-            primary + penalty if is_min else primary - penalty, self.master_model.ModelSense)
-        self.master_model.update()
-        self._pathwise_epsilon = eps
-        self._pathwise_rho = rho
-        self._pathwise_q0 = q0
-        print(f"Pathwise safety: soft constraints (rho={rho}) on {len(ids)} scenarios")
-
-    def _pathwise_safety_report(self, active_workers, mode, tol=1e-9):
-        """Violations of ``theta_s >= Q_s(0)`` at the final master action, plus
-        the paired improvement ``Q_s(a*) - Q_s(0)`` (sign flipped for
-        minimization) with its stratified 95% CI: the paths are shared, so
-        the paired difference is the right test of "penalized bound
-        significantly better than zero-penalty bound" on the training paths."""
-        action = np.array(self.action_vars.X, dtype=float)
-        is_min = self.master_model.ModelSense == GRB.MINIMIZE
-        values = np.array([w.solve(action)[1] for w in active_workers], dtype=float)
-        gap = values - self._pathwise_q0 if is_min else self._pathwise_q0 - values
-        violated = int(np.count_nonzero(gap > tol))
-        ids = [w.subproblem_id for w in active_workers]
-        improvement_mean, improvement_half = self._objective_confidence_interval(
-            -gap, weights=self._scenario_weights[ids], strata=self._scenario_strata[ids])
-        report = {'mode': mode, 'violated_paths': violated,
-                  'max_violation': float(max(gap.max(), 0.0)),
-                  'n_scenarios': int(len(values)),
-                  'paired_improvement_mean': float(improvement_mean),
-                  'paired_improvement_ci_half_width': float(improvement_half)}
-        print(f"Pathwise safety at final action: {violated}/{len(values)} paths violate "
-              f"(max violation {report['max_violation']:.6g})")
-        print(f"Paired improvement over zero-penalty bound: {improvement_mean:.4f} "
-              f"+/- {improvement_half:.4f} (95% CI, N={len(values)})"
-              + ("" if improvement_mean - improvement_half > 0 else
-                 " -- NOT significantly positive at 95%"))
-        return report
 
     # ---- Cut construction / registration / purging ----
 
@@ -1153,12 +1215,10 @@ class BendersDecompositionSolver:
 
     # ---- Checkpoint I/O ----
 
-    @staticmethod
-    def _checkpoint_paths(checkpoint_path):
+    def _checkpoint_paths(self, checkpoint_path):
         return f"{checkpoint_path}.meta.json", f"{checkpoint_path}.cuts.jsonl.gz"
 
-    @staticmethod
-    def _encode_vector(values, zero_tol=1e-12, sparse_density=0.35):
+    def _encode_vector(self, values, zero_tol=1e-12, sparse_density=0.35):
         vector = np.asarray(values, dtype=float).ravel()
         nonzero_idx = np.flatnonzero(np.abs(vector) > zero_tol)
 
@@ -1181,8 +1241,7 @@ class BendersDecompositionSolver:
             'values': vector.tolist(),
         }
 
-    @staticmethod
-    def _decode_vector(payload):
+    def _decode_vector(self, payload):
         if isinstance(payload, list):
             return np.asarray(payload, dtype=float)
 
@@ -1256,8 +1315,7 @@ class BendersDecompositionSolver:
             if os.path.exists(path):
                 os.remove(path)
 
-    @staticmethod
-    def _read_json_file(path):
+    def _read_json_file(self, path):
         try:
             with gzip.open(path, 'rt', encoding='utf-8') as handle:
                 return json.load(handle)
@@ -1265,8 +1323,7 @@ class BendersDecompositionSolver:
             with open(path, 'r', encoding='utf-8') as handle:
                 return json.load(handle)
 
-    @staticmethod
-    def _iter_cut_records(path):
+    def _iter_cut_records(self, path):
         if not os.path.exists(path):
             return
 
@@ -1453,8 +1510,7 @@ class BendersDecompositionSolver:
             alpha = 1.0 / (k + 1.0)  # diminishing step
         return (1.0 - alpha) * core + alpha * xk
 
-    @staticmethod
-    def _get_model_memory_usage(model):
+    def _get_model_memory_usage(self, model):
         return {
             'mem_used_gb': float(model.getAttr(GRB.Attr.MemUsed)),
             'max_mem_used_gb': float(model.getAttr(GRB.Attr.MaxMemUsed)),
@@ -1477,38 +1533,3 @@ class BendersDecompositionSolver:
             f"(peak {total_peak_mem_used:.4f} GB across {len(subproblem_memories)} workers)"
         )
         return master_memory, subproblem_memories
-
-    @staticmethod
-    def _objective_confidence_interval(values, weights=None, strata=None):
-        """Weighted mean and 95% half-width (normal approximation) of values.
-
-        With ``weights``/``strata`` from a stratified proposal, the mean is
-        ``sum(w_i v_i)`` and the variance uses the stratified formula
-        ``sum_h W_h^2 s_h^2 / n_h`` (within-stratum sample variance only,
-        ddof=1). Uniform weights with a single stratum reduce exactly to the
-        classic ``1.96 s / sqrt(N)`` interval. Within-stratum QMC sampling
-        breaks iid, so the interval is approximate (typically conservative).
-        """
-        values = np.asarray(values, dtype=float)
-        if values.size == 0:
-            return 0.0, 0.0
-        if weights is None:
-            weights = np.full(values.size, 1.0 / values.size)
-        else:
-            weights = np.asarray(weights, dtype=float)
-        if strata is None:
-            strata = np.zeros(values.size, dtype=int)
-        else:
-            strata = np.asarray(strata)
-        mean = float(np.dot(weights, values))
-        variance = 0.0
-        for label in np.unique(strata):
-            in_stratum = strata == label
-            n_h = int(np.count_nonzero(in_stratum))
-            if n_h <= 1:
-                continue
-            total_weight = float(weights[in_stratum].sum())
-            sample_var = float(values[in_stratum].var(ddof=1))
-            variance += total_weight ** 2 * sample_var / n_h
-        return mean, 1.96 * float(np.sqrt(variance))
-

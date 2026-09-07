@@ -110,6 +110,8 @@ class SimulateEvaluationResult:
         'ir_penalized_by_uid',
         'ir_weight_by_uid',
         'ir_stratum_by_uid',
+        'ir_cost_by_ratio_by_uid',
+        'ir_coefficients_source',
     )
 
     def __init__(self,directory_path, file_pattern, env, group_ids=None, is_reuse=False):
@@ -154,6 +156,11 @@ class SimulateEvaluationResult:
         self.ir_penalized_by_uid = defaultdict(dict)
         self.ir_weight_by_uid = defaultdict(dict)
         self.ir_stratum_by_uid = defaultdict(dict)
+        # Per-path lower bounds at every penalty ratio of a ``--penalty-ratios``
+        # evaluation, keyed (group_id, mutate_val) -> {uid: {t: cost}}, plus the
+        # provenance of the evaluated coefficients (see report_penalty_shrinkage).
+        self.ir_cost_by_ratio_by_uid = defaultdict(dict)
+        self.ir_coefficients_source = {}
         # Waiting time target violation
         self.waiting_time_target_ptc_by_type_day = defaultdict(dd_dd_rs_factory)
         self.waiting_time_target_ptc_by_day = defaultdict(dd_rs_factory)
@@ -196,7 +203,7 @@ class SimulateEvaluationResult:
             return False
         # Version gate: stale equal-weight caches must rebuild instead of
         # silently serving pre-stratification numbers.
-        if data.get('aggregation_version') != 3:
+        if data.get('aggregation_version') != 4:
             return False
         return all(key in data for key in self._CACHE_KEYS)
 
@@ -215,7 +222,7 @@ class SimulateEvaluationResult:
 
     def _save_cache(self, pickle_file):
         res = {key: getattr(self, key) for key in self._CACHE_KEYS}
-        res['aggregation_version'] = 3
+        res['aggregation_version'] = 4
         with open(pickle_file, 'wb') as f:
             pickle.dump(res, f)
 
@@ -256,6 +263,12 @@ class SimulateEvaluationResult:
                 self.ir_penalized_by_uid[key][uid] = data['penalized_information_relaxation_cost']
                 self.ir_weight_by_uid[key][uid] = path_weight
                 self.ir_stratum_by_uid[key][uid] = path_stratum
+                by_ratio = data.get('information_relaxation_cost_by_penalty_ratio')
+                if by_ratio:
+                    self.ir_cost_by_ratio_by_uid[key][uid] = {
+                        float(ratio): float(cost) for ratio, cost in by_ratio}
+                    if data.get('coefficients_source') is not None:
+                        self.ir_coefficients_source[key] = data['coefficients_source']
             return
         if self.group_ids and group_id not in self.group_ids:
             self.group_ids.append(group_id)
@@ -1192,6 +1205,121 @@ def report_information_relaxation_lower_bounds(experiment_name, config_type='ejo
         print(f"    improvement (paired) : {row['improvement_mean']:,.2f} +/- {row['improvement_half_window']:,.2f}"
               f"  ({row['relative_improvement_pct']:.2f}% +/- {row['relative_improvement_half_window_pct']:.2f}% of zero-penalty LB)")
     return rows
+
+
+def penalty_shrinkage_rows(ser, key, zetas=(0.0, 0.05), confidence=0.95):
+    """Per-ratio statistics of a ``--penalty-ratios`` evaluation for one
+    ``(group_id, mutate_val)`` key of ``ser``.
+
+    Uses the paths that carry the full (most common) grid. For every ratio
+    ``t``: the stratified path-weighted lower bound +/- CI, the paired
+    difference to ``t = 0`` (absolute +/- CI and relative with a
+    delta-method CI), and per ``zeta`` the weighted share of paths whose
+    bound falls below ``(1 - zeta)`` times the zero-penalty bound. The summary
+    holds ``t_star`` (grid argmax of the mean), the paired gain of ``t_star``
+    over ``t = 1`` +/- CI, and the verdict flags ``overfitting`` (``t_star < 1``
+    and the gain's CI excludes zero) and ``unit_below_zero`` (``t = 1``
+    significantly below ``t = 0``). Returns ``(rows, summary)``; ``([], None)``
+    when the key has no grid data.
+    """
+    by_uid = ser.ir_cost_by_ratio_by_uid.get(key, {})
+    if not by_uid:
+        return [], None
+    grids = [tuple(sorted(costs)) for costs in by_uid.values()]
+    grid = max(set(grids), key=grids.count)
+    uids = [uid for uid, costs in by_uid.items() if tuple(sorted(costs)) == grid]
+    weights, strata = _uid_weights_and_strata(
+        uids, ser.ir_weight_by_uid.get(key, {}), ser.ir_stratum_by_uid.get(key, {}))
+    values = {t: np.array([by_uid[uid][t] for uid in uids], dtype=float) for t in grid}
+    base = values[0.0]
+
+    def stats_of(samples):
+        stats = StratifiedRunningStats()
+        for value, weight, stratum in zip(samples, weights, strata):
+            stats.record(value, weight, stratum)
+        return stats
+
+    rows = []
+    for t in grid:
+        bound = stats_of(values[t])
+        diff = stats_of(values[t] - base)
+        relative, relative_half_window = _stratified_relative_improvement(
+            values[t] - base, base, weights, strata, confidence)
+        shares = {zeta: stats_of((values[t] < (1.0 - zeta) * base).astype(float)) for zeta in zetas}
+        rows.append({
+            'group_id': key[0], 'mutate_val': key[1], 'penalty_ratio': t, 'n': len(uids),
+            'mean': bound.mean, 'half_window': bound.half_window(confidence),
+            'diff_vs_zero_mean': diff.mean, 'diff_vs_zero_half_window': diff.half_window(confidence),
+            'relative_diff_pct': relative, 'relative_diff_half_window_pct': relative_half_window,
+            'violation_share': {zeta: shares[zeta].mean for zeta in zetas},
+            'violation_share_half_window': {zeta: shares[zeta].half_window(confidence) for zeta in zetas},
+        })
+    t_star = max(rows, key=lambda row: row['mean'])['penalty_ratio']
+    gain = stats_of(values[t_star] - values[1.0])
+    unit_row = next(row for row in rows if row['penalty_ratio'] == 1.0)
+    summary = {
+        'group_id': key[0], 'mutate_val': key[1], 'n': len(uids), 'grid': list(grid),
+        't_star': t_star,
+        'gain_over_unit_mean': gain.mean,
+        'gain_over_unit_half_window': gain.half_window(confidence),
+        'overfitting': bool(t_star < 1.0 and gain.mean - gain.half_window(confidence) > 0),
+        'unit_below_zero': bool(unit_row['diff_vs_zero_mean'] + unit_row['diff_vs_zero_half_window'] < 0),
+        'coefficients_source': ser.ir_coefficients_source.get(key),
+    }
+    return rows, summary
+
+
+def print_penalty_shrinkage(ser, experiment_name, zetas=(0.0, 0.05), confidence=0.95):
+    """Print the penalty-ratio shrinkage diagnostic for every key of ``ser``
+    that carries grid data; returns ``(rows, summaries)`` with ``summaries``
+    keyed by ``(group_id, mutate_val)``."""
+    level = round(confidence * 100)
+    all_rows, summaries = [], {}
+    print(f"{experiment_name}: penalty-ratio shrinkage diagnostic ({level}% CI)")
+    for key in sorted(ser.ir_cost_by_ratio_by_uid, key=str):
+        rows, summary = penalty_shrinkage_rows(ser, key, zetas=zetas, confidence=confidence)
+        if summary is None:
+            continue
+        all_rows.extend(rows)
+        summaries[key] = summary
+        source = summary['coefficients_source'] or {}
+        print(f"  group {key[0]}  mutate_val={key[1]}  n={summary['n']}")
+        print(f"    coefficients: uid={source.get('uid')}  N={source.get('sample_path_number')}  "
+              f"init_state_mode={source.get('init_state_mode')}  "
+              f"in-sample objective={source.get('tight_penalized_lower_bound')} "
+              f"(all-LP relaxation on the training proposal; indicative only)")
+        share_header = ''.join(f"  share<{1 - zeta:.2f}V0" for zeta in zetas)
+        print(f"    {'t':>5}  {'LB':>16}  {'vs t=0 (paired)':>26}  {'rel %':>14}{share_header}")
+        for row in rows:
+            shares = ''.join(f"  {100 * row['violation_share'][zeta]:11.1f}%" for zeta in zetas)
+            print(f"    {row['penalty_ratio']:5.2f}  {row['mean']:>16,.1f}"
+                  f"  {row['diff_vs_zero_mean']:>+12,.1f} +/- {row['diff_vs_zero_half_window']:<9,.1f}"
+                  f"  {row['relative_diff_pct']:>+6.2f} +/- {row['relative_diff_half_window_pct']:<5.2f}{shares}")
+        print(f"    t* = {summary['t_star']:g};  f(t*) - f(1) = {summary['gain_over_unit_mean']:+,.1f} "
+              f"+/- {summary['gain_over_unit_half_window']:,.1f}")
+        if summary['overfitting']:
+            print(f"    VERDICT: OVERFITTING -- the out-of-sample bound peaks at t*={summary['t_star']:g} < 1 "
+                  f"and the paired gain over t=1 is significant at {level}%.")
+        else:
+            print("    VERDICT: no evidence of overfitting on this grid.")
+        if summary['unit_below_zero']:
+            print("    NOTE: the penalized bound (t=1) is significantly below the zero-penalty bound.")
+    return all_rows, summaries
+
+
+def report_penalty_shrinkage(experiment_name, config_type='ejor', zetas=(0.0, 0.05),
+                             confidence=0.95, is_reuse=False):
+    """Load ``experiments/results/<experiment_name>`` and print the
+    penalty-ratio shrinkage diagnostic (see :func:`penalty_shrinkage_rows`).
+    Returns ``(rows, summaries)``."""
+    from experiments import get_config_by_type
+    ser = SimulateEvaluationResult(
+        os.path.join('.', 'experiments', 'results', experiment_name),
+        '[0-9]*.jsonl',
+        get_config_by_type(config_type).env,
+        is_reuse=is_reuse,
+    )
+    return print_penalty_shrinkage(ser, experiment_name, zetas=zetas, confidence=confidence)
 
 
 if __name__ == "__main__":

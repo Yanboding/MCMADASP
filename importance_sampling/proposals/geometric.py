@@ -1,5 +1,7 @@
 import numpy as np
 
+from importance_sampling.sample_path import Terminal
+
 from .base import (
     SamplePathLengthProposal,
     _validate_discount_factor,
@@ -24,6 +26,8 @@ class GeometricLengthProposal(SamplePathLengthProposal):
     def survival_probability(self, periods):
         periods = np.asarray(periods, dtype=int)
         return self.discount_factor_proposal ** (periods - 1)
+
+
 class TruncatedGeometricLengthProposal(SamplePathLengthProposal):
     """Geometric proposal conditioned on L <= max_length."""
 
@@ -54,3 +58,8 @@ class TruncatedGeometricLengthProposal(SamplePathLengthProposal):
         denominator = 1 - self.discount_factor_proposal ** self.max_length
         survival[supported] = numerator / denominator
         return survival
+
+    def terminal_for(self, lengths, arrival_generator=None):
+        """Absorbed unless the draw sits exactly at the truncation bound."""
+        return [Terminal.TRUNCATED if int(length) >= self.max_length else Terminal.ABSORBED
+                for length in lengths]

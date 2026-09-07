@@ -11,15 +11,17 @@ Three datasets are produced:
 """
 
 import copy
+import os
 
 import numpy as np
 
 from experiments import get_config_by_type
 from importance_sampling import build_proposal
+from importance_sampling.sample_path import sample_path_from_record
 from utils import get_uid, is_single_init_state
 
 from param_generation.caching import (
-    load_regression_training_data as _load_regression_training_data,
+    load_trained_coefficient_record_from_folder as _load_trained_coefficient_record_from_folder,
     load_trained_coefficients_from_folder as _load_trained_coefficients_from_folder,
 )
 from param_generation.command_files import (
@@ -33,7 +35,6 @@ from param_generation.policies import build_penalty_policy as _build_penalty_pol
 from param_generation.training import (
     train_alp_coefficients,
     train_penalty_coefficients,
-    train_value_function_coefficients as _train_value_function_coefficients,
     zero_penalty_coefficients as _zero_penalty_coefficients,
 )
 
@@ -76,7 +77,7 @@ def _state_to_jsonable(state):
     return [np.asarray(component).tolist() for component in state]
 
 
-def _evaluation_period_weights(proposal, discount_factor, tail_length):
+def _evaluation_period_weights(proposal, discount_factor, tail_length, arrival_generator=None):
     """Per-period importance-sampling weights for the post-warm-up evaluation
     horizon, or ``None`` when no reweighting is needed.
 
@@ -91,21 +92,23 @@ def _evaluation_period_weights(proposal, discount_factor, tail_length):
     period ``s`` is visited iff the sampled length ``L >= s - 1`` and its
     unbiased weight is ``gamma ** (s - 1) / P_proposal(L >= s - 1)``. In terms
     of the proposal's per-period ratios ``u_t = gamma ** (t - 1) / P(L >= t)``
-    this is ``w_1 = 1`` and ``w_s = gamma * u_{s-1}`` for ``s >= 2``; deriving
-    the weights from ``period_likelihood_ratios`` keeps its validation (gamma
-    match, positive survival). For a fixed-length proposal the weights are
-    unchanged (``gamma ** (s - 1)``). The agent-side use of
-    ``period_likelihood_ratios`` intentionally differs: its scenarios weight
-    exactly ``L`` periods, for which dividing by ``P(L >= s)`` is correct.
+    this is ``w_1 = 1`` and ``w_s = gamma * u_{s-1}`` for ``s >= 2`` -- the
+    proposal's ``survival_weights`` (whose validation -- gamma match, positive
+    survival -- is reused). For a fixed-length proposal the weights are
+    ``gamma ** (s - 1)``; for the arrival generator's own law they are all 1.
     """
     if proposal is None:
         return None
-    num_periods = tail_length + 1
-    unshifted = proposal.period_likelihood_ratios(
-        target_discount_factor=discount_factor,
-        lengths=[num_periods],
-    )[0]
-    return [1.0] + [float(discount_factor * w) for w in unshifted[:-1]]
+    weights = proposal.survival_weights([tail_length], discount_factor, arrival_generator)[0]
+    return [float(w) for w in weights]
+
+
+def _evaluation_terminal(proposal, tail_length, arrival_generator=None):
+    """How the post-warm-up tail ended (``'absorbed'`` / ``'truncated'``), or
+    ``None`` when no length proposal drew it."""
+    if proposal is None:
+        return None
+    return proposal.terminal_for([tail_length], arrival_generator)[0].value
 
 
 def _normalize_penalty_training_init_state(init_state, sample_path_number):
@@ -148,7 +151,42 @@ def _normalize_penalty_training_init_state(init_state, sample_path_number):
 
 
 
-def generate_test_paths_and_init_state(test_envs, test_sample_path_num, warm_up_periods=0, num_periods=None, dat_file=None, num_groups=None, is_require_penalty_coefficients=True, is_random_initial_state=False, policy_ids=None, train_data_dir=None, warm_up_policy_id=None, evaluation_proposal_spec=None, penalty_coefficients_dir=None, warm_up_paths=None, sample_gen_seed_offset=1001):
+_COEFFICIENTS_SOURCE_KEYS = (
+    'uid', 'file', 'sample_path_number', 'init_state_mode', 'init_state_seed',
+    'tight_penalized_lower_bound',
+)
+
+
+def normalize_penalty_ratios(penalty_ratios):
+    """Sorted, de-duplicated float grid that always contains 0 and 1, so the
+    legacy ``zero_/penalized_`` record fields are always populated."""
+    ratios = {float(ratio) for ratio in penalty_ratios}
+    ratios.update((0.0, 1.0))
+    return sorted(ratios)
+
+
+def _coefficients_source(record):
+    """Provenance of a training record, carried on every evaluation record."""
+    return {key: record.get(key) for key in _COEFFICIENTS_SOURCE_KEYS}
+
+
+def _warn_initial_state_mismatch(coefficients_source, is_random_initial_state):
+    """Print a warning when the evaluation's initial-state distribution does
+    not match the one the coefficients were trained on."""
+    mode = coefficients_source.get('init_state_mode')
+    if mode == 'generate' and not is_random_initial_state:
+        print("WARNING: initial-state distribution mismatch: the coefficients were "
+              "trained with per-scenario random initial states "
+              "(init_state_mode='generate') but the evaluation starts every path "
+              "from the fixed reset initial state; pass --random-init to match.")
+    elif mode == 'shared' and is_random_initial_state:
+        print("WARNING: initial-state distribution mismatch: the coefficients were "
+              "trained from one shared initial state (init_state_mode='shared') "
+              "but the evaluation draws random initial states (--random-init); "
+              "use --init-occupancy to match the training state instead.")
+
+
+def generate_test_paths_and_init_state(test_envs, test_sample_path_num, warm_up_periods=0, num_periods=None, dat_file=None, num_groups=None, is_require_penalty_coefficients=True, is_random_initial_state=False, policy_ids=None, warm_up_policy_id=None, evaluation_proposal_spec=None, penalty_coefficients_dir=None, warm_up_paths=None, sample_gen_seed_offset=1001, penalty_ratios=None):
     '''
     Inital state is considered as period 1. sample path will start from period 2.
 
@@ -156,13 +194,6 @@ def generate_test_paths_and_init_state(test_envs, test_sample_path_num, warm_up_
     ``POLICY_SPECS``. The resolved policy spec dicts are embedded in every
     saved params record under the ``policies`` key so the runner knows which
     policies to evaluate against the corresponding sample path.
-
-    ``train_data_dir`` is an optional path to a folder of training-result JSONL
-    files holding (X, Y) = (``init_state``, ``tight_penalized_lower_bound``)
-    pairs. When provided and ``'approx_Q'`` is in ``policy_ids``, the approx_Q
-    value-function coefficients are fitted by least-squares regression on that
-    data (instead of the Benders ``direct_coefficients``) and written into the
-    approx_Q ``policy_generating_function_spec``.
 
     ``warm_up_policy_id`` optionally names one of ``policy_ids`` (e.g.
     ``'row_gen_alp'``) as the shared warm-up policy. By default every policy
@@ -195,9 +226,21 @@ def generate_test_paths_and_init_state(test_envs, test_sample_path_num, warm_up_
     path generation (default 1001, the historical offset). Give different
     experiments different offsets so their evaluation tails come from disjoint
     random streams.
+
+    ``penalty_ratios`` optionally lists scale factors ``t``; when given, every
+    record carries the normalised grid (0 and 1 always included) under
+    ``penalty_ratios`` plus the provenance of the trained coefficients under
+    ``coefficients_source``, and the runner evaluates the lower bound with the
+    coefficients scaled by each ``t``. The coefficients MUST already exist in
+    ``penalty_coefficients_dir`` (or the experiment's results folder): missing
+    coefficients raise instead of triggering a Benders training run.
     '''
     policy_ids = list(policy_ids or [])
     policy_id_set = set(policy_ids)
+    if penalty_ratios is not None:
+        penalty_ratios = normalize_penalty_ratios(penalty_ratios)
+        if not is_require_penalty_coefficients:
+            raise ValueError('penalty_ratios requires is_require_penalty_coefficients=True.')
     if warm_up_policy_id is not None and warm_up_policy_id not in policy_id_set:
         raise ValueError(
             f"warm_up_policy_id '{warm_up_policy_id}' must be one of the "
@@ -258,27 +301,54 @@ def generate_test_paths_and_init_state(test_envs, test_sample_path_num, warm_up_
             })
 
         direct_coefficients = _zero_penalty_coefficients(env)
+        coefficients_source = None
         if is_require_penalty_coefficients:
             sample_path_number = variant.get('agent_args', {}).get('agent_args', {}).get('sample_path_number')
-            loaded_coefficients = _load_trained_coefficients_from_folder(
-                experiment_name=experiment_name,
-                mutate_val=mutate_val,
-                sample_path_number=sample_path_number,
-                folder_path=penalty_coefficients_dir,
-            )
-            if loaded_coefficients is not None:
-                direct_coefficients = loaded_coefficients
-                print(
-                    f"Loaded trained penalty coefficients from folder for "
-                    f"experiment={experiment_name}, mutate_val={mutate_val}."
-                )
-            else:
-                agent_args = copy.deepcopy(variant['agent_args'])
-                _, direct_coefficients, _ = train_penalty_coefficients(
-                    env_args=env_args,
-                    agent_args=agent_args,
+            if penalty_ratios is not None:
+                # Penalty-ratio grid: evaluate EXISTING coefficients only.
+                record = _load_trained_coefficient_record_from_folder(
                     experiment_name=experiment_name,
+                    mutate_val=mutate_val,
+                    sample_path_number=sample_path_number,
+                    folder_path=penalty_coefficients_dir,
                 )
+                if record is None:
+                    raise ValueError(
+                        "penalty_ratios requires trained coefficients, but none were "
+                        f"found for experiment={experiment_name}, mutate_val={mutate_val}, "
+                        f"sample_path_number={sample_path_number} in "
+                        f"{penalty_coefficients_dir or os.path.join('experiments', 'results', experiment_name)}; "
+                        "refusing to train."
+                    )
+                direct_coefficients = record['coefficients']
+                coefficients_source = _coefficients_source(record)
+                print(
+                    f"Loaded trained penalty coefficients for the penalty-ratio grid "
+                    f"from {record['file']} (uid={coefficients_source['uid']}, "
+                    f"init_state_mode={coefficients_source['init_state_mode']}, "
+                    f"in-sample objective={coefficients_source['tight_penalized_lower_bound']})."
+                )
+                _warn_initial_state_mismatch(coefficients_source, is_random_initial_state)
+            else:
+                loaded_coefficients = _load_trained_coefficients_from_folder(
+                    experiment_name=experiment_name,
+                    mutate_val=mutate_val,
+                    sample_path_number=sample_path_number,
+                    folder_path=penalty_coefficients_dir,
+                )
+                if loaded_coefficients is not None:
+                    direct_coefficients = loaded_coefficients
+                    print(
+                        f"Loaded trained penalty coefficients from folder for "
+                        f"experiment={experiment_name}, mutate_val={mutate_val}."
+                    )
+                else:
+                    agent_args = copy.deepcopy(variant['agent_args'])
+                    _, direct_coefficients, _ = train_penalty_coefficients(
+                        env_args=env_args,
+                        agent_args=agent_args,
+                        experiment_name=experiment_name,
+                    )
 
         if 'approx_hindsight' in policy_id_set:
             policies.append(
@@ -304,19 +374,6 @@ def generate_test_paths_and_init_state(test_envs, test_sample_path_num, warm_up_
         if 'approx_Q' in policy_id_set:
             approx_q_coefficients = direct_coefficients
             approx_q_generating_function_spec = policy_generating_function_spec
-            if train_data_dir is not None:
-                X, Y = _load_regression_training_data(train_data_dir)
-                approx_q_coefficients = _train_value_function_coefficients(
-                    env=env,
-                    generating_function_spec=policy_generating_function_spec,
-                    X=X,
-                    Y=Y,
-                )
-                # Update coefficients in the approx_Q policy generating function spec.
-                approx_q_generating_function_spec = {
-                    **policy_generating_function_spec,
-                    'coefficients': approx_q_coefficients,
-                }
             policies.append(
                 _build_penalty_policy(
                     base_agent_args=variant['agent_args'],
@@ -349,6 +406,13 @@ def generate_test_paths_and_init_state(test_envs, test_sample_path_num, warm_up_
             or inner_agent_args.get('sample_path_proposal')
         )
         sample_path_proposal = build_proposal(eval_proposal_spec)
+        if (lowerbound_generating_function_spec['name'] == 'absorption_linear_penalty'
+                and (num_periods is not None or sample_path_proposal is None)):
+            raise ValueError(
+                "the absorption penalty (absorption_linear_penalty) needs every evaluation "
+                "record to carry survival weights and a terminal outcome: draw the tails from "
+                "a length proposal (pass --eval-proposal, e.g. "
+                "'{\"type\": \"geometric\", \"discount_factor_proposal\": 0.99}')")
         # Generate the whole evaluation batch directly from the proposal in a
         # single call. The proposal's stratified/QMC length sampling is defined
         # over the FULL sample size (e.g. a mixture deterministically assigns a
@@ -363,23 +427,16 @@ def generate_test_paths_and_init_state(test_envs, test_sample_path_num, warm_up_
         proposal_tails = None
         path_weights = path_strata = None
         if num_periods is None and sample_path_proposal is not None:
+            # Validate the allocation before sampling: every positive-mass
+            # stratum needs a sample for the weighted estimator to be valid.
+            # Record order preserves proposal order, so these weights align
+            # positionally with the sampled tails.
+            path_weights = sample_path_proposal.path_weights(test_sample_path_num)
+            path_strata = sample_path_proposal.path_strata(test_sample_path_num)
             proposal_tails, _ = sample_path_proposal.sample_arrival_paths(
                 arrival_generator=env_for_sample_path.arrival_generator,
                 size=test_sample_path_num,
             )
-            # Record order equals proposal order (single batch draw), so the
-            # per-path stratum weights align positionally with the tails.
-            try:
-                path_weights = sample_path_proposal.path_weights(test_sample_path_num)
-                path_strata = sample_path_proposal.path_strata(test_sample_path_num)
-            except ValueError as exc:
-                # Degenerate allocation (e.g. a tiny smoke run that cannot
-                # represent every stratum): emit unweighted records so the
-                # plumbing keeps working; such runs are not statistically
-                # meaningful either way.
-                print(f"WARNING: proposal path weights unavailable ({exc}); "
-                      "records will aggregate equal-weight.")
-                path_weights = path_strata = None
         average_sample_path_length = 0
         for path_index in range(test_sample_path_num):
             init_state = env_for_sample_path.generate_initial_state() if ('init_state' not in env_args.get('reset_params', {})) or is_random_initial_state else env_args['reset_params']['init_state']
@@ -399,10 +456,14 @@ def generate_test_paths_and_init_state(test_envs, test_sample_path_num, warm_up_
                     sample_path_proposal,
                     env_for_sample_path.discount_factor,
                     len(sampled_path),
+                    env_for_sample_path.arrival_generator,
                 )
+                terminal = _evaluation_terminal(
+                    sample_path_proposal, len(sampled_path), env_for_sample_path.arrival_generator)
             else:
                 sample_path = env_for_sample_path.reset_arrivals(stop_time=num_periods)
                 period_weights = None
+                terminal = None
             sample_path = sample_path.tolist() if hasattr(sample_path, 'tolist') else sample_path
             max_length = max(max_length, len(sample_path))
             average_sample_path_length += len(sample_path)
@@ -412,13 +473,12 @@ def generate_test_paths_and_init_state(test_envs, test_sample_path_num, warm_up_
                 'warm_up_periods': warm_up_periods,
                 'env_args': env_args,
             }
-            uid = get_uid(params)
             save_params = {
-                'uid': uid,
                 "experiment_name": experiment_name,
                 "mutate_val": mutate_val,
                 **params,
                 "period_weights": period_weights,
+                "terminal": terminal,
                 "path_weight": None if path_weights is None else float(path_weights[path_index]),
                 "path_stratum": None if path_strata is None else int(path_strata[path_index]),
                 "generating_function_spec": {**lowerbound_generating_function_spec, 'coefficients': direct_coefficients},
@@ -427,6 +487,20 @@ def generate_test_paths_and_init_state(test_envs, test_sample_path_num, warm_up_
             }
             if warm_up_policy_id is not None:
                 save_params['warm_up_policy_id'] = warm_up_policy_id
+            if penalty_ratios is not None:
+                save_params['penalty_ratios'] = list(penalty_ratios)
+                save_params['coefficients_source'] = coefficients_source
+            # Include all record semantics in duplicate detection, including
+            # the drawing law, policy/accounting coefficients and shared warm-up.
+            # Hash canonical metadata for exactly the post-warm-up tail.
+            tail = sample_path_from_record(sample_path[warm_up_periods:], period_weights, terminal)
+            weights = np.ones(tail.periods) if tail.survival_weights is None else tail.survival_weights
+            save_params['uid'] = get_uid({
+                'cache_version': 2,
+                **save_params,
+                'terminal': tail.terminal.value,
+                'period_weights': weights.tolist(),
+            })
             results.append(save_params)
         print("max sample path length:", max_length)
         print("average sample path length:", average_sample_path_length / test_sample_path_num)

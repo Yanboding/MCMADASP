@@ -16,7 +16,6 @@ from param_generation.mutators import (
     mutate_mixture_target_discount_factor,
     mutate_mixture_target_discount_factor_overtime_5,
     mutate_mixture_target_discount_factor_overtime_50,
-    mutate_pathwise_safety,
     mutate_sample_path_number_mixture_geometric_l01,
 )
 
@@ -29,8 +28,8 @@ from param_generation.mutators import (
 # epsilon 0.125 -> ``l0125``); val = occupancy fraction. Extend the lists to
 # add grid points.
 OCCUPANCY_LEVELS = [0.3, 0.5, 0.9]
-OCCUPANCY_EPSILONS = [0.125, 0.2, 0.5, 1.0]  # 1.0 = no importance sampling (target Geom(0.99))
-OCCUPANCY_SCENARIO_NUMBERS = [256, 512]
+OCCUPANCY_EPSILONS = [0.1, 0.125, 0.2, 0.3, 0.5, 1.0]  # 1.0 = no importance sampling (target Geom(0.99))
+OCCUPANCY_SCENARIO_NUMBERS = [256, 512, 1024]
 
 
 def occupancy_experiment_name(epsilon, sample_path_number):
@@ -89,16 +88,6 @@ EXPERIMENT_SPECS = {
         # Initial-occupancy grid (see ``_occupancy_experiment_specs``): one
         # experiment per (epsilon, scenario count), sweeping the occupancy.
         *_occupancy_experiment_specs(),
-        # Pathwise safety sweep on the case study: hard constraint vs soft
-        # (rho=1); the unconstrained baseline is
-        # case_study_099_mixture_geometric_proposal_095. val = mode.
-        ExperimentSpec(
-            name='case_study_099_pathwise_safety',
-            config_type='ejor',
-            val_args=['hard', 1.0],
-            mutate=mutate_mixture_target_discount_factor,
-            agent_mutate=mutate_pathwise_safety,
-        ),
         # Saure EJOR case-study pair (spec:
         # docs/superpowers/specs/2026-08-02-saure-ejor-case-study-design.md).
         ExperimentSpec(

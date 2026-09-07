@@ -104,16 +104,10 @@ def build_qp_subproblem(agent, grb_env, scenario_id, init_state):
     action_var = agent.get_action_var(model=sub_model, advance_scheduling_type=agent.future_decision_var_type)
     agent.add_action_space_constraints(model=sub_model, state_var=state_var, action_var=action_var)
 
-    objective = agent.env.cost_fn(state_var, action_var, is_var=True)
-    for period_index, new_arrival in enumerate(agent.delta[scenario_id]):
-        lr = agent._get_period_likelihood_ratio(scenario_id, period_index)
-        penalty = gen.calculate_penalty(state_var, action_var, new_arrival, is_var=True, coefficients=coefficient_blocks)
-        objective += lr * penalty
-        state_var = agent.get_next_state(model=sub_model, state=state_var, action=action_var, new_arrival=new_arrival)
-        action_var = agent.get_action_var(model=sub_model, advance_scheduling_type=agent.future_decision_var_type)
-        agent.add_action_space_constraints(model=sub_model, state_var=state_var, action_var=action_var)
-        objective += lr * agent.env.cost_fn(state_var, action_var, is_var=True)
-    sub_model.setObjective(objective, GRB.MINIMIZE)
+    # Bilinear QP: the coefficient VARIABLES times the path's penalty feature.
+    cost, Phi, _, _ = agent.pathwise_terms(
+        sub_model, gen, gen.form('training'), agent.sample_paths[scenario_id], state_var, action_var)
+    sub_model.setObjective(cost + coefficient_vars @ Phi, GRB.MINIMIZE)
     sub_model.Params.OutputFlag = 0
     return sub_model, _flatten_constrs(linking)
 
@@ -214,11 +208,11 @@ def main():
     # Pick the shortest sample path whose length is >= 10 so the dual / finite-
     # difference checks are meaningful (a length-1 path is degenerate), while
     # still building and solving quickly.
-    lengths = sorted((len(agent.delta[s]), s) for s in range(sample_path_number))
+    lengths = sorted((agent.sample_paths[s].length, s) for s in range(sample_path_number))
     non_trivial = [s for (L, s) in lengths if L >= 10]
     fast_sid = non_trivial[0] if non_trivial else lengths[-1][1]
     print(f"\n=== PART 2: LP vs QP equivalence on scenario {fast_sid} "
-          f"(len {len(agent.delta[fast_sid])}) ===")
+          f"(len {agent.sample_paths[fast_sid].length}) ===")
 
     t0 = time.time()
     lp2, lp2_link, obj_builder2, cut_grad2 = agent.train_subproblem_builder_fn(

@@ -28,6 +28,7 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import run
+from generating_function import LegacyForm
 
 
 ALP_WARMUP_STATE = ([[7, 7], [6, 6]], [3, 3], [2, 1])
@@ -42,7 +43,7 @@ class _FakeLowerBoundAgent:
         self.calls = []
         _FakeLowerBoundAgent.instances.append(self)
 
-    def calculate_information_relaxation_cost(self, state, sample_path=None, period_weights=None):
+    def calculate_information_relaxation_cost(self, state, sample_path=None, period_weights=None, terminal=None):
         self.calls.append({'state': state, 'sample_path_len': len(sample_path)})
         return 100.0
 
@@ -254,8 +255,13 @@ class CalculatePolicyCostsSeedingTest(unittest.TestCase):
         for patcher in patchers:
             patcher.start()
             self.addCleanup(patcher.stop)
+        # Constant per-period terms: theta . E[phi] = 1.0, theta . phi = 0.5, so
+        # every period's penalty is 0.5 under the legacy evaluation form.
         self.generating_function = SimpleNamespace(
-            calculate_penalty=lambda state, action, arrivals: 0.5,
+            coefficient_vector=lambda: np.array([0.0]),
+            expected_value=lambda theta, state, action: 1.0,
+            value=lambda theta, state, action, arrivals: 0.5,
+            form=lambda consumer: LegacyForm(consumer),
             coefficients=[0.0],
         )
 

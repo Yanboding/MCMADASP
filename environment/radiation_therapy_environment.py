@@ -104,8 +104,7 @@ class RTEnv:
             return copy.deepcopy(state)
         return state
 
-    @staticmethod
-    def _clip_ppf_quantiles(quantiles):
+    def _clip_ppf_quantiles(self, quantiles):
         # Discrete SciPy ppf(0.0) returns one below the support.
         return np.clip(quantiles, np.nextafter(0.0, 1.0), np.nextafter(1.0, 0.0))
 

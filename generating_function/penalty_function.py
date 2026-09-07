@@ -1,28 +1,46 @@
+"""The project's linear penalty: ``g(x) = (sum delta) * theta . phi_0(s+, a)``."""
 import numpy as np
 import gurobipy as gp
 from gurobipy import GRB
 
-from generating_function import GeneratingFunction
+from .abstract_generating_function import GeneratingFunction
+from .features import Features
+from .penalty_forms import legacy_forms
+
 
 class LinearPenaltyFunction(GeneratingFunction):
+    """Transition-scaled linear generating function.
+
+    ``phi_0(s+, a)`` is the five-block vector [post-action regular bookings,
+    post-action overtime, post-action waitlist, scheduling decision, overtime
+    decision]; the feature of an arrival ``delta`` is ``phi = (sum delta) *
+    phi_0`` and its expectation ``E[phi] = (sum mean) * phi_0``. Both are
+    affine in the decisions, so every model that carries them stays an LP,
+    and a period's penalty feature ``c_e * E[phi] - c_r * phi`` is one scalar
+    times ``phi_0`` (:meth:`penalty_features`, one ``post_action_state`` call).
+    """
+    spec_name = 'linear_penalty'
+    forms = legacy_forms()
+
     def __init__(self, env, coefficients=None):
         super().__init__(env, coefficients)
+        self.number_of_coefficients = (self.env.planning_horizon * 2
+                                       + self.env.num_types
+                                       + self.env.booking_window_size * self.env.num_types
+                                       + self.env.planning_horizon)
+        # ``E[sum delta]``: the arrival-total scale of the expected features.
+        self.expected_arrival_total = float(np.sum(self.env.arrival_generator.mean_by_type))
 
-    @property
-    def number_of_coefficients(self):
-        return (self.env.planning_horizon * 2
-                + self.env.num_types
-                + self.env.booking_window_size * self.env.num_types
-                + self.env.planning_horizon)
+    def _block_offsets(self):
+        T, K, W = self.env.planning_horizon, self.env.num_types, self.env.booking_window_size
+        return [0] + list(np.cumsum([T, T, K, W * K, T]))
 
     def get_coefficients(self, solution):
         if solution is None:
             if self.coefficients is None:
                 return None, None, None, None, None
             solution = self.coefficients
-        T, K, W = self.env.planning_horizon, self.env.num_types, self.env.booking_window_size
-        sizes = [T, T, K, W * K, T]
-        offsets = [0] + list(np.cumsum(sizes))
+        offsets = self._block_offsets()
         if not isinstance(solution, gp.MVar):
             solution = np.array(solution, dtype=float)
         theta_u = solution[offsets[0]:offsets[1]]
@@ -32,58 +50,38 @@ class LinearPenaltyFunction(GeneratingFunction):
         theta_y = solution[offsets[4]:offsets[5]]
         return theta_u, theta_v, theta_w, theta_x, theta_y
 
-    def calculate_penalty(self, state, action, new_arrival, is_var=False, coefficients=None):
+    # ---- features ------------------------------------------------------------
+    def base_features(self, state, action, is_var=False):
+        """``phi_0(s+, a)``: the arrival-free part shared by ``phi`` and ``E[phi]``."""
         (post_action_regular_bookings, post_action_overtimes, post_action_waitlist) = self.env.post_action_state(state, action, is_var)
         (advance_scheduling_decision, overtime_decision) = action
-        total_arrival_difference = np.sum(self.env.arrival_generator.mean_by_type - new_arrival)
-        theta_u, theta_v, theta_w, theta_x, theta_y = self._get_coefficient_blocks(coefficients)
-        linear_approx = theta_u @ post_action_regular_bookings + theta_v @ post_action_overtimes + theta_w @ post_action_waitlist + theta_x @ advance_scheduling_decision.reshape(-1) + theta_y @ overtime_decision
-        penalty_value = total_arrival_difference * linear_approx
-        return penalty_value
-    
-    def calculate_gradient(self, state, action, new_arrival, is_var=False):
-        (post_action_regular_bookings, post_action_overtimes, post_action_waitlist) = self.env.post_action_state(state, action, is_var=is_var)
-        (advance_scheduling_decision, overtime_decision) = action
-        total_arrival_difference = np.sum(self.env.arrival_generator.mean_by_type - new_arrival)
-        gradient = np.concatenate([total_arrival_difference * post_action_regular_bookings,
-                                   total_arrival_difference * post_action_overtimes,
-                                   total_arrival_difference * post_action_waitlist,
-                                   total_arrival_difference * advance_scheduling_decision.reshape(-1),
-                                   total_arrival_difference * overtime_decision])
-        return gradient
+        offsets = self._block_offsets()
+        return Features(self.number_of_coefficients, [
+            (offsets[0], offsets[1], post_action_regular_bookings),
+            (offsets[1], offsets[2], post_action_overtimes),
+            (offsets[2], offsets[3], post_action_waitlist),
+            (offsets[3], offsets[4], advance_scheduling_decision.reshape(-1)),
+            (offsets[4], offsets[5], overtime_decision),
+        ])
 
-    def gradient_coupling_blocks(self, state, action, new_arrival, is_var=False, weight=1.0):
-        """Vectorized penalty feature, one ``(start, stop, matrix)`` per
-        coefficient block, for the extensive-form coupling rows.
+    def arrival_total(self, arrival):
+        return float(np.sum(arrival))
 
-        Same content as :meth:`calculate_gradient` (phi =
-        ``total_arrival_difference * [post-action regular bookings, overtimes,
-        waitlist, advance decision, overtime decision]``) but returned
-        block-by-block as Gurobi ``MLinExpr`` matrices so the extensive-form
-        trainer accumulates and constrains each block with a single matrix-level
-        operation instead of one ``scalar*MLinExpr`` pass per coefficient. This
-        also sidesteps the ``np.concatenate`` of ``np.float64 * MVar`` terms in
-        :meth:`calculate_gradient` (which produces zero-dimensional object arrays
-        for Gurobi decision variables). Every linear-penalty block is active
-        (no structural zeros). ``weight`` (the per-period likelihood ratio) is
-        folded into the scalar before the broadcast so the caller needs no
-        second pass. Each block's C-order flattening lines up with the flat
-        coefficient slice ``[start:stop]`` from :meth:`get_coefficients`.
-        """
-        T, K, W = self.env.planning_horizon, self.env.num_types, self.env.booking_window_size
-        (post_action_regular_bookings, post_action_overtimes, post_action_waitlist) = self.env.post_action_state(state, action, is_var)
-        (advance_scheduling_decision, overtime_decision) = action
-        scale = float(weight) * float(np.sum(self.env.arrival_generator.mean_by_type - new_arrival))
-        sizes = [T, T, K, W * K, T]
-        offsets = [0] + list(np.cumsum(sizes))
-        return [
-            (offsets[0], offsets[1], scale * post_action_regular_bookings),
-            (offsets[1], offsets[2], scale * post_action_overtimes),
-            (offsets[2], offsets[3], scale * post_action_waitlist),
-            (offsets[3], offsets[4], scale * advance_scheduling_decision.reshape(-1)),
-            (offsets[4], offsets[5], scale * overtime_decision),
-        ]
+    def features(self, state, action, arrival, is_var=False):
+        return self.base_features(state, action, is_var).scaled(self.arrival_total(arrival))
 
+    def expected_features(self, state, action, is_var=False):
+        return self.base_features(state, action, is_var).scaled(self.expected_arrival_total)
+
+    def penalty_features(self, state, action, arrival, expected_weight, realized_weight, is_var=False):
+        scale = expected_weight * self.expected_arrival_total
+        if realized_weight != 0.0:
+            scale -= realized_weight * self.arrival_total(arrival)
+        if scale == 0.0:
+            return Features(self.number_of_coefficients)
+        return self.base_features(state, action, is_var).scaled(scale)
+
+    # ---- policy value function (legacy body, kept) --------------------------
     def calculate_expected_continuation_value(self, state, action, is_var=False, coefficients=None):
         (post_action_regular_bookings, post_action_overtimes, post_action_waitlist) = self.env.post_action_state(state, action, is_var)
         (advance_scheduling_decision, overtime_decision) = action
@@ -92,50 +90,9 @@ class LinearPenaltyFunction(GeneratingFunction):
         workload = (post_action_waitlist + self.env.arrival_generator.mean_by_type).sum()
         expected_continuation_value = self._as_scalar_expression(workload) * self._as_scalar_expression(linear_approx)
         return expected_continuation_value
-    
-    def calculate_state_value(self, state, is_var=False, coefficients=None):
-        """Evaluate V_theta(s) = sum_k theta_k * phi_k(s) for a single state.
 
-        The basis phi(s) only involves the state blocks (theta_u, theta_v,
-        theta_w); the action blocks (theta_x, theta_y) have zero features and
-        are therefore not identified from state-only data. For a fixed numeric
-        state the expression is LINEAR in theta, so it can be used directly in
-        a Gurobi least-squares fit when ``coefficients`` are decision
-        variables.
-        """
-        regular_bookings, overtimes, waitlist = state
-        theta_u, theta_v, theta_w, _, _ = self._get_coefficient_blocks(coefficients)
-        state_value = self._as_scalar_expression(theta_u @ regular_bookings + theta_v @ overtimes + theta_w @ waitlist)
-        return state_value
-    
     def get_coefficient_var(self, model, coefficient_bound):
-        number_of_coefficients = self.env.planning_horizon * 2 + self.env.num_types + self.env.booking_window_size * self.env.num_types + self.env.planning_horizon
-        return model.addMVar(shape=number_of_coefficients, vtype=GRB.CONTINUOUS, lb=-coefficient_bound, ub=coefficient_bound, name="coefficients")
-    
+        return model.addMVar(shape=self.number_of_coefficients, vtype=GRB.CONTINUOUS, lb=-coefficient_bound, ub=coefficient_bound, name="coefficients")
+
     def build_coefficient_linking_constraints(self, model, coefficient_vars):
         return model.addConstr(coefficient_vars == 0.0, name="link_coefficients")
-
-
-if __name__ == "__main__":
-    from experiments import get_config_by_type
-    config = get_config_by_type('toy')
-    # Example usage
-    env = config.env  # Replace with your environment instance
-    state, info = env.reset(**config.reset_params)  # Replace with your state initialization logic
-    coefficients = [1] * (env.planning_horizon * 2 + env.num_types + env.booking_window_size * env.num_types + env.planning_horizon)  # Replace with your coefficients
-    penalty_function = LinearPenaltyFunction(env, coefficients=coefficients)
-    action = list(env.valid_actions(state))[-1]  # Replace with your action selection logic
-    print(state)
-    print(action)
-    print(penalty_function.theta_u)
-    print(penalty_function.theta_v)
-    print(penalty_function.theta_w)
-    print(penalty_function.theta_x)
-    print(penalty_function.theta_y)
-    new_arrival = np.array([1, 1])  # Replace with your new arrival information
-    penalty = penalty_function.calculate_penalty(state, action, new_arrival, is_var=False)
-    gradient = penalty_function.calculate_gradient(state, action, new_arrival)
-    expected_continuation_value = penalty_function.calculate_expected_continuation_value(state, action)
-    print(f"Calculated penalty: {penalty}")
-    print(f"Calculated gradient: {gradient}")
-    print(expected_continuation_value)

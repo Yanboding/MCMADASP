@@ -54,26 +54,22 @@ def test_mixture_degenerate_stratum_raises():
 
 
 def test_ci_uniform_reduces_to_classic():
-    from metaheuristic_algorithm.benders_decomposition_solver import (
-        BendersDecompositionSolver as B,
-    )
+    from metaheuristic_algorithm.benders_decomposition_solver import objective_confidence_interval
     values = [10.0, 12.0, 8.0, 11.0, 9.0]
-    mean, half = B._objective_confidence_interval(values)
+    mean, half = objective_confidence_interval(values)
     arr = np.asarray(values)
     assert np.isclose(mean, arr.mean())
     assert np.isclose(half, 1.96 * arr.std(ddof=1) / np.sqrt(5))
-    assert B._objective_confidence_interval([7.5]) == (7.5, 0.0)
-    assert B._objective_confidence_interval([]) == (0.0, 0.0)
+    assert objective_confidence_interval([7.5]) == (7.5, 0.0)
+    assert objective_confidence_interval([]) == (0.0, 0.0)
 
 
 def test_ci_stratified_matches_hand_calc():
-    from metaheuristic_algorithm.benders_decomposition_solver import (
-        BendersDecompositionSolver as B,
-    )
+    from metaheuristic_algorithm.benders_decomposition_solver import objective_confidence_interval
     values = np.array([1.0, 2.0, 3.0, 10.0, 20.0])
     weights = np.array([0.2 / 3] * 3 + [0.8 / 2] * 2)
     strata = np.array([0, 0, 0, 1, 1])
-    mean, half = B._objective_confidence_interval(values, weights, strata)
+    mean, half = objective_confidence_interval(values, weights, strata)
     # Weighted mean: 0.2 * 2 + 0.8 * 15 = 12.4
     assert np.isclose(mean, 12.4)
     # Var = W0^2 s0^2 / n0 + W1^2 s1^2 / n1 = 0.04 * 1 / 3 + 0.64 * 50 / 2
@@ -105,7 +101,7 @@ def test_stratified_running_stats_two_strata_hand_calc():
     assert np.isclose(strat.mean, 12.4)
     # Var = W0^2 s0^2 / n0 + W1^2 s1^2 / n1 = 0.04 * 1 / 3 + 0.64 * 50 / 2
     expected_var = 0.04 * 1.0 / 3 + 0.64 * 50.0 / 2
-    assert np.isclose(strat.variance_of_mean, expected_var)
+    assert np.isclose(strat.variance_of_mean(), expected_var)
     t_crit = st.t.ppf(0.975, 5 - 2)  # df = n - strata
     assert np.isclose(strat.half_window(0.95), t_crit * np.sqrt(expected_var))
 
@@ -125,7 +121,7 @@ def test_stratified_running_stats_merge_collapse_percentage():
     collapsed = a.to_running_stats()
     assert collapsed.n == a.n
     assert np.isclose(collapsed.mean, a.mean)
-    assert np.isclose(collapsed.variance / a.n, a.variance_of_mean)
+    assert np.isclose(collapsed.variance() / a.n, a.variance_of_mean())
     # Percentage-conversion call chain used by the aggregation: stats / scalar / 0.01
     pct = a / a.mean / 0.01
     assert np.isclose(pct.mean, 100.0)

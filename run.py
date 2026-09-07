@@ -19,7 +19,11 @@ from importance_sampling import build_proposal
 from utils import iter_to_tuple, get_uid, safe_open, RunningStats, encode, decode, get_solution_value, acquire_grb_env, read_lines_with_pattern
 from decision_maker import MyopicAgent, ALPRowGenerationAgent, ApproxQAgent
 from policy_evaluator import PolicyEvaluator
-from generating_function import MulticlassQuadraticPenaltyFunction, LinearPenaltyFunction
+from generating_function import AbsorptionLinearPenaltyFunction, LinearPenaltyFunction
+from importance_sampling.sample_path import sample_path_from_record
+
+
+POLICY_EVALUATION_CACHE_VERSION = 2
 
 
 def _normalize_generating_function_spec(spec):
@@ -41,16 +45,20 @@ def _build_generating_function(env, spec, coefficients=None):
     name = spec.get('name')
     if coefficients is None:
         coefficients = spec.get('coefficients')
-    if name == 'linear_penalty':
-        generating_function = LinearPenaltyFunction(env=env, coefficients=coefficients)
-    elif name in {'multiclass_quadratic_penalty', 'quadratic_penalty'}:
-        generating_function = MulticlassQuadraticPenaltyFunction(env=env, coefficients=coefficients)
-    else:
-        raise ValueError(f"Unsupported generating function name: {name}")
+    if name not in _GENERATING_FUNCTION_CLASSES:
+        raise ValueError(f"Unsupported generating function name: {name}; use one of {sorted(_GENERATING_FUNCTION_CLASSES)}")
+    generating_function = _GENERATING_FUNCTION_CLASSES[name](env=env, coefficients=coefficients)
     if coefficients is None:
         # No coefficients supplied anywhere -> treat all coefficients as zeros.
         generating_function.set_coefficients([0.0] * generating_function.number_of_coefficients)
     return generating_function
+
+
+# Spec name -> generating-function class (``linear_penalty`` is the legacy
+# default, ``absorption_linear_penalty`` the Brown-Haugh absorption-time form).
+_GENERATING_FUNCTION_CLASSES = {
+    cls.spec_name: cls for cls in (LinearPenaltyFunction, AbsorptionLinearPenaltyFunction)
+}
 
 
 # Config-only keys describing a generating function. They never belong in the
@@ -187,8 +195,15 @@ def calculate_policy_costs_with_penalty(uid,
                            grb_sub_envs=None,
                            period_weights=None,
                            warm_up_trajectory=None,
-                           return_warm_up_trajectory=False):
+                           return_warm_up_trajectory=False,
+                           terminal=None):
     """Roll ``policy_id`` over ``sample_path`` and account costs after warm-up.
+
+    ``period_weights`` and ``terminal`` describe the post-warm-up tail as the
+    evaluation record does (survival weights, how the tail ended); the
+    accounting penalty is ``theta . Phi`` with ``Phi`` assembled over that tail
+    by the generating function's evaluation form from the per-period terms
+    ``theta . E[phi]`` / ``theta . phi`` recorded along the rollout.
 
     ``warm_up_trajectory`` optionally supplies the already-executed warm-up
     prefix of a SHARED warm-up policy (states/actions/costs/penalties plus the
@@ -219,22 +234,39 @@ def calculate_policy_costs_with_penalty(uid,
             return [_to_jsonable(v) for v in value]
         return value
 
+    # Validate the post-warm-up path before any cache/checkpoint lookup. In
+    # particular, an old result must not hide missing absorption metadata.
+    sample_path = np.asarray(sample_path)
+    tail_path = sample_path_from_record(sample_path[warm_up_periods:], period_weights, terminal)
+    config = get_config_by_type(case_type='infinite_custom', args=env_args)
+    env = config.env
+    evaluation_form = generating_function.form('evaluation')
+    evaluation_form.period_weights(tail_path, env.discount_factor)
+    cost_weights = _resolve_period_weights(tail_path.survival_weights, tail_path.periods)
+    if warm_up_trajectory is not None and len(warm_up_trajectory['states']) != warm_up_periods:
+        raise ValueError(
+            f"warm_up_trajectory has {len(warm_up_trajectory['states'])} periods "
+            f"but warm_up_periods={warm_up_periods}."
+        )
+
     base_dir = os.path.join('experiments', 'results', experiment_name, 'pickles')
     os.makedirs(base_dir, exist_ok=True)
-    # The cache/checkpoint key must capture the policy's *actual settings*, not
-    # just (uid, policy_id). Several policies can share one policy_id (e.g.
-    # multiple "approx_penalized_hindsight" variants) while differing in
-    # agent_args (penalty coefficients, IS proposal, ...) and/or in the penalty
-    # used for cost accounting. Hashing those into the filename prevents a later
-    # policy from silently reusing an earlier policy's cached result.
+    # The supplied uid is not proof that a record is unchanged. Both results
+    # and checkpoints depend on the complete rollout and accounting inputs.
     signature_payload = {
+        'cache_version': POLICY_EVALUATION_CACHE_VERSION,
         'agent_name': agent_name,
         'agent_args': _to_jsonable({k: v for k, v in dict(agent_args).items() if k != 'grb_env'}),
+        'env_args': _to_jsonable(env_args),
+        'init_state': _to_jsonable(init_state),
+        'sample_path': _to_jsonable(sample_path),
+        'warm_up_periods': warm_up_periods,
+        'warm_up_trajectory': _to_jsonable(warm_up_trajectory),
+        'terminal': tail_path.terminal.value,
+        'period_weights': _to_jsonable(cost_weights),
         'penalty_coefficients': _to_jsonable(getattr(generating_function, 'coefficients', None)),
+        'penalty_function': getattr(generating_function, 'spec_name', None),
     }
-    if warm_up_trajectory is not None:
-        # Only added when seeding so legacy cache filenames stay unchanged.
-        signature_payload['warm_up_trajectory'] = get_uid(warm_up_trajectory)
     policy_signature = get_uid(signature_payload)
     checkpoint_file = os.path.join(base_dir, f'{uid}-{policy_id}-{policy_signature}-checkpoint.pickle')
     result_file = os.path.join(base_dir, f'{uid}-{policy_id}-{policy_signature}-result.pickle')
@@ -249,10 +281,6 @@ def calculate_policy_costs_with_penalty(uid,
             os.remove(checkpoint_file)
         return cached_result
 
-    sample_path = np.array(sample_path)
-
-    config = get_config_by_type(case_type='infinite_custom', args=env_args)
-    env = config.env
     runtime_agent_args = dict(agent_args)
     # The policy carries its own self-contained generating-function spec
     # (type + coefficients). It is independent from the accounting penalty
@@ -290,22 +318,31 @@ def calculate_policy_costs_with_penalty(uid,
     actions = []
     costs = []
     penalties = []
+    # Per executed period: theta . E[phi](s_t, a_t) for every visited period
+    # and theta . phi(s_t, a_t, delta_t) for every period an arrival follows.
+    # ``penalties`` keeps their per-period difference (legacy view).
+    expected_terms = []
+    realized_terms = []
+    theta = local_generating_function.coefficient_vector()
     checkpoint = load_pickle_if_exists(checkpoint_file)
+    if checkpoint is not None and 'expected_terms' not in checkpoint and checkpoint['t'] - 1 > warm_up_periods:
+        # A checkpoint written before the per-period terms existed cannot be
+        # re-accounted once it is past the warm-up: start the rollout over.
+        print(f"Discarding checkpoint {checkpoint_file}: it predates the per-period penalty terms.")
+        os.remove(checkpoint_file)
+        checkpoint = None
     if checkpoint is not None:
         states = checkpoint['states']
         actions = checkpoint['actions']
         costs = checkpoint['costs']
         penalties = checkpoint['penalties']
+        expected_terms = list(checkpoint.get('expected_terms', [float('nan')] * len(costs)))
+        realized_terms = list(checkpoint.get('realized_terms', [float('nan')] * len(penalties)))
         t = checkpoint['t']
         s = checkpoint['s']
         solving_time_per_state = checkpoint.get('solving_time_per_state', RunningStats())
         s, _ = env.reset(init_state=s, t=t, new_arrivals=sample_path)
     elif warm_up_trajectory is not None:
-        if len(warm_up_trajectory['states']) != warm_up_periods:
-            raise ValueError(
-                f"warm_up_trajectory has {len(warm_up_trajectory['states'])} periods "
-                f"but warm_up_periods={warm_up_periods}."
-            )
         # Seed the rollout with the shared warm-up policy's executed prefix
         # (like resuming from a checkpoint at the end of the warm-up), so this
         # policy only simulates the tail but its record carries the full path.
@@ -313,6 +350,10 @@ def calculate_policy_costs_with_penalty(uid,
         actions = [tuple(np.array(component) for component in action) for action in warm_up_trajectory['actions']]
         costs = list(warm_up_trajectory['costs'])
         penalties = list(warm_up_trajectory['penalties'])
+        # A prefix recorded before the per-period terms existed is padded with
+        # placeholders; the ``[warm_up_periods:]`` slice below discards them.
+        expected_terms = list(warm_up_trajectory.get('expected_terms', [float('nan')] * warm_up_periods))
+        realized_terms = list(warm_up_trajectory.get('realized_terms', [float('nan')] * warm_up_periods))
         t = warm_up_periods + 1
         end_state = tuple(np.array(component) for component in warm_up_trajectory['end_state'])
         s, _ = env.reset(init_state=end_state, t=t, new_arrivals=sample_path)
@@ -329,10 +370,11 @@ def calculate_policy_costs_with_penalty(uid,
             solving_time_per_state += time.time() - start_time
         next_state, cost, done, _ = env.step(action)
 
+        expected_terms.append(_to_float(local_generating_function.expected_value(theta, s, action)))
         if current_t <= len(sample_path):
             new_arrivals = sample_path[current_t - 1]
-            penalty = local_generating_function.calculate_penalty(s, action, new_arrivals)
-            penalties.append(_to_float(penalty))
+            realized_terms.append(_to_float(local_generating_function.value(theta, s, action, new_arrivals)))
+            penalties.append(expected_terms[-1] - realized_terms[-1])
 
         states.append(s)
         actions.append(action)
@@ -349,6 +391,8 @@ def calculate_policy_costs_with_penalty(uid,
                     'actions': actions,
                     'costs': costs,
                     'penalties': penalties,
+                    'expected_terms': expected_terms,
+                    'realized_terms': realized_terms,
                     'solving_time_per_state': solving_time_per_state,
                 },
             )
@@ -364,6 +408,8 @@ def calculate_policy_costs_with_penalty(uid,
             'actions': actions,
             'costs': costs,
             'penalties': penalties,
+            'expected_terms': expected_terms,
+            'realized_terms': realized_terms,
             'solving_time_per_state': solving_time_per_state,
         },
     )
@@ -383,14 +429,15 @@ def calculate_policy_costs_with_penalty(uid,
     # estimator stays unbiased when the sample path was drawn from a proposal
     # whose length distribution differs from the target geometric horizon. With
     # no proposal (period_weights is None) the weights are all 1 and this reduces
-    # to the plain sum. costs[warm_up:] has one more entry than penalties[warm_up:]
-    # (the trailing period carries a stage cost but no arrival/penalty).
+    # to the plain sum. The penalty of the tail is theta . Phi, assembled by the
+    # evaluation form over the tail SamplePath (tail arrivals, the record's
+    # weights, its terminal outcome) from the recorded per-period terms.
     tail_costs = costs[warm_up_periods:]
-    tail_penalties = penalties[warm_up_periods:]
-    cost_weights = _resolve_period_weights(period_weights, len(tail_costs))
-    penalty_weights = _resolve_period_weights(period_weights, len(tail_penalties))
     total_cost = float(np.dot(cost_weights, tail_costs))
-    total_penalty = float(np.dot(penalty_weights, tail_penalties))
+    tail_expected_terms = expected_terms[warm_up_periods:]
+    tail_realized_terms = realized_terms[warm_up_periods:]
+    total_penalty = evaluation_form.combine(
+        tail_path, env.discount_factor, tail_expected_terms, tail_realized_terms)
     penalized_cost = total_cost + total_penalty
     warmup_state = tuple(np.array(item).tolist() for item in states[warm_up_periods])
 
@@ -404,6 +451,8 @@ def calculate_policy_costs_with_penalty(uid,
         "warmup_state": warmup_state,
         'costs': [float(v) for v in costs],
         'penalties': [float(v) for v in penalties],
+        'expected_terms': [float(v) for v in expected_terms],
+        'realized_terms': [float(v) for v in realized_terms],
         'scheduled_patients': scheduled_patients,
         'overtime': overtime.tolist(),
         'postponing_decisions': postponing_decisions.tolist(),
@@ -416,6 +465,8 @@ def calculate_policy_costs_with_penalty(uid,
             'actions': [_to_jsonable(action) for action in actions[:warm_up_periods]],
             'costs': [float(v) for v in costs[:warm_up_periods]],
             'penalties': [float(v) for v in penalties[:warm_up_periods]],
+            'expected_terms': [float(v) for v in expected_terms[:warm_up_periods]],
+            'realized_terms': [float(v) for v in realized_terms[:warm_up_periods]],
             'end_state': warmup_state,
         }
 
@@ -426,14 +477,18 @@ def calculate_policy_costs_with_penalty(uid,
 
     return result
 
-def _build_lowerbound_instances(env, generating_function_spec, grb_env, grb_sub_envs):
-    """Build the zero-penalty and unit-penalty information-relaxation solvers.
+def _build_lowerbound_instances(env, generating_function_spec, grb_env, grb_sub_envs,
+                                penalty_ratios=(0, 1)):
+    """Build one information-relaxation solver per penalty ratio ``t``.
 
-    Each solver gets its OWN generating-function instance built from the shared
-    spec (type + coefficients), because instances are stateful.
+    Returns ``{t: ApproxQAgent}``; each solver scales the penalty of the shared
+    spec (type + coefficients) by ``t`` (``ApproxQAgent.penalty_ratio``), so
+    ``t = 0`` is the zero-penalty bound and ``t = 1`` the trained one. Each
+    solver gets its OWN generating-function instance because instances are
+    stateful.
     """
-    return tuple(
-        ApproxQAgent(
+    return {
+        float(penalty_ratio): ApproxQAgent(
             env,
             discount_factor=env.discount_factor,
             current_decision_var_type='integer',
@@ -443,21 +498,22 @@ def _build_lowerbound_instances(env, generating_function_spec, grb_env, grb_sub_
             grb_env=grb_env,
             subproblem_grb_envs=grb_sub_envs,
         )
-        for penalty_ratio in (0, 1)
-    )
+        for penalty_ratio in penalty_ratios
+    }
 
 
-def _information_relaxation_bounds(zero_instance, penalized_instance, state, sample_path_tail, period_weights):
-    """Solve the zero and penalized lower bounds at ``state`` over the tail."""
-    start = time.time()
-    zero_cost = zero_instance.calculate_information_relaxation_cost(
-        state, sample_path=sample_path_tail, period_weights=period_weights)
-    print(f"Zero information relaxation cost computed in {time.time() - start:.1f} seconds: {zero_cost}")
-    start = time.time()
-    penalized_cost = penalized_instance.calculate_information_relaxation_cost(
-        state, sample_path=sample_path_tail, period_weights=period_weights)
-    print(f"Penalized information relaxation cost computed in {time.time() - start:.1f} seconds: {penalized_cost}")
-    return zero_cost, penalized_cost
+def _information_relaxation_bounds(instances, state, sample_path_tail, period_weights, terminal=None):
+    """Solve every instance's lower bound at ``state`` over the tail.
+
+    Returns ``{t: cost}`` in the key order of ``instances``."""
+    bounds = {}
+    for penalty_ratio, instance in instances.items():
+        start = time.time()
+        bounds[penalty_ratio] = instance.calculate_information_relaxation_cost(
+            state, sample_path=sample_path_tail, period_weights=period_weights, terminal=terminal)
+        print(f"Information relaxation cost at penalty ratio {penalty_ratio:g} computed in "
+              f"{time.time() - start:.1f} seconds: {bounds[penalty_ratio]}")
+    return bounds
 
 
 def _append_jsonl_record(output_file, record):
@@ -499,9 +555,16 @@ def evaluate_policy_costs_with_information_relaxation(uid,
                                                       path_weight=None,
                                                       path_stratum=None,
                                                       warm_up_policy_id=None,
-                                                      skip_information_relaxation=False):
+                                                      skip_information_relaxation=False,
+                                                      penalty_ratios=None,
+                                                      coefficients_source=None,
+                                                      terminal=None):
     '''
     This function evaluates the costs of different policies and their gaps to the information relaxation lower bounds.
+
+    ``terminal`` (``'absorbed'`` / ``'truncated'`` / ``None``) is how the
+    record's post-warm-up tail ended; with ``period_weights`` it defines the
+    tail ``SamplePath`` the bounds and the penalty accounting are evaluated on.
 
     ``warm_up_policy_id`` optionally names one of the ``policy_specs`` (e.g.
     ``'row_gen_alp'``) as the shared warm-up policy. When set, that policy is
@@ -520,6 +583,13 @@ def evaluate_policy_costs_with_information_relaxation(uid,
     the full evaluation tail — the dominant cost for long tails); the saved
     records carry ``None`` in the four bound/gap fields. Policy costs are
     unaffected.
+
+    ``penalty_ratios`` (from ``generate_test_paths_and_init_state(...,
+    penalty_ratios=...)``) evaluates the bound with the coefficients scaled by
+    every factor of the grid; the ``information_relaxation_only`` record then
+    also carries ``penalty_ratios``, ``information_relaxation_cost_by_penalty_ratio``
+    (``[t, cost]`` pairs) and ``coefficients_source``. Policy records are
+    unaffected. Without it the legacy ``t in {0, 1}`` pair is evaluated.
     '''
     init_state = tuple(np.array(item) for item in init_state)
     sample_path = np.array(sample_path)
@@ -533,23 +603,30 @@ def evaluate_policy_costs_with_information_relaxation(uid,
     # and the penalty accounting on each executed trajectory.
     generating_function_spec = _normalize_generating_function_spec(generating_function_spec)
     policy_costs_generating_function = _build_generating_function(env=env, spec=generating_function_spec)
-    zero_lowerbound_instance = penalized_lowerbound_instance = None
+    ratios = [0.0, 1.0] if penalty_ratios is None else sorted({0.0, 1.0, *map(float, penalty_ratios)})
+    lowerbound_instances = None
     if not skip_information_relaxation:
-        zero_lowerbound_instance, penalized_lowerbound_instance = _build_lowerbound_instances(
-            env, generating_function_spec, grb_env, grb_sub_envs)
+        lowerbound_instances = _build_lowerbound_instances(
+            env, generating_function_spec, grb_env, grb_sub_envs, penalty_ratios=ratios)
 
     # With a shared warm-up state every policy evaluates the bounds at the same
     # state, so memoize them instead of re-solving identical problems.
     bounds_by_state = {}
     def bounds_at(state):
+        """``{t: cost}`` at ``state`` (``None`` when bounds are skipped)."""
         if skip_information_relaxation:
-            return None, None
+            return None
         key = iter_to_tuple(state)
         if key not in bounds_by_state:
             bounds_by_state[key] = _information_relaxation_bounds(
-                zero_lowerbound_instance, penalized_lowerbound_instance,
-                state, sample_path_tail, period_weights)
+                lowerbound_instances, state, sample_path_tail, period_weights, terminal)
         return bounds_by_state[key]
+
+    def legacy_pair(bounds):
+        """The zero-penalty and unit-penalty costs of a ``bounds_at`` result."""
+        if bounds is None:
+            return None, None
+        return bounds[0.0], bounds[1.0]
 
     base_record = {
         'uid': uid,
@@ -564,7 +641,8 @@ def evaluate_policy_costs_with_information_relaxation(uid,
     ordered_policy_specs = _order_policy_specs_for_warm_up(policy_specs, warm_up_policy_id)
 
     if not ordered_policy_specs:
-        zero_cost, penalized_cost = bounds_at(init_state)
+        bounds = bounds_at(init_state)
+        zero_cost, penalized_cost = legacy_pair(bounds)
         record = {
             **base_record,
             'policy_id': 'information_relaxation_only',
@@ -575,6 +653,11 @@ def evaluate_policy_costs_with_information_relaxation(uid,
             'gap_to_penalized_information_relaxation': 0.0,
             'warmup_state': tuple(np.array(item).tolist() for item in init_state),
         }
+        if penalty_ratios is not None:
+            record['penalty_ratios'] = ratios
+            record['information_relaxation_cost_by_penalty_ratio'] = (
+                None if bounds is None else [[t, float(bounds[t])] for t in ratios])
+            record['coefficients_source'] = coefficients_source
         _append_jsonl_record(output_file, record)
         return [record]
 
@@ -602,12 +685,13 @@ def evaluate_policy_costs_with_information_relaxation(uid,
             period_weights=period_weights,
             warm_up_trajectory=shared_warm_up_trajectory,
             return_warm_up_trajectory=is_warm_up_policy,
+            terminal=terminal,
         )
         if is_warm_up_policy:
             shared_warm_up_trajectory = policy_result.pop('warm_up_trajectory')
 
         warmup_state = tuple(np.array(item) for item in policy_result.get('warmup_state', init_state))
-        zero_cost, penalized_cost = bounds_at(warmup_state)
+        zero_cost, penalized_cost = legacy_pair(bounds_at(warmup_state))
         policy_result.update({
             **base_record,
             'zero_information_relaxation_cost': None if zero_cost is None else float(zero_cost),
@@ -816,6 +900,12 @@ def train_penalty_coefficients_for_env(
     ``experiments/results/<experiment_name>/<job_id>.jsonl``; duplicates
     (matched on ``uid``) are skipped.
     """
+    solver_choice = os.environ.get('PENALTY_TRAIN_SOLVER', 'benders').strip().lower()
+    if solver_choice != 'benders':
+        raise ValueError(
+            f"Unsupported PENALTY_TRAIN_SOLVER={solver_choice!r}; "
+            "only Benders training is implemented. Use PENALTY_TRAIN_SOLVER=benders."
+        )
     output_file = os.path.join(
         'experiments', 'results', experiment_name, f'{job_id}.jsonl'
     )
@@ -844,9 +934,13 @@ def train_penalty_coefficients_for_env(
     inner['generating_function'] = generating_function
     _set_sample_path_proposal(inner)
     inner['sample_path_number'] = sample_path_number
-    # Optional pathwise safety mode for the Benders master (None / 'hard' / rho),
+    # Optional L1/L2 master regularization ({'type', 'lambda', 'scale'}),
     # carried in agent_args by generation; not an ApproxQAgent constructor arg.
-    pathwise_safety = inner.pop('pathwise_safety', None)
+    regularization = inner.pop('regularization', None)
+    # Optional box constraint |theta_k| <= coefficient_bound on the master's
+    # coefficients, carried in agent_args by generation (--coefficient-bound).
+    coefficient_bound = inner.pop('coefficient_bound', None)
+    coefficient_bound = GRB.INFINITY if coefficient_bound is None else float(coefficient_bound)
 
     agent = ApproxQAgent(
         env=env,
@@ -884,38 +978,20 @@ def train_penalty_coefficients_for_env(
         f"sample_path_number={sample_path_number}"
     )
     start = time.time()
-    # Solver selection (default: Benders cutting plane). Set
-    # PENALTY_TRAIN_SOLVER=extensive to solve the monolithic extensive-form LP
-    # instead.
-    solver_choice = os.environ.get('PENALTY_TRAIN_SOLVER', 'benders').lower()
-    if solver_choice in ('extensive', 'extensive_form', 'ef', 'deterministic_equivalent'):
-        # Deterministic-equivalent / extensive-form LP: build the whole
-        # monolithic LP once and solve it in a single barrier pass. Exact
-        # optimum + exact kappa (coupling-row shadow prices); no cut iteration,
-        # no growing master re-solved O(iters) times like Benders. No checkpoint
-        # needed (one shot).
-        ef_crossover = os.environ.get('PENALTY_EF_CROSSOVER', '0') == '1'
-        obj, coefficients, info = agent.extensive_form_train(
-            coefficient_bound=GRB.INFINITY,
-            init_state=resolved_init_state,
-            crossover=ef_crossover,
-            verbose=True,
-        )
-    else:
-        checkpoint_dir = os.path.join(
-            'experiments', 'results', experiment_name, 'benders_checkpoints'
-        )
-        os.makedirs(checkpoint_dir, exist_ok=True)
-        checkpoint_path = os.path.join(
-            checkpoint_dir, f'{uid}-penalty-checkpoint.pickle'
-        )
-        obj, coefficients, info = agent.benders_decomposition_train(
-            coefficient_bound=GRB.INFINITY,
-            init_state=resolved_init_state,
-            checkpoint_path=checkpoint_path,
-            resume_checkpoint_path=checkpoint_path,
-            pathwise_safety=pathwise_safety,
-        )
+    checkpoint_dir = os.path.join(
+        'experiments', 'results', experiment_name, 'benders_checkpoints'
+    )
+    os.makedirs(checkpoint_dir, exist_ok=True)
+    checkpoint_path = os.path.join(
+        checkpoint_dir, f'{uid}-penalty-checkpoint.pickle'
+    )
+    obj, coefficients, info = agent.benders_decomposition_train(
+        coefficient_bound=coefficient_bound,
+        init_state=resolved_init_state,
+        checkpoint_path=checkpoint_path,
+        resume_checkpoint_path=checkpoint_path,
+        regularization=regularization,
+    )
     elapsed = time.time() - start
     print(f"  solver={solver_choice}, obj={obj}, elapsed={elapsed:.1f}s")
 
@@ -934,7 +1010,13 @@ def train_penalty_coefficients_for_env(
         'tight_penalized_lower_bound': float(obj),
         'coefficients': coefficients_jsonable,
         'training_time_seconds': elapsed,
+        'regularization': regularization,
+        'coefficient_bound': None if coefficient_bound == GRB.INFINITY else coefficient_bound,
     }
+    if regularization is not None:
+        # ``obj`` is the unregularized SAA value at theta*; keep the solver's
+        # regularized objective alongside for reference.
+        record['regularized_objective'] = float(info['regularization']['regularized_objective'])
 
     with open(output_file, 'a') as f:
         f.write(json.dumps(record) + '\n')

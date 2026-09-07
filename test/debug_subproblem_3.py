@@ -96,7 +96,7 @@ def build_subproblem(scenario_id):
         **inner,
     )
 
-    print(f"sample path length for scenario {scenario_id} = {len(agent.delta[scenario_id])}")
+    print(f"sample path length for scenario {scenario_id} = {agent.sample_paths[scenario_id].length}")
 
     resolved_init_state = _draw_per_scenario_init_states(
         env_args=env_args,

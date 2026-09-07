@@ -6,8 +6,6 @@ fresh copy of the base ``env_args``/``agent_args`` to produce one variant.
 """
 
 import copy
-from dataclasses import dataclass
-from typing import Callable, Optional, Sequence
 
 from experiments import get_config_by_type
 from utils import get_uid
@@ -28,20 +26,19 @@ DEFAULT_AGENT_ARGS = {
 }
 
 
-@dataclass(frozen=True)
 class ExperimentSpec:
-    name: str
-    config_type: str
-    val_args: Sequence
-    mutate: Optional[Callable] = None  # signature: (env_args, val) -> None
-    agent_mutate: Optional[Callable] = None  # signature: (agent_args, val) -> None
+    def __init__(self, name, config_type, val_args, mutate=None, agent_mutate=None):
+        self.name = name
+        self.config_type = config_type
+        self.val_args = val_args
+        self.mutate = mutate                # signature: (env_args, val) -> None
+        self.agent_mutate = agent_mutate    # signature: (agent_args, val) -> None
 
-    @property
-    def is_single_variant(self) -> bool:
+    def is_single_variant(self):
         return len(self.val_args) == 1 and self.val_args[0] is None
 
 
-def build_variation_test_env(spec: ExperimentSpec):
+def build_variation_test_env(spec):
     """Materialize the experiment's variants.
 
     Returns a dict keyed by `env_uid` for single-variant experiments, else by
@@ -59,6 +56,6 @@ def build_variation_test_env(spec: ExperimentSpec):
         if spec.agent_mutate is not None:
             spec.agent_mutate(agent_args, val)
         group_uid = get_uid({'env_args': env_args, 'agent_args': agent_args})
-        key = group_uid if spec.is_single_variant else (group_uid, spec.name, val)
+        key = group_uid if spec.is_single_variant() else (group_uid, spec.name, val)
         test_params[key] = {'env_args': env_args, 'agent_args': agent_args}
     return test_params

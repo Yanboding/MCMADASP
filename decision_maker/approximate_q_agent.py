@@ -1,6 +1,8 @@
 import copy
 import json
+import os
 import time
+from pathlib import Path
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 
@@ -10,6 +12,7 @@ from gurobipy import GRB
 
 from decision_maker import InfiniteRTAgent
 from importance_sampling.proposals import ArrivalGeneratorSamplePathProposal
+from importance_sampling.sample_path import sample_path_from_record
 from metaheuristic_algorithm import SubproblemWorker, BendersDecompositionSolver
 from utils import solve_and_handle_errors, flatten, set_link_rhs, acquire_grb_env, encode, get_status_string, is_single_init_state
 
@@ -32,15 +35,15 @@ class ApproxQAgent(InfiniteRTAgent):
         self.future_decision_var_type = GRB.INTEGER if future_decision_var_type is None or future_decision_var_type == 'integer' else GRB.CONTINUOUS
         self.arrival_generator = copy.deepcopy(self.env.arrival_generator)
         self.sample_path_proposal = sample_path_proposal or ArrivalGeneratorSamplePathProposal()
-        (self.delta, self.period_likelihood_ratios, self.sample_path_weights,
-         self.sample_path_strata) = self._initialize_sample_paths(sample_path_number)
-        self.sample_path_number = len(self.delta)
+        (self.sample_paths, self.sample_path_weights, self.sample_path_strata) = self._initialize_sample_paths(sample_path_number)
+        self.sample_path_number = len(self.sample_paths)
         self.penalty_ratio = penalty_ratio
         self.generating_function = generating_function
         self.decision_model, self.state_linking_constraints, self.action_t_var = None, None, None
         self.is_trained = is_trained
         self.coefficient_model, self.coefficients = None, None
         self.workers = None
+        self._policy_model_signature = None
         self.solver_name = solver_name
         self.subproblem_grb_envs = subproblem_grb_envs
         self.verbose = verbose
@@ -53,6 +56,34 @@ class ApproxQAgent(InfiniteRTAgent):
         if self.generating_function is None:
             raise ValueError("generating_function is required for penalized SAA operations.")
         return self.generating_function
+
+    def _ensure_policy_models_current(self):
+        """Rebuild cached objectives when their penalty inputs change."""
+        generating_function = self._require_generating_function()
+        signature = (
+            generating_function,
+            tuple(generating_function.coefficient_vector()),
+            float(self.penalty_ratio),
+            float(self.discount_factor),
+            self.current_decision_var_type,
+            self.future_decision_var_type,
+        )
+        if signature == self._policy_model_signature:
+            return
+        if self.decision_model is not None:
+            self.decision_model.dispose()
+            self.decision_model = None
+        for worker in self.workers or []:
+            worker.model.dispose()
+        self.workers = None
+        self._policy_model_signature = signature
+
+    def _get_policy_solution(self, action_vars):
+        """Snapshot the primary solution; preserve fractions in LP decisions."""
+        values = tuple(np.asarray(var.X, dtype=float).copy() for var in action_vars)
+        if self.current_decision_var_type == GRB.INTEGER:
+            return tuple(np.rint(value).astype(int) for value in values)
+        return values
 
     def _get_subproblem_env(self, scenario_id, default_params, parallel):
         """Return the Gurobi env to use for the given subproblem.
@@ -78,25 +109,20 @@ class ApproxQAgent(InfiniteRTAgent):
         return self.grb_env
     
     def _initialize_sample_paths(self, sample_path_number):
+        """Draw the scenarios: one ``SamplePath`` (arrivals, terminal outcome,
+        survival weights, likelihood ratios) per scenario plus the proposal's
+        path weights and strata."""
         proposal = self.sample_path_proposal
         if proposal is None:
             raise ValueError("sample_path_proposal is required for sample-path sampling.")
-        delta, lengths = proposal.sample_arrival_paths(
+        paths = proposal.sample_paths(
             arrival_generator=self.arrival_generator,
             size=sample_path_number,
-        )
-        period_likelihood_ratios = proposal.period_likelihood_ratios(
             target_discount_factor=self.discount_factor,
-            lengths=lengths,
         )
-        return (delta, period_likelihood_ratios,
+        return (paths,
                 proposal.path_weights(sample_path_number),
                 proposal.path_strata(sample_path_number))
-    
-    def _get_period_likelihood_ratio(self, scenario_id, zero_based_period_index):
-        if not self.period_likelihood_ratios:
-            return 1.0
-        return float(self.period_likelihood_ratios[scenario_id][zero_based_period_index])
 
     def _build_importance_sampling_info(self):
         proposal = self.sample_path_proposal
@@ -107,7 +133,7 @@ class ApproxQAgent(InfiniteRTAgent):
         proposal_discount_factor = getattr(proposal, 'discount_factor_proposal', None)
         if proposal_discount_factor is not None:
             info['proposal_discount_factor'] = float(proposal_discount_factor)
-        lengths = np.asarray([len(path) for path in self.delta], dtype=int)
+        lengths = np.asarray([path.length for path in self.sample_paths], dtype=int)
         if lengths.size > 0:
             info['sample_path_length_stats'] = {
                 'min': int(lengths.min()),
@@ -115,52 +141,6 @@ class ApproxQAgent(InfiniteRTAgent):
                 'mean': float(lengths.mean()),
             }
         return info
-    
-    def regression_train(self, X, Y, regularization=1e-8, coefficient_bound=GRB.INFINITY, verbose=False):
-        """Fit the coefficients theta of V_theta(s) = sum_k theta_k * phi_k(s).
-
-        Solves the (ridge-regularized) least-squares problem
-
-            min_theta (1/N) * sum_i (V_theta(s_i) - y_i)^2 + regularization * ||theta||^2
-
-        as a Gurobi QP, where ``X`` is an iterable of states and ``Y`` the
-        corresponding value-function targets V(s_i). The fitted coefficients
-        are written into ``self.generating_function`` so that subsequent calls
-        to ``approx_Q_solve`` use the trained value-function approximation.
-        The small ridge term keeps the QP well-posed and pins basis weights
-        with zero features (e.g. action blocks) to zero.
-
-        Returns ``(coefficients, training_mse)``.
-        """
-        generating_function = self._require_generating_function()
-        Y = np.asarray(Y, dtype=float).reshape(-1)
-        if len(X) != len(Y):
-            raise ValueError(f"X and Y must have the same length, got {len(X)} and {len(Y)}.")
-        if len(Y) == 0:
-            raise ValueError("The training dataset is empty.")
-        model = gp.Model("Value_Function_Regression", env=self.grb_env)
-        model.setParam("OutputFlag", 1 if verbose else 0)
-        theta_vars = generating_function.get_coefficient_var(model=model, coefficient_bound=coefficient_bound)
-        coefficient_blocks = generating_function.get_coefficients(theta_vars)
-        residual_vars = model.addMVar(shape=len(Y), vtype=GRB.CONTINUOUS, lb=-GRB.INFINITY, name="residual")
-        for i, state in enumerate(X):
-            prediction = generating_function.calculate_state_value(state, is_var=True, coefficients=coefficient_blocks)
-            model.addConstr(residual_vars[i].item() == prediction - Y[i], name=f"fit_{i}")
-        objective = (residual_vars @ residual_vars) / len(Y)
-        if regularization > 0:
-            objective = objective + regularization * (theta_vars @ theta_vars)
-        model.setObjective(objective, GRB.MINIMIZE)
-        if not solve_and_handle_errors(model, verbose=verbose):
-            raise RuntimeError("Value function regression failed to solve.")
-        self.coefficients = np.asarray(theta_vars.X).tolist()
-        training_mse = float(np.mean(np.square(np.asarray(residual_vars.X))))
-        model.dispose()
-        generating_function.set_coefficients(self.coefficients)
-        self.is_trained = True
-        # Invalidate any previously built decision model so it is rebuilt with
-        # the freshly trained coefficients.
-        self.decision_model, self.state_linking_constraints, self.action_var = None, None, None
-        return self.coefficients, training_mse
     
     def build_state_linking_constraints(self, model, state_var):
         u_var, v_var, w_var = state_var
@@ -208,21 +188,84 @@ class ApproxQAgent(InfiniteRTAgent):
         return model, state_linking_constraints, action_var, {}
     
     def approx_Q_solve(self, state, t, action=None, verbose=False):
+        self._ensure_policy_models_current()
         if self.decision_model is None:
             self.decision_model, self.state_linking_constraints, self.action_var, self.info = self.decision_model_builder_fn()
         flatten_state = flatten(state)
         set_link_rhs(self.state_linking_constraints, flatten_state)
+        original_bounds = None
         if action is not None:
-            self.set_action(action_var=self.action_var, action=action)
-        # Clean solution before resolving
-        self.decision_model.reset()
-        if not solve_and_handle_errors(self.decision_model, verbose=verbose):
-            raise RuntimeError("Direct model optimal solution not found")
-        # ---------- 8. return ----------
-        action = self.get_solution(self.action_var, is_final=True)
-        return self.decision_model.ObjVal, action, self.info
+            self.decision_model.update()
+            original_bounds = [(var.lb.copy(), var.ub.copy()) for var in self.action_var]
+        try:
+            if action is not None:
+                self.set_action(action_var=self.action_var, action=action)
+            self.decision_model.reset()
+            if not solve_and_handle_errors(self.decision_model, verbose=verbose):
+                raise RuntimeError("Direct model optimal solution not found")
+            solved_action = self._get_policy_solution(self.action_var)
+            return float(self.decision_model.ObjVal), solved_action, dict(self.info)
+        finally:
+            if original_bounds is not None:
+                for var, (lower, upper) in zip(self.action_var, original_bounds):
+                    var.lb = lower
+                    var.ub = upper
+                self.decision_model.update()
     
-    def train_master_builder_fn(self, coefficient_bound=GRB.INFINITY):
+    def pathwise_terms(self, model, generating_function, form, path, state_var, action_var,
+                       include_first_cost=True):
+        """Roll ``path`` forward from ``(state_var, action_var)`` inside ``model``.
+
+        Returns ``(cost, Phi, last_state_var, last_action_var)``: the weighted
+        stage-cost expression ``sum_k W[k] * c_{k+1}`` (``c_1`` omitted when
+        ``include_first_cost`` is False) and the path's penalty feature
+        ``Phi`` (an ``MLinExpr`` vector), so the path's penalty is
+        ``theta . Phi``. ``form`` supplies the period weights ``W`` and each
+        period's ``(expected_weight, realized_weight)``; the generating function
+        supplies the features. Every consumer of a path -- the information
+        relaxation bound, the Benders training subproblem and the hindsight
+        subproblem -- is this one loop with its own form.
+        """
+        gamma = self.discount_factor
+        W = form.period_weights(path, gamma)
+        tau = path.periods
+        Phi = gp.MLinExpr.zeros(generating_function.number_of_coefficients)
+        cost = W[0] * self.env.cost_fn(state_var, action_var, is_var=True) if include_first_cost else 0.0
+        for s in range(tau):
+            expected_weight, realized_weight = form.term_weights(s, tau, W, gamma, path.terminal)
+            if s == tau - 1:
+                # Last decision period: no arrival follows. Only the expected
+                # term can be revealed here (absorption after this period).
+                generating_function.penalty_features(
+                    state_var, action_var, None, expected_weight, 0.0, is_var=True).add_to(Phi)
+                break
+            arrival = path.arrivals[s]
+            generating_function.penalty_features(
+                state_var, action_var, arrival, expected_weight, realized_weight, is_var=True).add_to(Phi)
+            state_var = self.get_next_state(model=model, state=state_var, action=action_var, new_arrival=arrival)
+            action_var = self.get_action_var(model=model, advance_scheduling_type=self.future_decision_var_type)
+            self.add_action_space_constraints(model=model, state_var=state_var, action_var=action_var)
+            cost = cost + W[s + 1] * self.env.cost_fn(state_var, action_var, is_var=True)
+        return cost, Phi, state_var, action_var
+
+    def train_master_builder_fn(self, coefficient_bound=GRB.INFINITY, regularization=None,
+                                regularization_scale=None):
+        """Build the Benders master ``max sum_w kappa_w theta_w`` over the
+        coefficient box ``|theta| <= coefficient_bound``.
+
+        ``regularization = {'type': 'l1' | 'l2', 'lambda': float >= 0}``
+        subtracts ``lambda * R(scale * theta)`` from the objective. L2 makes
+        the master a convex QP; L1 adds an ``MVar`` ``coefficient_abs`` with
+        rows ``coefficient_abs >= +-(scale * theta)`` and keeps it an LP (those
+        rows are not Benders cuts: not registered, not purged, not
+        checkpointed). ``regularization_scale`` (positive vector, default ones)
+        rescales every coordinate before the norm; see
+        ``_regularization_scale``. The Benders solver never sees the
+        regularizer: its convergence gap is computed from the master's
+        epigraph values, in which any action-only term cancels.
+
+        Returns ``(master_model, coefficient_vars, theta_vars)``.
+        """
         master_model = gp.Model(f"SAA_train_Master", env=self.grb_env)
         # FORCES DUAL SIMPLEX (Crucial for Benders warm-starting)
         master_model.setParam("Method", 1)
@@ -234,23 +277,47 @@ class ApproxQAgent(InfiniteRTAgent):
         theta_vars = master_model.addMVar(shape=self.sample_path_number, vtype=GRB.CONTINUOUS, lb=-GRB.INFINITY, ub=1e8, name="theta")
         z = theta_vars @ self.sample_path_weights
         coefficient_vars = self.generating_function.get_coefficient_var(model=master_model, coefficient_bound=coefficient_bound)
-        master_model.setObjective(z, GRB.MAXIMIZE)
+        objective = z
+        if regularization is not None:
+            kind = str(regularization.get('type', '')).lower()
+            lam = float(regularization.get('lambda', 0.0))
+            if kind not in ('l1', 'l2'):
+                raise ValueError(f"regularization type must be 'l1' or 'l2'; got {regularization.get('type')!r}")
+            if lam < 0:
+                raise ValueError(f"regularization lambda must be >= 0; got {lam}")
+            size = coefficient_vars.shape[0]
+            if regularization_scale is None:
+                scale = np.ones(size)
+            else:
+                scale = np.asarray(regularization_scale, dtype=float).reshape(-1)
+            if scale.shape != (size,) or not np.all(np.isfinite(scale)) or np.any(scale <= 0):
+                raise ValueError("regularization scale must be a positive finite vector with one entry per coefficient")
+            scaled = scale * coefficient_vars
+            if kind == 'l2':
+                penalty = scaled @ scaled
+            else:
+                abs_vars = master_model.addMVar(size, lb=0.0, name="coefficient_abs")
+                master_model.addConstr(abs_vars >= scaled, name="l1_abs_pos")
+                master_model.addConstr(abs_vars >= -scaled, name="l1_abs_neg")
+                penalty = abs_vars.sum()
+            objective = z - lam * penalty
+        master_model.setObjective(objective, GRB.MAXIMIZE)
         # Gurobi finalizes objective sense on update; do this before Benders reads ModelSense.
         master_model.update()
         return master_model, coefficient_vars, theta_vars
 
     def train_subproblem_builder_fn(self, env, scenario_id, init_state = None):
         # This builder is thread-safe: it never mutates shared state on
-        # self.generating_function. The penalty coefficients are kept in a LOCAL
-        # variable (coefficient_blocks) and passed explicitly into
-        # calculate_penalty, so concurrent builds on distinct Gurobi envs do not
-        # clobber each other. (Scenarios sharing an env are still serialized by
-        # _build_training_workers, since a Gurobi env is not thread-safe.)
+        # self.generating_function (the coefficients are the master's decision
+        # variables and enter only through the objective), so concurrent builds
+        # on distinct Gurobi envs do not clobber each other. (Scenarios sharing
+        # an env are still serialized by _build_training_workers, since a
+        # Gurobi env is not thread-safe.)
         sub_model = gp.Model(f"Subproblem_SA_Advance_{scenario_id}", env=env)
         # TRUE-LP FORMULATION. For fixed penalty coefficients this subproblem is
         # a pure LP: the env cost is linear and the penalty is
         # `coefficient . (linear function of the decisions)` (see
-        # LinearPenaltyFunction.calculate_penalty). We therefore build it with
+        # LinearPenaltyFunction.penalty_features). We therefore build it with
         # the coefficients as NUMERIC CONSTANTS (no coefficient variables, no
         # coefficient linking constraints), so Gurobi sees a genuine LP instead
         # of the bilinear `coefficient_var * decision_var` QP that the old
@@ -289,48 +356,21 @@ class ApproxQAgent(InfiniteRTAgent):
         self.add_action_space_constraints(model=sub_model, state_var=state_var, action_var=action_var)
         # Build the LP once and pin the AFFINE penalty features to auxiliary
         # variables so that every Benders iteration touches only the objective
-        # (no expression rebuild). The penalty for period t is
-        #     lr_t * theta . phi_t(x),   phi_t(x) = tad_t * [post_regular;
-        #         post_overtime; post_waitlist; advance_scheduling_flat;
-        #         overtime_decision]
-        # which is AFFINE in the decisions (see
-        # LinearPenaltyFunction.calculate_gradient). Summed over periods,
-        #     Phi(x) = sum_t lr_t * phi_t(x)
-        # is accumulated symbolically into ``feature_vec`` (an MLinExpr) and then
-        # bound to feature variables ``feature_var == Phi(x)`` below. The penalty
-        # is then ``theta . feature_var``, so the per-iteration objective update
-        # and Benders cut each touch only |coeff| entries -- as cheap as reading
-        # the old QP's constraint .Pi, but warm-startable by primal simplex.
-        T, K, W = self.env.planning_horizon, self.env.num_types, self.env.booking_window_size
-        block_offsets = (0, T, 2 * T, 2 * T + K, 2 * T + K + W * K, number_of_coefficients)
-        mean_by_type = self.env.arrival_generator.mean_by_type
-        feature_vec = gp.MLinExpr.zeros(number_of_coefficients)
-
-        cost_part = self.env.cost_fn(state_var, action_var, is_var=True)
-        for period_index, new_arrival in enumerate(self.delta[scenario_id]):
-            likelihood_ratio = self._get_period_likelihood_ratio(scenario_id, period_index)
-            # phi_t enters Phi scaled by lr_t * total_arrival_difference (both
-            # constants); accumulate it block-by-block into the feature vector.
-            scale = likelihood_ratio * float(np.sum(mean_by_type - new_arrival))
-            if scale != 0.0:
-                post_rb, post_ot, post_wl = self.env.post_action_state(state_var, action_var, is_var=True)
-                advance_scheduling_decision, overtime_decision = action_var
-                feature_vec[block_offsets[0]:block_offsets[1]] += scale * post_rb
-                feature_vec[block_offsets[1]:block_offsets[2]] += scale * post_ot
-                feature_vec[block_offsets[2]:block_offsets[3]] += scale * post_wl
-                feature_vec[block_offsets[3]:block_offsets[4]] += scale * advance_scheduling_decision.reshape(-1)
-                feature_vec[block_offsets[4]:block_offsets[5]] += scale * overtime_decision
-            state_var = self.get_next_state(model=sub_model,
-                                            state=state_var,
-                                            action=action_var,
-                                            new_arrival=new_arrival)
-            action_var = self.get_action_var(model=sub_model, advance_scheduling_type=self.future_decision_var_type)
-            self.add_action_space_constraints(model=sub_model, state_var=state_var, action_var=action_var)
-            cost_part = cost_part + likelihood_ratio * self.env.cost_fn(state_var, action_var, is_var=True)
+        # (no expression rebuild). ``pathwise_terms`` rolls the scenario's path
+        # under the generating function's training form and accumulates the
+        # path's penalty feature Phi(x) block by block into ``feature_vec`` (an
+        # MLinExpr); it is then bound to feature variables ``feature_var ==
+        # Phi(x)`` below. The penalty is ``theta . feature_var``, so the
+        # per-iteration objective update and Benders cut each touch only
+        # |coeff| entries -- as cheap as reading the old QP's constraint .Pi,
+        # but warm-startable by primal simplex.
+        cost_part, feature_vec, _, _ = self.pathwise_terms(
+            sub_model, generating_function, generating_function.form('training'),
+            self.sample_paths[scenario_id], state_var, action_var)
 
         # Introduce one auxiliary feature variable per coefficient, pinned to the
         # affine period-summed penalty feature:
-        #     feature_var[k] == Phi_k(x) == (sum_t lr_t * phi_t(x))[k].
+        #     feature_var[k] == Phi_k(x).
         # The penalty is then simply  theta . feature_var, so the action-dependent
         # part of the objective lives entirely on these |coeff| columns. Each
         # Benders iteration therefore only:
@@ -472,7 +512,7 @@ class ApproxQAgent(InfiniteRTAgent):
                 cut_gradient_fn=cut_gradient_fn, verbose=verbose, grb_env=envs[sid],
                 initial_cut=self.subproblem_initial_cuts.get(sid))
             print(f'Finished build {sid} with sample path length '
-                  f'{len(self.delta[sid])} in {time.time() - start} seconds')
+                  f'{self.sample_paths[sid].length} in {time.time() - start} seconds')
             return worker
 
         def build_group(sids):
@@ -489,6 +529,69 @@ class ApproxQAgent(InfiniteRTAgent):
 
         return [workers[sid] for sid in range(self.sample_path_number)]
 
+    def _regularization_scale(self, mode):
+        """Per-coefficient scale ``s`` for the master regularizer.
+
+        ``'none'``/``None``: ones. ``'feature_std'``: the scenario-weighted
+        standard deviation across scenarios of the build-time seed gradient
+        ``g^0(w) = Phi(x*(0))`` (``subproblem_initial_cuts``), so lambda acts on
+        the penalty contribution ``theta_k Phi_k`` rather than on raw
+        coefficients; zero-variance entries fall back to the median positive
+        scale (1.0 if none)."""
+        size = self._require_generating_function().number_of_coefficients
+        if mode in (None, 'none'):
+            return np.ones(size)
+        if mode != 'feature_std':
+            raise ValueError(f"unknown regularization scale {mode!r}; use 'feature_std' or 'none'")
+        missing = [sid for sid in range(self.sample_path_number) if sid not in self.subproblem_initial_cuts]
+        if missing:
+            raise ValueError(
+                "feature_std regularization scale needs a build-time initial cut for every "
+                f"scenario; missing for {missing[:5]}{'...' if len(missing) > 5 else ''}")
+        gradients = np.array([self.subproblem_initial_cuts[sid][1] for sid in range(self.sample_path_number)], dtype=float)
+        weights = np.asarray(self.sample_path_weights, dtype=float)
+        mean = weights @ gradients
+        std = np.sqrt(np.maximum(weights @ (gradients - mean) ** 2, 0.0))
+        positive = std > 1e-12
+        fallback = float(np.median(std[positive])) if positive.any() else 1.0
+        return np.where(positive, std, fallback)
+
+    def _prepare_training_checkpoint(self, checkpoint_path, resume_checkpoint_path):
+        """Identify fresh models before loading cuts or changing feature objectives."""
+        if not checkpoint_path and not resume_checkpoint_path:
+            return
+        solver = self.coefficient_model
+        solver.master_model.update()
+        for worker in solver.workers:
+            worker.model.update()
+        gf = self._require_generating_function()
+        identity = {
+            'version': 1,
+            'gurobi_version': list(gp.gurobi.version()),
+            'feature_family': f'{type(gf).__module__}.{type(gf).__qualname__}',
+            'master': solver.master_model.Fingerprint,
+            'workers': [worker.model.Fingerprint for worker in solver.workers],
+            'scenario_weights': np.asarray(self.sample_path_weights).tolist(),
+            'scenario_strata': np.asarray(self.sample_path_strata).tolist(),
+        }
+        if resume_checkpoint_path:
+            stored_paths = (resume_checkpoint_path, *solver._checkpoint_paths(resume_checkpoint_path))
+            if any(Path(path).exists() for path in stored_paths):
+                identity_path = Path(f'{resume_checkpoint_path}.training.json')
+                if not identity_path.is_file():
+                    raise ValueError('training checkpoint has no model identity; restart without resume_checkpoint_path')
+                if json.loads(identity_path.read_text()) != identity:
+                    raise ValueError('training checkpoint is incompatible with the current models; restart without resume_checkpoint_path')
+        if checkpoint_path:
+            # Never attach a new identity to another problem's old cuts.
+            if not resume_checkpoint_path or Path(checkpoint_path) != Path(resume_checkpoint_path):
+                solver._reset_checkpoint_store(checkpoint_path)
+            identity_path = Path(f'{checkpoint_path}.training.json')
+            identity_path.parent.mkdir(parents=True, exist_ok=True)
+            temporary_path = identity_path.with_name(identity_path.name + '.tmp')
+            temporary_path.write_text(json.dumps(identity, sort_keys=True))
+            os.replace(temporary_path, identity_path)
+
     def benders_decomposition_train(self,
                                     coefficient_bound=GRB.INFINITY,
                                     init_state = None,
@@ -497,7 +600,7 @@ class ApproxQAgent(InfiniteRTAgent):
                                     checkpoint_path=None,
                                     resume_checkpoint_path=None,
                                     purge_after=30,
-                                    pathwise_safety=None):
+                                    regularization=None):
         # This function can be implemented to train the coefficients using Benders decomposition, which can potentially handle larger sample sizes more efficiently.
         # ``init_state`` may be None (each scenario draws its own state), a single
         # shared state, or one state per sample path (a list of length
@@ -507,36 +610,47 @@ class ApproxQAgent(InfiniteRTAgent):
         workers_time = None
         coefficient_vars = None
 
-        if self.coefficient_model is None:
-            # Time master model building
-            master_start = time.time()
-            master_model, coefficient_vars, theta_vars = self.train_master_builder_fn(coefficient_bound)
-            master_time = time.time() - master_start
-            if verbose:
-                print(f"[TIMING] Master model building: {master_time:.2f}s")
-            
-            # Time worker building
-            workers_start = time.time()
-            workers = self._build_training_workers(init_state=init_state, parallel=parallel, verbose=verbose)
-            workers_time = time.time() - workers_start
-            if verbose:
-                print(f"[TIMING] Workers building (parallel={parallel}): {workers_time:.2f}s")
-            
-            self.coefficient_model  = BendersDecompositionSolver(master_model=master_model,
-                                                                 workers=workers,
-                                                                 imm_cost=None,
-                                                                 theta_vars=theta_vars,
-                                                                 action_vars=coefficient_vars,
-                                                                 scenario_weights=self.sample_path_weights,
-                                                                 scenario_strata=self.sample_path_strata)
-        else:
-            coefficient_vars = self.coefficient_model.action_vars
+        # Each call may change the initial states, coefficient bounds or
+        # regularizer. Rebuild both sides rather than reuse incompatible models.
+        if self.coefficient_model is not None:
+            self.coefficient_model.master_model.dispose()
+            for worker in self.coefficient_model.workers:
+                worker.model.dispose()
+            self.coefficient_model = None
+        self.subproblem_initial_cuts.clear()
+        self.subproblem_cold_solve_seconds.clear()
+        workers_start = time.time()
+        workers = self._build_training_workers(init_state=init_state, parallel=parallel, verbose=verbose)
+        workers_time = time.time() - workers_start
+        if verbose:
+            print(f"[TIMING] Workers building (parallel={parallel}): {workers_time:.2f}s")
+
+        # The feature-std scale needs the newly built workers' seed gradients.
+        regularization_scale = None
+        if regularization is not None:
+            regularization_scale = self._regularization_scale(regularization.get('scale', 'feature_std'))
+        self._regularization_scale_vector = regularization_scale
+        master_start = time.time()
+        master_model, coefficient_vars, theta_vars = self.train_master_builder_fn(
+            coefficient_bound, regularization=regularization, regularization_scale=regularization_scale)
+        master_time = time.time() - master_start
+        if verbose:
+            print(f"[TIMING] Master model building: {master_time:.2f}s")
+
+        self.coefficient_model = BendersDecompositionSolver(
+            master_model=master_model, workers=workers, imm_cost=None,
+            theta_vars=theta_vars, action_vars=coefficient_vars,
+            scenario_weights=self.sample_path_weights, scenario_strata=self.sample_path_strata)
+        self._prepare_training_checkpoint(checkpoint_path, resume_checkpoint_path)
         # init_solution = [0] * coefficient_vars.shape[0]
         init_solution = None
         # init_solution = [30.936873875657064, 18.797811208402102, 32.55294582735802, 9.771833520893624, 29.930188363086305, -33.43114011845465, 20.429547473135614, 46.134539415653634, -4.1252674656013415, 13.548626019564873, 2.0323452690382933, 4.948082094437374, 57.93083271225687, -34.489745014299935, -22.752348538218, 43.54071439788093, 31.466967896430372, 13.378259245251227, 19.08776734394266, 59.071042428052856, 25.288221363707603, -85.09869832626279, 47.38011323828022, 13.324993447555471, 120.27618769746321, -146.4427825660298, 53.81124295809613, 62.20144296020482, 52.47460135187192, -20.605921066845603, -70.34995701361875, 163.51281510396765, 6.60533255004948, -113.00288841418705, 33.181652159801615, -138.30844267307205, 204.2166397682823, -108.06934994312908, 223.1596242294453, 54.34585807530416, -114.68916798053644, 53.779549516198095, 62.6890753579888, -132.9607322609606, -101.87111132543069, 188.38237324416775, -185.36068477897135, 160.72134253398778, -34.87783019457539, -165.09582122268893, 309.6723857352444, -281.3573729867282, 20.634822124277154, -4.330038407101594, -545.9479495163265, -9429.039169810098, 3.5409097151355686, 42.72230049696095, 4.050174429738009, 35.670251097571274, 36.98752627610553, -14.842276278996323, 49.913767857586976, 54.66824591965885, -52.530284161674125, -28.823009401464518, -57.652652547646206, 19.212696907575882, 76.85986613224023, 5.160918430492718, 39.50172476926792, 25.50910600866467, 7.7759334133560944, 2.0089986019809536, -30.58188582023919, 65.38994859008166, 36.671374472605386, -90.26366448958886, 105.78083415346698, -0.5648379682072561, 128.25828155090278, -156.0041086314322, 38.635648126459955, 20.38702052987313, 80.93143512215346, 3.815132126224707, -92.46317941391825, 197.96664881356114, -25.68888667004868, -12.328857914966688, 26.87900972002935, -129.8723021445483, 169.5594313556061, -73.65427536077355, 275.1945927950061, 124.6267210774115, -115.38995593402508, -0.8009833975152213, 170.7246728785445, -182.7657259493173, -38.18085368994055, 194.01171012567798, -94.2747443869524, 130.44227756106247, -66.84024405114174, -236.27371833168309, 78.66270113673475, -290.8761487468625, 559.6819883801721, 10.752569463662397, -568.3666354164685, 460.2991655053739, 158.37588443883902, -193.9216145621594, -66.55045841285988, -207.6933204550911, 884.6387736746859, 834.2162153685704, 103.98741130638292, 188.55833726572166, -148.4154591226984, 458.8053411903486, 97.82009269273522, -683.2441095608922, 249.08070077390957, 1555.0920357621142, 499.3936371428386, 636.4734869789855, 1159.886874217052, 1223.5386895740824, -1367.153207606466, -1595.6422893171573, -888.3440243358016, -422.17810791305544, -194.8461339958101, -318.43054212783505, 58.16660782382519, 945.9108164251008, 419.2529470909686, -75.06257225194535, -170.04139570753057, 1393.419184961684, 336.99120549569545, 243.60365082069922, 63.47063277731668, -2548.2971870188553, -56.59358071192403, -3898.125694572405, -119.945980678244, 1594.5858996684306, -1826.83311836072, 511.656664330189, 285.070548812395, 15.302270514760435, 783.1727251367164, -169.97055458293417, 30.50868250841404, -1419.3633857400755, 1978.7188485120134, -1237.17936359673, -299.7016084181448, 1133.7911125485473, 1626.7039614341609, -2791.7136436981596, 4932.110023795547, -1621.1935010611166, 1614.62808053739, -2684.6843105273883, -1834.1556419946737, -265.66105234726945, -1100.7602200001638, -43.19070738122594, -1015.8758240434228, -340.1657922735167, -1056.001519347583, -17.93079478161714, 1418.8189946868968, -1178.9843979360733, 533.1787579539204, -654.9609687922073, 309.5191379943023, -556.9154454676293, 3584.4264961308263, 1196.1117601494518, 664.956737746279, -802.0049723400815, -1152.795533244306, -310.3956584546715, -736.2714576859572, 211.31980942983816, -127.2607825414034, -494.4078690542375, -525.3473411965666, -732.8989818387079, 1481.9590664519344, 634.6806703577009, 134.6879987539506, 68.46968101891441, 3077.8622619915873, -1322.1970354819734, 512.0970780186783, 1245.7729699397166, -719.9155689609499, -1621.7511109563402, -750.1924173015896, -113.46683923530412, -169.61181143274712, -849.4577694557283, -202.98673572341264, -100.73746581099192, -145.70199903807247, -1877.1485745988907, 1424.9783136572046, -558.9686778396147, 1013.5386877376707, 429.5499314608378, -339.5011345735725, -422.5436391726017, -673.4762743015218, 2012.8666975530616, 978.2589217291377, 3172.189889204137, -1950.8414941347573, -177.7446453964339, -179.30227820592762, 33.51722879684361, -96.3454538689637, -256.65201206859786, -797.7019125809245, 200.6187091872159, 1008.0988339893294, -184.7277839675159, 210.7837975453668, -1666.6314832114995, 708.2979510251037, 298.1014440671508, 1362.881208995362, -1777.4202962087054, -602.6618168905517, 246.82127551917725, 2733.56739243182, -614.8762690171258, -562.0176945355186, -1840.366957509147, 6.300787588450724, -168.43747666850498, -107.4507641143353, 67.16014554401575, -1040.0810126884169, 1176.994223922966, -365.19203949432733, 1476.6907010629748, -622.3393092792348, 201.3979366409967, 867.4210477363565, -1947.1795033660965, -2124.9113409569673, -1348.1163150065315, -3049.156120283863, -64.26144623664425, -884.6054174034084, -747.6023216699457, -162.44191382329703, -336.3415576460618, -517.8905707558905, -1074.5696036563556, -656.891088093221, -942.1367976911298, 577.3087909632856, -1181.118838679084, -1502.0435839333647, 671.5980199618674, 193.16061819399056, -2786.47090227951, -1306.9089548468223, 852.8301044086406, -1302.224904385813, -365.3136254213454, 271.4708918756479, 803.9348108757275, 135.4272666347038, -195.44298380793145, 455.11977924363435, -88.76208815919365, -386.26451193944445, -1710.604457714806, 504.8046630280259, 436.7521130815965, -859.4393271359357, 243.42496847226232, 571.5925307498603, -368.76125584879134, -664.5101243587413, -2589.091548645905, -3156.5659348645954, -131.34181113562016, 593.5046967988571, -811.8911866374549, 51.22674394003911, -339.02008735168585, -245.10335194903865, 880.9973039628915, 1197.0678380355494, 1802.016595852356, -252.52625963731356, 1012.2671320087128, -204.94160854563643, -1089.7973361867819, -172.74467306160798, -2651.0334619461887, -6839.4918004310075, 784.4196371874947, -1170.2771159834117, -203.9784203434857, 655.6102521142936, -401.94938753332497, -309.32746400678286, 101.80668997192593, 448.39204659667644, 1111.3468105597963, 1319.0966574381764, -1208.9092976254644, -573.5167751989869, -908.1930329607058, -208.38052990026665, -1125.64513683742, 591.0173587930984, 2664.903442325281, -966.8707469666517, -3031.325021884568, -838.709739557322, -446.2868835568282, -850.6388486996685, -94.31674084351106, -19.070580089660293, -265.5034240234173, -793.4095053904985, 1510.6828589792303, 1618.531138143973, 673.3463076083483, 149.7474004104515, 1700.7353455994787, -107.45090930475713, -2917.3333534106296, -1896.7789996216147, -2672.789033777113, -181.71781053904746, 1124.4340396787939, -352.4730923468821, -83.94181618165813, 146.14487566285993, -54.73584703764347, -22.885619323205535, 367.8729495157054, 779.9052998295781, -934.3122290713162, -687.7701320571028, -1650.1609102906584, -1600.2096744658957, 2710.080368242038, 717.4665226361295, -40.71421466925588, 562.8942748669122, -1729.7452923672754, 480.29923516327557, 1865.6243513864613, 293.55308263106957, -433.0955032895382, 284.68396336058413, -576.146963705008, -447.8695286347708, 214.03040936304097, 2480.8180772126143, 55.251309514590616, 134.4546293320938, -1722.7339101804428, 820.8970772405369, 960.29222542825, -275.70321569254907, -1045.0418175086384, 1581.2753046832595, -6346.06265857456, -569.753195867397, 401.41532765688913, -2736.6430023314583, -184.37446659832415, 645.5012988466895, -787.6709263240222, 331.68374100012795, -0.6479521442944248, -1196.8429168055236, 1361.3667957557611, -439.9260662439809, 471.2435814815261, -1524.9493334236724, 306.73192480926315, 1405.3053110351905, -225.88895756671423, -1073.7983932649356, -3697.3755736504518, 1313.1719915872338, -1787.9433822421738, -1055.9662384214976, -344.2674554572283, 480.5497867772467, -401.63469274181057, -132.08782016089646, -113.06792199816887, -610.7462850622754, -570.706251138544, 134.04439385377407, -242.50379867228986, 1141.7066124539663, 726.2978033330783, -400.71446355254614, 990.5246738019534, -682.3572707952825, -2424.0201933059475, 385.29855549654735, -1452.2697167758374, -1234.3986673705163, -276.1457507214158, -180.90707045581195, -207.51250002460756, 474.33340429386413, -366.0105736851623, -156.65846087580408, 1761.139037081204, 1625.4558084790838, -2845.9189743448687, 866.9814741806542, -300.03082629473744, 40.90097763890692, 80.60506930927909, -657.3485269278951, -7502.349234869973, 2839.9554927345425, -343.1129155745543, -466.1732043276838, -259.48020006358223, 624.959438293353, 295.3300819742684, -324.2295717318382, -205.09570365338058, 216.8319159316121, -111.4475703152785, -2961.30246950438, 3.5970806512180378, 618.4868963159754, -172.65190086188164, -214.32370733063183, -1135.856103802185, 1607.3014365248878, 390.2826688005668, 622.9732840424609, 3225.2467499447466, -1785.4950347054846, -289.6105431865559, 228.58093926455103, -486.66798859216874, 331.9423895905381, -177.42511342302527, -580.4450372731009, 942.236750348567, -291.5343134274648, -2758.3542748332698, 1084.6285795089295, 1223.8005160593561, -184.147889323466, -3.0606979733181303, 709.3650861598024, -1467.0983744899718, -224.8782698194575, 3072.627086509512, -2608.3349615407533, -142.42374746249786, 507.75710013283634, -489.29113819279746, 366.563873607009, 249.3278768026298, -543.9822293316092, 988.2370033731124, -1150.624935985006, -884.4461500883978, -705.7819892536902, 67.02536691707697, -622.1388670131668, 9370.354244628512, 10000.0, -1284.387766343003, -43.83498594066923, -336.64051409717797, 76.80023632317157, 48.03185988238591, -97.959637054034, -20.066850268537664, 7.2169875455739305, -22.592328370140326, -16.302748965983394, 74.9041244429616, 134.32948935945322, 24.26064427462712, -71.579036855488, -34.67686324771993, -81.22386745965369, 34.97724202853562, 23.86161316037356, 78.48970745918116, 30.681211865345162, -51.54466078376435, 44.85999301534014, 54.94733072019185, -76.71202199176457, 9.631051612768688, 23.09136082112512, 61.60971403449678, 29.1867274453751, 110.7271508084791, -31.6304959353005, 119.9573825603302, -74.78749537832353, -65.5523035943056, -65.49342029477253, -102.44050265334715, -39.29540855231676, -124.12120150830569, -47.3855370243699, -106.74659128220623, -24.687965332567313, 108.83072031276096, -43.66847842195264, 285.6193246053477, -121.11212898998315, 178.66430447794028, 30.557917272950732, -146.216172243583, -225.0740034784603, 69.71566959773938, 340.3924192121032, 215.46725584117667, 237.22917603930162, -67.4859346202273, -610.9477512907654, 324.88956279581816, 601.4716391165779, -10000.0]
         # Time solver
         solver_start = time.time()
-        upper_bound, info = self.coefficient_model.solve(init_solution=init_solution, is_hard_bound=True, max_iter=3000, parallel=parallel, verbose=verbose, checkpoint_path=checkpoint_path, resume_checkpoint_path=resume_checkpoint_path, min_norm_action=True, purge_after=purge_after, pathwise_safety=pathwise_safety)
+        # A regularizer already makes the optimum bounded/unique, so the
+        # min-norm tie-break is unnecessary (and its objective guard would turn
+        # into a QCP under L2).
+        upper_bound, info = self.coefficient_model.solve(init_solution=init_solution, is_hard_bound=True, max_iter=3000, parallel=parallel, verbose=verbose, checkpoint_path=checkpoint_path, resume_checkpoint_path=resume_checkpoint_path, min_norm_action=(regularization is None), purge_after=purge_after)
         solver_time = time.time() - solver_start
         if verbose:
             print(f"[TIMING] Solver execution (parallel={parallel}): {solver_time:.2f}s")
@@ -556,13 +670,50 @@ class ApproxQAgent(InfiniteRTAgent):
         if verbose:
             print(f"[TIMING] Total training time: {overall_time:.2f}s (parallel={parallel})")
         
+        # The solver stops when the cut-model gap at its last action is within
+        # tol, so the last master action is the certified solution. The
+        # reported objective is that action's subproblem-evaluated (in-sample
+        # SAA) value, not the master objective, which overestimates it by the
+        # stopping gap.
         self.coefficients = np.asarray(coefficient_vars.X).tolist()
         self.is_trained = True
         generating_function = self._require_generating_function()
         generating_function.set_coefficients(self.coefficients)
-        return upper_bound, self.coefficients, info
+        objective = float(info.get('evaluated_value', upper_bound))
+        if regularization is not None:
+            # The solver objective carries -lambda R(theta); the in-sample lower
+            # bound is the unregularized weighted SAA value at theta*.
+            _, saa_objective = self.coefficient_model.evaluate_action(
+                np.asarray(self.coefficients, dtype=float), parallel=parallel)
+            scale_vector = getattr(self, '_regularization_scale_vector', None)
+            info['regularization'] = {
+                'type': regularization['type'],
+                'lambda': float(regularization['lambda']),
+                'scale_mode': regularization.get('scale', 'feature_std'),
+                'scale': None if scale_vector is None else np.asarray(scale_vector, dtype=float).tolist(),
+                'regularized_objective': float(upper_bound),
+                'saa_objective': float(saa_objective),
+            }
+            objective = float(saa_objective)
+            print(f"Regularized master objective {upper_bound:.4f}; unregularized SAA value at theta*: {saa_objective:.4f}")
+        return objective, self.coefficients, info
 
-    def calculate_information_relaxation_cost(self, state, sample_path, verbose=False, period_weights=None):
+    def calculate_information_relaxation_cost(self, state, sample_path, verbose=False, period_weights=None,
+                                              terminal=None, first_action=None):
+        """Penalized inner problem of the information relaxation over one path.
+
+        Rolling the relaxation over ``sample_path`` visits ``len(sample_path) + 1``
+        decision periods. ``period_weights`` (``w_s = gamma ** (s - 1) /
+        P_proposal(L >= s - 1)``, ``None`` = ones) and ``terminal`` (how the
+        path ended, ``None`` for legacy records) come from the evaluation
+        record; the generating function's evaluation form turns them into the
+        per-period weights of the stage costs and penalty terms. ``first_action``
+        optionally pins the period-1 decision (the hindsight policy's value at
+        its chosen action is the path-weighted mean of these).
+        """
+        path = sample_path_from_record(sample_path, period_weights, terminal)
+        generating_function = self._require_generating_function()
+        theta = generating_function.coefficient_vector()
         model = gp.Model(f"IR_Model", env=self.grb_env)
         model.setParam("MultiObjPre", 0)
         model.setParam("MIPGapAbs", 1e-9)         # Enforce extremely tight absolute gap
@@ -576,36 +727,22 @@ class ApproxQAgent(InfiniteRTAgent):
         action_var = self.get_action_var(model=model, advance_scheduling_type=self.current_decision_var_type)
         # add action constraint
         self.add_action_space_constraints(model=model, state_var=state_var, action_var=action_var)
+        if first_action is not None:
+            self.set_action(action_var=action_var, action=first_action)
         # ---------- 1. objective ----------
-        # Rolling the relaxation over ``sample_path`` visits ``len(sample_path) + 1``
-        # decision periods. ``period_weights[t - 1]`` reweights period ``t`` by
-        # ``gamma ** (t - 1) / P_proposal(L >= t)`` so this bound stays consistent
-        # with the (identically reweighted) executed-policy cost when the sample
-        # path was drawn from an importance-sampling proposal instead of the
-        # target geometric horizon. ``None`` leaves every weight at 1, recovering
-        # the plain relaxation.
-        if period_weights is None:
-            weights = np.ones(len(sample_path) + 1)
-        else:
-            weights = np.asarray(period_weights, dtype=float)
-        imm_cost = weights[0] * self.env.cost_fn(state_var, action_var, is_var=True)
-        future_cost = 0
-        generating_function = self._require_generating_function()
-        # for every sample path
-        for period_index, new_arrival in enumerate(sample_path):
-            penalty = self.penalty_ratio * generating_function.calculate_penalty(state_var, action_var, new_arrival, is_var=True)
-            state_var = self.get_next_state(model=model,
-                                            state=state_var,
-                                            action=action_var,
-                                            new_arrival=new_arrival)
-            action_var = self.get_action_var(model=model, advance_scheduling_type=self.future_decision_var_type)
-            self.add_action_space_constraints(model=model, state_var=state_var, action_var=action_var)
-            one_time_cost = self.env.cost_fn(state_var, action_var, is_var=True)
-            future_cost += weights[period_index] * penalty + weights[period_index + 1] * one_time_cost
-        model.setObjective(imm_cost + future_cost, GRB.MINIMIZE)
+        cost, Phi, _, _ = self.pathwise_terms(
+            model, generating_function, generating_function.form('evaluation'), path, state_var, action_var)
+        model.setObjective(cost + self.penalty_ratio * (theta * Phi).sum(), GRB.MINIMIZE)
         if not solve_and_handle_errors(model, verbose=verbose):
             raise RuntimeError("Direct model optimal solution not found")
         return model.ObjVal
+
+    def hindsight_scenario_weights(self, form):
+        """Master weights of the scenario epigraph variables: the proposal's
+        path weights (kappa) or uniform 1/N, as the form prescribes."""
+        if form.hindsight_scenario_weights == 'kappa':
+            return np.asarray(self.sample_path_weights, dtype=float)
+        return np.full(self.sample_path_number, 1.0 / self.sample_path_number)
     
     def hindsight_master_builder_fn(self):
         model = gp.Model("Penalized_Hindsight_Master", env=self.grb_env)
@@ -620,7 +757,10 @@ class ApproxQAgent(InfiniteRTAgent):
         self.add_action_space_constraints(model=model, state_var=state_var, action_var=action_var)
         theta_vars = model.addMVar(shape=self.sample_path_number, vtype=GRB.CONTINUOUS, lb=-1e10, name="theta")
         imm_cost = self.env.cost_fn(state_var, action_var, is_var=True)
-        model.setObjective(imm_cost + theta_vars.sum() / self.sample_path_number, GRB.MINIMIZE)
+        # c(s, a_1) + sum_omega weight_omega * theta_omega; every scenario's
+        # subproblem carries its complete pathwise value except c_1.
+        weights = self.hindsight_scenario_weights(self._require_generating_function().form('hindsight'))
+        model.setObjective(imm_cost + theta_vars @ weights, GRB.MINIMIZE)
         model.update()
         return model, imm_cost, theta_vars, action_var, state_linking_constraints
     
@@ -651,27 +791,16 @@ class ApproxQAgent(InfiniteRTAgent):
         self.add_action_space_constraints(model=model, state_var=state_var, action_var=action_var)
         action_linking_constraints = self.build_action_linking_constraints(model, action_var)
 
-        cost = 0
+        # The scenario's complete pathwise value except c_1 (which the master
+        # carries): weighted future stage costs plus the penalty theta . Phi.
+        # A path with no arrivals contributes exactly the period-1 expected
+        # term under the absorption form and nothing under the legacy form.
         generating_function = self._require_generating_function()
-        for period_index, new_arrival in enumerate(self.delta[scenario_id]):
-            likelihood_ratio = self._get_period_likelihood_ratio(scenario_id, period_index)
-            penalty = self.penalty_ratio * generating_function.calculate_penalty(
-                state_var,
-                action_var,
-                new_arrival,
-                is_var=True,
-            )
-            cost += likelihood_ratio * penalty
-            state_var = self.get_next_state(
-                model=model,
-                state=state_var,
-                action=action_var,
-                new_arrival=new_arrival,
-            )
-            action_var = self.get_action_var(model=model, advance_scheduling_type=self.future_decision_var_type)
-            self.add_action_space_constraints(model=model, state_var=state_var, action_var=action_var)
-            cost += likelihood_ratio * self.env.cost_fn(state_var, action_var, is_var=True)
-        model.setObjective(self.discount_factor * cost, GRB.MINIMIZE)
+        theta = generating_function.coefficient_vector()
+        cost, Phi, _, _ = self.pathwise_terms(
+            model, generating_function, generating_function.form('hindsight'),
+            self.sample_paths[scenario_id], state_var, action_var, include_first_cost=False)
+        model.setObjective(cost + self.penalty_ratio * (theta * Phi).sum(), GRB.MINIMIZE)
         return model, action_linking_constraints, state_linking_constraints
     
     def hindsight_solve(self, state, t,
@@ -684,7 +813,7 @@ class ApproxQAgent(InfiniteRTAgent):
                         parallel=False,
                         max_workers=None,
                         verbose=False):
-        self._require_generating_function()
+        self._ensure_policy_models_current()
         master_model, imm_cost, theta_vars, action_vars, state_linking_constraints = self.hindsight_master_builder_fn()
         flatten_state = flatten(state)
         set_link_rhs(state_linking_constraints, flatten_state)
@@ -709,7 +838,7 @@ class ApproxQAgent(InfiniteRTAgent):
                     grb_env=worker_env,
                 ))
                 print(f'Finished build {omega} with sample path length '
-                  f'{len(self.delta[omega])} in {time.time() - start} seconds')
+                  f'{self.sample_paths[omega].length} in {time.time() - start} seconds')
 
         for worker in self.workers:
             set_link_rhs(worker.state_linking_constraints, flatten_state)
@@ -721,22 +850,23 @@ class ApproxQAgent(InfiniteRTAgent):
             imm_cost=imm_cost,
             theta_vars=theta_vars,
             action_vars=flatten_action_vars,
+            scenario_weights=self.hindsight_scenario_weights(self.generating_function.form('hindsight')),
+            scenario_strata=self.sample_path_strata,
         )
-        obj, info = benders_solver.solve_with_callback(
-            tol=tol,
-            max_iter=max_iterations,
-            use_pareto_cuts=use_pareto_cuts,
-            pareto_epsilon=pareto_epsilon,
-            max_workers=max_workers,
-            parallel=parallel,
-            verbose=verbose,
-        )
+        solver_options = dict(tol=tol, max_iter=max_iterations,
+                              use_pareto_cuts=use_pareto_cuts, pareto_epsilon=pareto_epsilon,
+                              max_workers=max_workers, parallel=parallel, verbose=verbose)
+        if self.current_decision_var_type == GRB.CONTINUOUS:
+            # LP masters have no MIPSOL callbacks; use the existing cut loop.
+            obj, info = benders_solver.solve(core_alpha=core_alpha, **solver_options)
+        else:
+            obj, info = benders_solver.solve_with_callback(**solver_options)
 
-        action_t = self.get_solution(action_vars, is_final=True)
+        action_t = self._get_policy_solution(action_vars)
         if 'debug' in info or 'debug_info' in info:
             debug_info = {
                 'state': encode(state),
-                'sample_paths': encode(self.delta),
+                'sample_paths': encode([path.arrivals for path in self.sample_paths]),
             }
             with open('bender_error_info.json', 'w') as f:
                 f.write(json.dumps(debug_info))
@@ -752,19 +882,36 @@ class ApproxQAgent(InfiniteRTAgent):
                     parallel=True,
                     max_workers=None,
                     verbose=False):
+        """Evaluate explicit actions as supplied; canonicalize free decisions."""
         if self.solver_name == 'approx_Q':
-            obj, solved_action, info = self.approx_Q_solve(state, t, action=action, verbose=verbose)
+            solve_action = self.approx_Q_solve
+            options = {'verbose': verbose}
         elif self.solver_name == 'approx_penalized_hindsight':
-            obj, solved_action, info = self.hindsight_solve(state, t, action=action, tol=tol, max_iterations=max_iterations, use_pareto_cuts=use_pareto_cuts, pareto_epsilon=pareto_epsilon, core_alpha=core_alpha, parallel=parallel, max_workers=max_workers, verbose=verbose)
+            solve_action = self.hindsight_solve
+            options = dict(tol=tol, max_iterations=max_iterations, use_pareto_cuts=use_pareto_cuts,
+                           pareto_epsilon=pareto_epsilon, core_alpha=core_alpha, parallel=parallel,
+                           max_workers=max_workers, verbose=verbose)
         else:
             raise ValueError(f"Unsupported solver_name: {self.solver_name}")
-        advance_scheduling_decision, _ = solved_action
-        # Regular-first repair (see InfiniteRTAgent.regular_first_overtime):
-        # the penalty terms in the (penalized) hindsight objective can tie or
-        # even favour overtime while regular capacity remains; the executed
-        # action must never do so.
-        overtime_decision = self.regular_first_overtime(state, advance_scheduling_decision)
-        return obj, (advance_scheduling_decision, overtime_decision), info
+        obj, solved_action, info = solve_action(state, t, action=action, **options)
+        if action is not None:
+            return obj, solved_action, info
+        advance_scheduling_decision, solved_overtime = solved_action
+        if self.current_decision_var_type == GRB.CONTINUOUS:
+            overtime_decision = np.maximum(
+                np.asarray(state[0]) + self.env.convert_action_to_booking_slots(advance_scheduling_decision)
+                - self.env.regular_capacity, 0.0)
+        else:
+            overtime_decision = self.regular_first_overtime(state, advance_scheduling_decision)
+        if np.array_equal(overtime_decision, solved_overtime):
+            return obj, solved_action, info
+        # Re-evaluate the executed action under the same objective and paths.
+        objective, executed_action, executed_info = solve_action(
+            state, t, action=(advance_scheduling_decision, overtime_decision), **options)
+        executed_info = dict(executed_info or {})
+        executed_info['raw_objective'] = float(obj)
+        executed_info['action_repaired'] = True
+        return objective, executed_action, executed_info
     
 
 if __name__ == '__main__':
@@ -802,7 +949,4 @@ if __name__ == '__main__':
     # information_relaxation_cost = agent.calculate_information_relaxation_cost(test_state, sample_path)
     # print("Information relaxation cost for sample path 0:", information_relaxation_cost)
     coefficients = [4.031106747948797, 3.731703603754795, 3.5110029706811474, 3.495309016916508, 3.4469374308773695, 3.620388023893611, 3.468970454934606, 3.4121752858627588, 3.420954726074342, 3.2911472532541666, 3.341244596389515, 3.153996981016462, 3.068661661893202, 2.8007719608922343, 2.6406469670509978, 2.5585743444116815, 2.714828543497788, 2.7906901430833386, 2.8381822968840424, 2.723075370537117, 2.7392035106768162, 2.8880411064365035, 2.8867249052855186, 2.8363971914968715, 2.5830434439212695, 2.5868757260868733, 2.4595544891471945, 2.616520659839807, 2.4821093774589826, 2.653224437046447, 2.182940076545492, 2.1995155948316096, 2.1037601654952596, 2.3654658480754733, 2.179703557096218, 2.5953502390566427, 2.165565702569438, 2.538463441982458, 2.8668958956350252, 2.4901683595107897, 2.6469799405986123, 2.3391017301619286, 2.483527936605242, 2.291399239364182, 2.3631739372613083, 2.3386523583067174, 2.4906574536507833, 2.339416753686237, 2.094345377136051, 2.4008308323791425, 2.718716807768942, 1.8077437358206225, 2.233975229284624, 2.525210771469574, 2.5985016563154204, -9673.529416648953, 2.5308210327457346, 2.4386721134233085, 2.5035348846759007, 2.465905006032699, 2.2962559039679036, 2.2896813510888023, 2.29080695259654, 2.220695191350387, 2.3091382091533887, 2.1536156958427455, 2.2343206542136613, 2.179743618498833, 2.1237630768155213, 1.9084598247227404, 1.8268965265760926, 1.8212737177746021, 2.110110685669497, 2.2948762379764958, 2.2916681453243655, 2.26883242119402, 2.207594017016163, 2.408146495348774, 2.393804850315064, 2.3308995020979637, 2.1867258567090175, 2.161072911658266, 2.180878039136587, 2.3192141203053325, 2.2227018308622064, 2.372184628755349, 1.9321579069455765, 1.9078986434506078, 1.8080094154065591, 2.187342514276679, 2.033164145253977, 2.472464460746778, 1.9513293452873768, 2.381388498668457, 2.7310687290973874, 2.4015202777864033, 2.5609463688579126, 2.2280847468464344, 2.5168502971664566, 2.4845325235928613, 2.5511188776763447, 2.5361634474120365, 2.733940758958852, 2.5491626283328515, 2.2550018805213767, 2.716197768395432, 3.0756269104658713, 2.179398483625846, 2.6157409906918474, 2.9031534201003524, 2.9433251026257494, 326.4308899441294, -306.80538922482265, -271.34200787771806, 366.8716962296621, 226.66343282684102, -256.36646528334677, 310.2671867390345, 215.7647398459776, -299.21558893725523, 292.9005647060494, 195.288815855778, -247.67218549613608, -344.21798125278656, 359.57431000450015, 401.8398527932586, 429.0719770921296, 346.5934142514343, 400.27383599266614, 514.9903043363447, -321.19610240285147, -276.34784729290004, 306.53825015476104, 194.19673952677476, -319.5605341423852, 224.79726636833402, 243.51460727998528, -319.8182811593342, 255.35870432894444, 200.1455209779324, -330.4558924765697, -369.519723909847, 295.445431954633, 222.9500956398424, 337.09888618023797, 296.5907140823456, 323.50446294334324, 314.9410519515495, -315.04802201804887, -281.6993863469015, 302.87866300521637, 194.41066068788496, -319.77796321651294, 225.16246610386042, 243.4663673411833, -320.0286379604695, 255.20314053410584, 200.01957353819307, -330.2293614733444, -369.53006847918004, 295.9340112723312, 224.2521708508757, 337.424256905706, 296.2411124725786, 323.02630061138007, 315.52310211153053, -313.62652754385635, -279.1328114943153, 301.94401440875845, 194.403795138669, -319.90004113772557, 225.38926890546827, 243.47361005955827, -319.9847143590632, 255.3263252766901, 199.994535362237, -329.8431731280798, -369.52644352539755, 296.0032945728999, 224.03461499156947, 337.99265968068175, 296.5647097922374, 323.26389182335515, 316.3730561977518, -313.293839431637, -279.40854062177095, 304.20183496928803, 194.49189713542364, -319.9903672654127, 225.62956586954897, 243.47361612210625, -319.96749077516324, 255.39325517434736, 200.0052266039802, -329.81174472187377, -369.52644055889687, 296.0271376404562, 224.33045232565928, 338.2909773619267, 296.920891578342, 323.3417336613584, 316.6813963227287, -312.5992670605574, -267.6591213466545, 305.12374750304843, 194.7079890811583, -320.0217092821167, 226.21855906336896, 243.57036051538307, -319.9058833485815, 255.67989138535995, 200.08981610724368, -329.7794359344207, -369.47806870610475, 296.29248874615405, 224.32954316912583, 339.11427102080415, 297.01625229783167, 323.3950273138471, 317.395570241064, -296.4742044035793, -251.51421795260285, 301.3966235484586, 194.71005551365306, -320.18115179712913, 226.1380782247943, 247.00384597050652, -318.47496133618915, 257.0892958925524, 201.3298353320679, -328.3751560088731, -373.04526024964434, 296.0316491440517, 223.9284189948903, 339.00830978644444, 297.6663251065329, 323.87314817754304, 316.84994252048637, -286.9825202348329, -323.5874077764347, 326.0737452740432, 194.64729985142003, -319.3790552675782, 225.68477402877033, 236.93739353427918, -320.50575257072524, 254.33190433829623, 199.09015429542706, -333.78975092384644, -359.29479063927283, 290.45605939650886, 221.6634928059666, 338.94583584764587, 297.9445008352086, 324.2857086475178, 316.71199901598084, -286.9760745140047, -337.8457599217927, 328.7436070755866, 194.97180798874797, -318.5770489578863, 226.43426138248105, 250.36875429684733, -321.55600483197304, 254.31932519830298, 201.72617795624683, -336.5621312063631, -363.36936440524005, 291.06341342431006, 220.7643250887013, 339.62778859725586, 298.8643347384277, 324.9218083351807, 317.4330357370545, -381.3747833066809, -214.71075970372476, 341.39101112372737, 195.40247657977307, -317.6716749417992, 227.39689191692923, 254.1991179843244, -317.13873712091663, 246.4219520056813, 205.0636013170315, -334.27806961802344, -391.0987734102637, 291.28688832782063, 220.32554616225207, 340.192070078152, 299.7124180712708, 326.22940624381226, 317.9637809752094, -263.21989921435124, -364.5592522165971, 221.75111963142263, 196.22970132951377, -316.7663692346614, 229.0876393500621, 217.17140838707564, -327.0128312789129, 244.70621275575104, 206.09965119390472, -337.1873816681, -389.7237290090816, 290.071149491514, 220.93346152421327, 341.3461336492219, 300.76514443407905, 327.1090414152786, 319.1624998651205, -260.2320600776875, -383.6721827797446, 359.3127802076815, 195.93982791944654, -316.97538512966275, 228.07363407186494, 261.91027474658404, -332.47096504574074, 260.25525944732544, 191.24437550603216, -344.0327691953935, -407.7562698064903, 303.070054119029, 219.8234398836721, 340.9802148615199, 300.38517771716397, 326.6927602781998, 318.54855783526, -241.9695610826293, -384.89181920379633, 367.7103762800107, 196.02403430671438, -316.6995142943906, 227.1132363986526, 200.15328237481663, -307.67933870334673, 261.98938845597513, 222.40827022492886, -347.6656775502779, -334.8277043240305, 281.40661339901635, 219.31275381491287, 341.0762225915205, 300.49053786450713, 326.3128154913302, 316.8009959659903, -232.8958174931886, -409.17682832794526, 375.42505230670395, 196.27488152448677, -316.3589655277174, 226.47041703675495, 269.0427701724766, -345.92387035948013, 233.62915652334596, 228.13370844021483, -353.5089173365395, -329.2852277204511, 297.89702513326665, 219.53755577327138, 341.2403286918179, 300.8828832749696, 326.8542833558331, 316.6696704965234, -222.7347069045045, -414.51269301807224, 156.71284135427777, 196.19442903777417, -315.85601334673265, 226.20195846200477, 185.4418087260783, -298.60056107239143, 255.22715798943682, 233.86673612580125, -320.38939234294594, -323.70743305860196, 274.77330563059695, 221.18097587186458, 340.84113927591534, 300.6380872915306, 326.2993145929304, 317.3159851294695, -446.610866509056, -424.40218811597697, 155.9224306880078, 196.2295893043938, -315.2170392238477, 226.11728776426753, 179.04063637673062, -353.40530485697855, 275.889496667176, 236.4045986375786, -356.0234755268375, -430.84254484893245, 325.4932924707846, 218.81161629350936, 340.4755132597875, 300.2415676907858, 326.15426899145496, 316.25261381471137, -459.1059613307116, -158.21721310038993, 143.31468210990715, 195.92866147807217, -315.58922347786756, 225.94383220354212, 278.23158211969894, -289.4601356805033, 282.6244522509787, 168.73931147355142, -361.65381584554416, -323.7899546369499, 332.18901539065155, 219.0588206835655, 340.7017934868236, 300.6046846416193, 326.0464241943155, 315.40667987886627, -453.4807105153832, -438.5590433975103, 403.9822956855551, 195.5352951937457, -315.9766934066083, 225.61740774226564, 280.2596942850996, -287.1638374410395, 211.36432597306884, 246.47706151702187, -353.80615954512905, -448.64937080991876, 252.61915750423395, 218.23023230235412, 340.39867049745953, 300.00349589547477, 325.34760759729943, 314.77687090868676, -463.23343845132695, -458.08091455052636, 121.49285921328737, 195.93111678779132, -316.35193314263415, 226.22857068504527, 283.0711116555831, -359.46772862923353, 270.2698890266456, 250.62404189683184, -367.5839260033572, -315.82404338092783, 334.19126756532387, 220.03964147389524, 340.08425200376223, 299.5134710017919, 325.1487809805167, 315.33214403895545, -185.04022584420272, -138.3397639065788, 136.34223229719646, 195.635953295503, -316.240837251391, 226.36034612650474, 156.80333081994831, -355.3315912267535, 211.8852006761208, 148.2341000580218, -368.1445445620848, -324.3179987112926, 307.56714837005893, 218.85535167963644, 339.7024775478858, 299.23326844959956, 323.9012485553758, 314.7862327472303, -490.93605874694003, -127.24776608662978, 416.99103199149977, 195.8772056598209, -317.1538239509464, 227.01423144270302, 286.07155248104755, -381.97586320203663, 199.9084016284105, 257.30752863435555, -306.14069447310976, -297.0821706456318, 329.60438098535997, 218.46360872037076, 340.45398745777493, 9975.143223895953, 10000.0, 314.92164683334886, -0.18641251824010396, 0.046290719305034145, 0.0031607664823241066, 0.25128624071476224, 0.3967118761047459, 0.5358909782862611, 0.4312080362196866, 0.4432720746790437, 0.44655219889682485, 0.5164361638708215, 0.6652429516871052, 0.6394356252567377, 0.7147533696752362, 0.638825213049131, 0.6000962962934864, 0.5301125312580552, 0.4608874889636354, 0.4069235188399034, 0.45780814403042314, 0.29987998362412327, 0.3060822743245808, 0.2355598802860186, 0.262854486822107, 0.2742365129688551, 0.3169300373920123, 0.3712599147893343, 0.23626546474406496, 0.28030342647434736, 0.2381436256946472, 0.2428196499531623, 0.14255539619080082, 0.2699427225506952, 0.28810051588698116, 0.049314146028336836, 0.15209257472815807, 0.011633836915279971, 0.09626139754800533, 0.012749241654091747, 0.1815818778013636, 0.062016769785259385, -0.06749448423397553, 0.05987557528715115, -0.06250573894612899, -0.25181591050750285, -0.20696394531114493, -0.10744918015552685, 0.006402166580301127, 0.06627076865152048, 0.08365854136172857, -0.12637532956978248, -0.17037963901020703, -0.13870334489001834, -0.4181660169742827, -0.33123044083731656, -0.29547006358734507, -10000.0]
-
-
-
 

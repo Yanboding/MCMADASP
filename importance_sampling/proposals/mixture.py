@@ -70,8 +70,7 @@ class MixtureGeometricStratifiedQMCProposal(SamplePathLengthProposal):
         n_long = int(round(self.lambda_0 * size))
         return n_long, size - n_long
 
-    @staticmethod
-    def _qmc_geometric_lengths(discount_factor, size, seed):
+    def _qmc_geometric_lengths(self, discount_factor, size, seed):
         """Invert a Geom(1 - discount_factor) CDF on a scrambled Sobol' sequence."""
         if size <= 0:
             return np.empty(0, dtype=int)

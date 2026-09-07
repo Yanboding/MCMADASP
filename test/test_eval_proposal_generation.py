@@ -89,6 +89,27 @@ class TestEvaluationProposalDecoupling(unittest.TestCase):
                 self.assertGreaterEqual(weight, 0.99 - 1e-12)
                 self.assertLessEqual(weight, 0.99 / 0.1 + 1e-9)
 
+    def test_mixture_eval_proposal_rejects_missing_stratum(self):
+        for lambda_0 in (0.1, 0.9):
+            with self.subTest(lambda_0=lambda_0):
+                # Four paths round to either zero long paths or zero short
+                # paths, although both strata have positive probability.
+                spec = {**MIXTURE_SPEC, 'lambda_0': lambda_0}
+                with self.assertRaisesRegex(ValueError, 'Degenerate stratified allocation'):
+                    generate(spec, test_sample_path_num=4)
+
+    def test_mixture_eval_proposal_preserves_stratum_probability_mass(self):
+        # round(0.1 * 8) gives one long and seven short paths. The weights
+        # must retain the 0.1/0.9 masses, despite the 1/8 versus 7/8 split.
+        records = generate(MIXTURE_SPEC, test_sample_path_num=8)
+        self.assertEqual([record['path_stratum'] for record in records], [0] + [1] * 7)
+        for stratum, mass, count in ((0, 0.1, 1), (1, 0.9, 7)):
+            weights = [record['path_weight'] for record in records
+                       if record['path_stratum'] == stratum]
+            self.assertAlmostEqual(sum(weights), mass, places=12)
+            for weight in weights:
+                self.assertAlmostEqual(weight, mass / count, places=12)
+
     def test_mixture_eval_proposal_weights_match_shifted_closed_form(self):
         gamma, q, lambda_0 = 0.99, 0.95, 0.1
         records = generate(MIXTURE_SPEC)
@@ -200,12 +221,12 @@ class TestEvalProposalComparisonRecipe(unittest.TestCase):
                 f.write(json.dumps(record) + '\n')
             dat_file = os.path.join(tmp_dir, 'table.dat')
             records = recipe_toy_eval_proposal_comparison(
-                test_sample_path_num=4,
+                test_sample_path_num=8,  # Both positive-mass mixture strata must be sampled.
                 num_groups=2,
                 dat_file=dat_file,
                 penalty_coefficients_dir=tmp_dir,
             )
-            self.assertEqual(len(records), 12)
+            self.assertEqual(len(records), 24)
 
             with open(dat_file) as f:
                 lines = f.readlines()
@@ -214,7 +235,7 @@ class TestEvalProposalComparisonRecipe(unittest.TestCase):
         for line in lines:
             payload = line[line.index("'") + 1:line.rindex("'")]
             parsed.extend(json.loads(payload))
-        self.assertEqual(len(parsed), 12)
+        self.assertEqual(len(parsed), 24)
 
         by_arm = {}
         for saved in parsed:
@@ -228,9 +249,9 @@ class TestEvalProposalComparisonRecipe(unittest.TestCase):
         self.assertEqual(
             {name: len(items) for name, items in by_arm.items()},
             {
-                'toy_eval_proposal_geometric_099': 4,
-                'toy_eval_proposal_fixed_459': 4,
-                'toy_eval_proposal_mixture_095_l01': 4,
+                'toy_eval_proposal_geometric_099': 8,
+                'toy_eval_proposal_fixed_459': 8,
+                'toy_eval_proposal_mixture_095_l01': 8,
             },
         )
         for saved in by_arm['toy_eval_proposal_fixed_459']:

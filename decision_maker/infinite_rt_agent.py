@@ -57,8 +57,7 @@ class InfiniteRTAgent:
         for j, var in enumerate(y_var):
             var.lb = var.ub = y[j]
     
-    @staticmethod
-    def set_state(state_var, state):
+    def set_state(self, state_var, state):
         u_var, v_var, w_var = state_var
         u, v, w = state
         for uj_var, uj in zip(u_var, u):

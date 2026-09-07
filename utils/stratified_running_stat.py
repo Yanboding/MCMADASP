@@ -35,6 +35,13 @@ class StratifiedRunningStats:
         self._weight_sums = {}   # stratum label -> sum of weights
         self._weighted_sum = 0.0
         self._weight_total = 0.0
+        # Total sample count and self-normalized weighted mean, refreshed by
+        # ``record`` and ``__iadd__``.
+        self.n = 0
+        self.mean = 0.0
+
+    def _refresh_mean(self):
+        self.mean = self._weighted_sum / self._weight_total if self._weight_total else 0.0
 
     def record(self, value, weight=None, stratum=None):
         weight = 1.0 if weight is None else float(weight)
@@ -43,16 +50,9 @@ class StratifiedRunningStats:
         self._weight_sums[stratum] = self._weight_sums.get(stratum, 0.0) + weight
         self._weighted_sum += weight * float(value)
         self._weight_total += weight
+        self.n += 1
+        self._refresh_mean()
 
-    @property
-    def n(self):
-        return sum(stats.n for stats in self._strata.values())
-
-    @property
-    def mean(self):
-        return self._weighted_sum / self._weight_total if self._weight_total else 0.0
-
-    @property
     def variance_of_mean(self):
         """sum_h What_h^2 * s_h^2 / n_h — within-stratum variance only."""
         if not self._weight_total:
@@ -61,7 +61,7 @@ class StratifiedRunningStats:
         for label, stats in self._strata.items():
             if stats.n >= 2:
                 weight_share = self._weight_sums[label] / self._weight_total
-                variance += weight_share ** 2 * stats.variance / stats.n
+                variance += weight_share ** 2 * stats.variance() / stats.n
         return variance
 
     def half_window(self, confidence):
@@ -69,13 +69,13 @@ class StratifiedRunningStats:
         if df < 1:
             return 0.0
         t_crit = np.abs(st.t.ppf((1 - confidence) / 2, df))
-        return float(t_crit * sqrt(self.variance_of_mean))
+        return float(t_crit * sqrt(self.variance_of_mean()))
 
     def to_running_stats(self):
         """Collapse to a plain ``RunningStats`` reproducing this estimator's
         mean and half-window (``variance / n == variance_of_mean``)."""
         n = self.n
-        m2 = self.variance_of_mean * n * max(n - 1, 0)
+        m2 = self.variance_of_mean() * n * max(n - 1, 0)
         return RunningStats(n=n, mean=self.mean, m2=m2)
 
     def __iadd__(self, other):
@@ -93,6 +93,8 @@ class StratifiedRunningStats:
                 self._weight_sums.get(label, 0.0) + other._weight_sums[label])
         self._weighted_sum += other._weighted_sum
         self._weight_total += other._weight_total
+        self.n += other.n
+        self._refresh_mean()
         return self
 
     def __truediv__(self, other):

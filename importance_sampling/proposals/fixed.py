@@ -1,5 +1,7 @@
 import numpy as np
 
+from importance_sampling.sample_path import Terminal
+
 from .base import SamplePathLengthProposal, _validate_max_length
 
 
@@ -19,3 +21,7 @@ class FixedLengthProposal(SamplePathLengthProposal):
         # guaranteed to occur once the fixed-length tail has been drawn, so it
         # must not be treated as unsupported (survival probability 0).
         return (periods <= self.max_length + 1).astype(float)
+
+    def terminal_for(self, lengths, arrival_generator=None):
+        """A fixed horizon never observes absorption: every path is truncated."""
+        return [Terminal.TRUNCATED for _ in lengths]

@@ -26,6 +26,7 @@ from param_generation.datasets import (
     offset_sample_generation_seeds,
 )
 from param_generation.experiment_specs import build_variation_test_env
+from param_generation.generating_functions import GENERATING_FUNCTION_CLASSES, normalize_generating_function_spec
 from param_generation.mutators import mutate_initial_state_congestion
 from param_generation.registry import EXPERIMENT_SPECS
 from param_generation.training import train_alp_coefficients
@@ -317,6 +318,30 @@ def build_parser():
         '--num-path-seeds', type=int, default=1, metavar='M',
         help='emit M commands per variant (and per initial state), one per '
              'consecutive sample-path seed starting at --sample-paths-seed')
+    train.add_argument(
+        '--penalty-function', choices=sorted(GENERATING_FUNCTION_CLASSES), default=None,
+        help='generating function of the penalty: linear_penalty (default, the '
+             'legacy form) or absorption_linear_penalty (Brown-Haugh absorption-time '
+             'form: survival-weighted terms, terminal expected term); stamps every '
+             'generating-function spec of the variant and suffixes policy_id / '
+             'experiment_name with _bh')
+    train.add_argument(
+        '--coefficient-bound', type=float, default=None, metavar='B',
+        help='box constraint |theta_k| <= B on every penalty coefficient in the '
+             'Benders master (default: unbounded); suffixes policy_id / '
+             'experiment_name with _cb<B> so bounded runs train and store separately')
+    train.add_argument(
+        '--regularization', choices=['l1', 'l2'], default=None,
+        help='add an L1 or L2 penalty on the coefficient vector to the Benders '
+             'master (requires --regularization-lambda); one command per lambda, '
+             "results land in experiments/results/<experiment>_<type>_<lambda>/")
+    train.add_argument(
+        '--regularization-lambda', default=None, metavar='L1[,L2,...]',
+        help='comma-separated regularization weights (>= 0), one command each')
+    train.add_argument(
+        '--regularization-scale', choices=['feature_std', 'none'], default='feature_std',
+        help='per-coefficient scale inside the penalty: feature_std (default) = '
+             'scenario-weighted std of the build-time penalty features; none = raw')
 
     def add_eval_arguments(sub_parser):
         sub_parser.add_argument('experiment', choices=sorted(EXPERIMENT_SPECS))
@@ -345,6 +370,13 @@ def build_parser():
         sub_parser.add_argument('--skip-ir', action='store_true',
                                 help='mark records skip_information_relaxation')
         sub_parser.add_argument(
+            '--penalty-function', choices=sorted(GENERATING_FUNCTION_CLASSES), default=None,
+            help='generating function of the bound and the policies: linear_penalty '
+                 '(default, legacy) or absorption_linear_penalty (Brown-Haugh '
+                 'absorption-time form; needs --eval-proposal so every record '
+                 'carries survival weights and a terminal outcome); suffixes '
+                 'policy_id / experiment_name with _bh')
+        sub_parser.add_argument(
             '--policy-spec', default=None, metavar='JSON',
             help='JSON file mapping policy_id -> agent_args overrides, '
                  'deep-merged into every variant\'s agent_args before '
@@ -362,6 +394,13 @@ def build_parser():
     lower = sub.add_parser(
         'lowerbound', help='Information-relaxation lower bounds only (no policies).')
     add_eval_arguments(lower)
+    lower.add_argument(
+        '--penalty-ratios', default=None, metavar='T1,T2,...',
+        help='evaluate the information-relaxation lower bound with the trained '
+             'penalty coefficients scaled by each factor t of this comma-separated '
+             'grid (0 and 1 are always included) on the evaluation paths; the '
+             'coefficients must already exist under --penalty-dir (no training). '
+             'See report_penalty_shrinkage for the overfitting diagnostic.')
 
     saure = sub.add_parser('saure-ejor', help='Saure EJOR case-study pair.')
     saure.add_argument('--paths', type=int, default=4096)
@@ -409,9 +448,129 @@ def _draw_fixed_init_states(env_args, init_state_seed, count):
     ]
 
 
+def _regularization_tag(reg_type, lam):
+    """``('l1', 1e-3) -> 'l1_0_001'``; ``('l2', 1e-5) -> 'l2_1em05'``."""
+    return f"{reg_type}_{lam:g}".replace('.', '_').replace('-', 'm')
+
+
+def _parse_regularization(args):
+    """``(type, sorted lambdas)`` from the train flags; ``(None, [])`` when off."""
+    reg_type = getattr(args, 'regularization', None)
+    lambdas_text = getattr(args, 'regularization_lambda', None)
+    if reg_type is None and lambdas_text is None:
+        return None, []
+    if reg_type is None or lambdas_text is None:
+        raise ValueError('--regularization and --regularization-lambda must be given together')
+    lambdas = set()
+    for item in lambdas_text.split(','):
+        item = item.strip()
+        if not item:
+            raise ValueError(f"--regularization-lambda has an empty entry: {lambdas_text!r}")
+        try:
+            value = float(item)
+        except ValueError as exc:
+            raise ValueError(f"--regularization-lambda entry is not a number: {item!r}") from exc
+        if value < 0:
+            raise ValueError(f"--regularization-lambda must be >= 0; got {item!r}")
+        lambdas.add(value)
+    return reg_type, sorted(lambdas)
+
+
+def _apply_regularization(test_envs, reg_type, lambdas, scale):
+    """One variant copy per (variant, lambda): ``agent_args['agent_args']
+    ['regularization'] = {type, lambda, scale}``, ``policy_id`` and
+    ``experiment_name`` suffixed with the tag, re-keyed on the env+agent uid so
+    every lambda trains and stores separately."""
+    updated = {}
+    for (_, experiment_name, mutate_val), variant in test_envs.items():
+        for lam in lambdas:
+            copy_variant = copy.deepcopy(variant)
+            agent_args = copy_variant.setdefault('agent_args', {})
+            agent_args.setdefault('agent_args', {})['regularization'] = {
+                'type': reg_type, 'lambda': float(lam), 'scale': scale}
+            tag = _regularization_tag(reg_type, lam)
+            agent_args['policy_id'] = agent_args.get('policy_id', '') + '_' + tag
+            uid = get_uid({'env_args': copy_variant['env_args'], 'agent_args': agent_args})
+            updated[(uid, f"{experiment_name}_{tag}", mutate_val)] = copy_variant
+    return updated
+
+
+# Every generating-function spec a variant may carry; ``--penalty-function``
+# stamps the chosen name on each (creating missing ones) so the training,
+# the two lower bounds and the penalty-family policies all use one form.
+_PENALTY_SPEC_KEYS = (
+    'generating_function_spec',
+    'policy_generating_function_spec',
+    'penalized_lowerbound_generating_function_spec',
+    'training_generating_function_spec',
+)
+_PENALTY_FUNCTION_TAGS = {'absorption_linear_penalty': 'bh'}
+
+
+def _apply_penalty_function(test_envs, name):
+    """Stamp generating function ``name`` on every spec of every variant.
+
+    ``linear_penalty`` (the legacy default) leaves names and keys untouched
+    apart from the stamp; ``absorption_linear_penalty`` also suffixes
+    ``policy_id`` and ``experiment_name`` with ``_bh`` and re-keys the variant
+    on the env+agent uid, so its coefficients train and store separately."""
+    if name is None:
+        return test_envs
+    if name not in GENERATING_FUNCTION_CLASSES:
+        raise ValueError(f"unknown penalty function {name!r}; use one of {sorted(GENERATING_FUNCTION_CLASSES)}")
+    tag = _PENALTY_FUNCTION_TAGS.get(name)
+    updated = {}
+    for (_, experiment_name, mutate_val), variant in test_envs.items():
+        variant = copy.deepcopy(variant)
+        agent_args = variant.setdefault('agent_args', {})
+        inner = agent_args.setdefault('agent_args', {})
+        for key in _PENALTY_SPEC_KEYS:
+            spec = normalize_generating_function_spec(inner.get(key))
+            spec['name'] = name
+            inner[key] = spec
+        if tag is not None:
+            agent_args['policy_id'] = agent_args.get('policy_id', '') + '_' + tag
+            experiment_name = f"{experiment_name}_{tag}"
+        uid = get_uid({'env_args': variant['env_args'], 'agent_args': agent_args})
+        updated[(uid, experiment_name, mutate_val)] = variant
+    return updated
+
+
+def _coefficient_bound_tag(bound):
+    """``1000.0 -> 'cb1000'``; ``2.5 -> 'cb2_5'``."""
+    return f"cb{bound:g}".replace('.', '_').replace('+', '')
+
+
+def _apply_coefficient_bound(test_envs, bound):
+    """``agent_args['agent_args']['coefficient_bound'] = bound`` on every
+    variant, ``policy_id`` and ``experiment_name`` suffixed with ``_cb<bound>``,
+    re-keyed on the env+agent uid (the runner pops the key and passes it to
+    ``benders_decomposition_train(coefficient_bound=...)``)."""
+    if bound is None:
+        return test_envs
+    bound = float(bound)
+    if not bound > 0:
+        raise ValueError(f'--coefficient-bound must be positive; got {bound}')
+    tag = _coefficient_bound_tag(bound)
+    updated = {}
+    for (_, experiment_name, mutate_val), variant in test_envs.items():
+        variant = copy.deepcopy(variant)
+        agent_args = variant.setdefault('agent_args', {})
+        agent_args.setdefault('agent_args', {})['coefficient_bound'] = bound
+        agent_args['policy_id'] = agent_args.get('policy_id', '') + '_' + tag
+        uid = get_uid({'env_args': variant['env_args'], 'agent_args': agent_args})
+        updated[(uid, f"{experiment_name}_{tag}", mutate_val)] = variant
+    return updated
+
+
 def _run_train(args):
     test_envs = _select_variants(
         build_variation_test_env(EXPERIMENT_SPECS[args.experiment]), args.variants)
+    test_envs = _apply_penalty_function(test_envs, args.penalty_function)
+    test_envs = _apply_coefficient_bound(test_envs, args.coefficient_bound)
+    reg_type, lambdas = _parse_regularization(args)
+    if reg_type is not None:
+        test_envs = _apply_regularization(test_envs, reg_type, lambdas, args.regularization_scale)
     path_seeds = [args.sample_paths_seed + offset for offset in range(args.num_path_seeds)]
     if args.reset_init_state and args.num_init_states > 0:
         raise ValueError('--reset-init-state and --num-init-states are mutually exclusive')
@@ -528,13 +687,37 @@ def _guard_against_retrain(args, test_envs):
                 "full Benders training run. Re-run with --allow-retrain to accept.")
 
 
+def _parse_penalty_ratios(text):
+    """``'1,0.5,0'`` -> ``[0.0, 0.5, 1.0]``; ``None`` passes through.
+
+    Rejects empty entries, non-numeric entries and negative factors."""
+    if text is None:
+        return None
+    ratios = set()
+    for item in text.split(','):
+        item = item.strip()
+        if not item:
+            raise ValueError(f"--penalty-ratios has an empty entry: {text!r}")
+        try:
+            value = float(item)
+        except ValueError as exc:
+            raise ValueError(f"--penalty-ratios entry is not a number: {item!r}") from exc
+        if value < 0:
+            raise ValueError(f"--penalty-ratios must be >= 0; got {item!r}")
+        ratios.add(value)
+    return sorted(ratios)
+
+
 def _run_eval(args, policy_ids):
+    penalty_ratios = _parse_penalty_ratios(getattr(args, 'penalty_ratios', None))
     test_envs = _select_variants(
         build_variation_test_env(EXPERIMENT_SPECS[args.experiment]), args.variants)
     if args.init_occupancy is not None:
         test_envs = _apply_init_occupancy(test_envs, args.init_occupancy)
     if args.policy_spec:
         test_envs = _apply_policy_spec(test_envs, args.policy_spec, policy_ids)
+    test_envs = _apply_penalty_function(test_envs, args.penalty_function)
+    if args.policy_spec:
         _guard_against_retrain(args, test_envs)
     records = generate_test_paths_and_init_state(
         test_envs=test_envs,
@@ -550,6 +733,7 @@ def _run_eval(args, policy_ids):
         sample_gen_seed_offset=args.seed_offset,
         evaluation_proposal_spec=(
             json.loads(args.eval_proposal) if args.eval_proposal else None),
+        penalty_ratios=penalty_ratios,
     )
     if args.skip_ir:
         for record in records:

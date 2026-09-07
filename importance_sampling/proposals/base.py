@@ -1,6 +1,6 @@
-from abc import ABC, abstractmethod
-
 import numpy as np
+
+from importance_sampling.sample_path import SamplePath, Terminal
 
 
 def _validate_discount_factor(discount_factor, name):
@@ -15,7 +15,7 @@ def _validate_max_length(max_length):
     return max_length
 
 
-class SamplePathLengthProposal(ABC):
+class SamplePathLengthProposal:
     """Base class for sample-path length importance-sampling proposals.
 
     These proposals only change the random horizon length. The per-period
@@ -33,7 +33,6 @@ class SamplePathLengthProposal(ABC):
     correction is added.
     """
 
-    @abstractmethod
     def sample_lengths(self, arrival_generator, size):
         """Return positive integer sample-path lengths.
 
@@ -67,7 +66,6 @@ class SamplePathLengthProposal(ABC):
         """Integer stratum label per path. Single stratum by default."""
         return np.zeros(int(size), dtype=int)
 
-    @abstractmethod
     def survival_probability(self, periods):
         """Return P_proposal(L >= t) for one-based period indices."""
         raise NotImplementedError
@@ -87,3 +85,31 @@ class SamplePathLengthProposal(ABC):
             return target_survival / proposal_survival
 
         return [weights_for(length) for length in lengths]
+
+    def survival_weights(self, lengths, target_discount_factor, arrival_generator=None):
+        """``w_1 .. w_{L+1}`` per path: ``w_s = gamma ** (s - 1) / P_q(L >= s - 1)``.
+
+        The weight of everything revealed in decision period ``s`` (its stage
+        cost and the penalty terms revealed there) when the path was drawn
+        from this proposal ``q`` instead of the target absorption law. For a
+        length law on ``{1, 2, ...}`` this is ``[1, gamma u_1, ..., gamma u_L]``
+        with ``u`` the period likelihood ratios (whose validation -- gamma
+        match, positive survival -- is reused).
+        """
+        ratios = self.period_likelihood_ratios(target_discount_factor, lengths)
+        return [np.concatenate(([1.0], target_discount_factor * u)) for u in ratios]
+
+    def terminal_for(self, lengths, arrival_generator=None):
+        """How each sampled path ended; infinite-support laws always absorb."""
+        return [Terminal.ABSORBED for _ in lengths]
+
+    def sample_paths(self, arrival_generator, size, target_discount_factor):
+        """``size`` :class:`SamplePath` objects: arrivals, terminal outcome,
+        survival weights and period likelihood ratios. Draws exactly what
+        :meth:`sample_arrival_paths` draws (same RNG consumption)."""
+        arrivals, lengths = self.sample_arrival_paths(arrival_generator=arrival_generator, size=size)
+        ratios = self.period_likelihood_ratios(target_discount_factor=target_discount_factor, lengths=lengths)
+        weights = self.survival_weights(lengths, target_discount_factor, arrival_generator)
+        terminals = self.terminal_for(lengths, arrival_generator)
+        return [SamplePath(path, terminal, weight, ratio)
+                for path, terminal, weight, ratio in zip(arrivals, terminals, weights, ratios)]

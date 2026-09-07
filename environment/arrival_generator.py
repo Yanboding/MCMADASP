@@ -34,7 +34,11 @@ class MultiClassPoissonArrivalGenerator:
         if is_precompute_state:
             self._arrivals_with_probs = self._precompute_all_states()
 
-        self.mean_by_type = self.mean_arrival * self.type_probs
+        # Expectations must use the truncated distribution sampled by rvs().
+        # mean_arrival remains the nominal (untruncated) Poisson parameter.
+        support = np.arange(self.maximum_arrival + 1, dtype=float)
+        self.expected_total_arrival = float(support @ self.truncate_poisson_pmf)
+        self.mean_by_type = self.expected_total_arrival * self.type_probs
         self.num_types = len(self.type_probs)
         self.type_cdf = np.cumsum(self.type_probs)
         self.type_cdf[-1] = 1.0  # Ensure numerical stability

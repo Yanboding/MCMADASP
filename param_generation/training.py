@@ -158,27 +158,3 @@ def zero_penalty_coefficients(env):
         + env.booking_window_size * env.num_types
         + env.planning_horizon
     )
-
-
-def train_value_function_coefficients(env, generating_function_spec, X, Y, regularization=1e-6):
-    """Fit approx_Q value-function coefficients on (X, Y) via least squares.
-
-    Builds the basis named by ``generating_function_spec`` and fits its
-    coefficients with :meth:`ApproxQAgent.regression_train`. Returns the fitted
-    coefficients as a plain list (JSON-serializable).
-    """
-    spec = _normalize_generating_function_spec(generating_function_spec)
-    generating_function = _build_generating_function(env=env, spec={'name': spec['name']})
-    agent = ApproxQAgent(
-        env=env,
-        discount_factor=env.discount_factor,
-        sample_path_number=1,
-        generating_function=generating_function,
-        solver_name='approx_Q',
-    )
-    coefficients, training_mse = agent.regression_train(X, Y, regularization=regularization)
-    print(
-        f"approx_Q value-function regression on '{spec['name']}' basis: "
-        f"{len(X)} samples, training RMSE={np.sqrt(training_mse):.4f}"
-    )
-    return coefficients

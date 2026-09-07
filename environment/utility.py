@@ -39,15 +39,20 @@ def get_valid_advance_actions(waitlist, number_days):
     if number_days < 1:
         raise ValueError('number_days must be at least 1')
 
-    @functools.lru_cache(maxsize=None)
+    memo = {}
+
     def compositions(n, k):
         # Generate all tuples of k non-negative integers summing to n
+        if (n, k) in memo:
+            return memo[(n, k)]
         if k == 1:
-            return [(n,)]
-        results = []
-        for i in range(n + 1):
-            for tail in compositions(n - i, k - 1):
-                results.append((i,) + tail)
+            results = [(n,)]
+        else:
+            results = []
+            for i in range(n + 1):
+                for tail in compositions(n - i, k - 1):
+                    results.append((i,) + tail)
+        memo[(n, k)] = results
         return results
 
     def get_all_class_combinations():

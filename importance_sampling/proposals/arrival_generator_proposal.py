@@ -2,6 +2,8 @@ from typing import Optional
 
 import numpy as np
 
+from importance_sampling.sample_path import Terminal
+
 from .base import SamplePathLengthProposal
 
 
@@ -50,3 +52,26 @@ class ArrivalGeneratorSamplePathProposal(SamplePathLengthProposal):
 
     def period_likelihood_ratios(self, target_discount_factor, lengths):
         return [np.ones(int(length), dtype=float) for length in lengths]
+
+    def survival_weights(self, lengths, target_discount_factor, arrival_generator=None):
+        """The generator's own law IS the target: ``L = Geom(geom_p) - 1`` on
+        ``{0, 1, ...}`` has ``P(L >= k) = gamma ** k`` with ``gamma = 1 -
+        geom_p``, so every survival weight is 1. With
+        ``is_positive_integer_support`` (``L`` on ``{1, 2, ...}``) the first
+        arrival is certain and ``w_s = gamma`` for ``s >= 2``."""
+        if arrival_generator is None:
+            raise ValueError("ArrivalGeneratorSamplePathProposal.survival_weights needs the arrival generator")
+        implied = 1.0 - float(arrival_generator.geom_p)
+        if not np.isclose(implied, target_discount_factor):
+            raise ValueError(
+                "target_discount_factor mismatch: the arrival generator draws horizons with "
+                f"geom_p={arrival_generator.geom_p} (discount factor {implied}) but the agent "
+                f"passed {target_discount_factor}.")
+        tail_weight = target_discount_factor if self.is_positive_integer_support else 1.0
+        return [np.concatenate(([1.0], np.full(int(length), tail_weight))) for length in lengths]
+
+    def terminal_for(self, lengths, arrival_generator=None):
+        """Paths clipped at the generator's ``max_periods`` are truncated."""
+        cap = None if arrival_generator is None else int(arrival_generator.max_periods)
+        return [Terminal.TRUNCATED if cap is not None and int(length) >= cap else Terminal.ABSORBED
+                for length in lengths]

@@ -1,10 +1,8 @@
-"""Read/write helpers for cached training results and regression data."""
+"""Read/write helpers for cached training results."""
 
 import glob
 import json
 import os
-
-import numpy as np
 
 from utils import get_uid
 
@@ -58,17 +56,20 @@ def save_training_result(experiment_name, file_name, env_args, agent_name, obj_v
     return record
 
 
-def load_trained_coefficients_from_folder(
+def load_trained_coefficient_record_from_folder(
     experiment_name,
     mutate_val=None,
     sample_path_number=None,
     folder_path=None,
 ):
-    """Load one trained coefficient vector from JSONL training outputs.
+    """Load one trained-coefficient record from JSONL training outputs.
 
-    The expected record format is the per-init-state output written by
-    ``run.py::train_lowerbound_for_init_state`` with keys like
-    ``tight_penalized_lower_bound`` and ``coefficients``.
+    The expected record format is the output written by
+    ``run.py::train_lowerbound_for_init_state`` /
+    ``train_penalty_coefficients_for_env`` with keys like
+    ``tight_penalized_lower_bound`` and ``coefficients``. Returns the winning
+    record (a dict) with an extra ``'file'`` key naming the JSONL file it came
+    from, or ``None`` when nothing matches.
     """
     search_dir = folder_path or os.path.join('experiments', 'results', experiment_name)
     if not os.path.isdir(search_dir):
@@ -102,46 +103,29 @@ def load_trained_coefficients_from_folder(
 
                 init_state_index = record.get('init_state_index')
                 sort_index = init_state_index if isinstance(init_state_index, int) else 10**9
-                candidates.append((sort_index, file_path, line_number, coefficients))
+                candidates.append((sort_index, file_path, line_number, record))
 
     if not candidates:
         return None
 
     candidates.sort(key=lambda x: (x[0], x[1], x[2]))
-    return candidates[0][3]
+    record = dict(candidates[0][3])
+    record['file'] = candidates[0][1]
+    return record
 
 
-def load_regression_training_data(train_data_dir):
-    """Load (X, Y) value-function regression data from a folder of JSONL files.
-
-    Each record contributes one (state, target) pair: the state ``X`` is the
-    record's ``init_state`` (a 3-block ``(regular_bookings, overtimes,
-    waitlist)`` state) and the target ``Y`` is its
-    ``tight_penalized_lower_bound``. Records are de-duplicated by ``uid`` and
-    records without a usable target are skipped.
-
-    Returns ``(X, Y)`` where ``X`` is a list of ``(np.ndarray, np.ndarray,
-    np.ndarray)`` states and ``Y`` is a 1-D ``np.ndarray`` of targets.
-    """
-    records = {}
-    for file_path in sorted(glob.glob(os.path.join(train_data_dir, '*.jsonl'))):
-        with open(file_path, 'r') as handle:
-            for line in handle:
-                line = line.strip()
-                if not line:
-                    continue
-                record = json.loads(line)
-                if record.get('tight_penalized_lower_bound') is None or 'init_state' not in record:
-                    continue
-                records[record.get('uid', len(records))] = record
-    X, Y = [], []
-    for record in records.values():
-        state = tuple(np.array(block, dtype=float) for block in record['init_state'])
-        X.append(state)
-        Y.append(float(record['tight_penalized_lower_bound']))
-    if not X:
-        raise ValueError(
-            "No training records with 'init_state' and 'tight_penalized_lower_bound' "
-            f"found in {train_data_dir}."
-        )
-    return X, np.asarray(Y, dtype=float)
+def load_trained_coefficients_from_folder(
+    experiment_name,
+    mutate_val=None,
+    sample_path_number=None,
+    folder_path=None,
+):
+    """Coefficient vector of :func:`load_trained_coefficient_record_from_folder`
+    (``None`` when no record matches)."""
+    record = load_trained_coefficient_record_from_folder(
+        experiment_name,
+        mutate_val=mutate_val,
+        sample_path_number=sample_path_number,
+        folder_path=folder_path,
+    )
+    return None if record is None else record['coefficients']
