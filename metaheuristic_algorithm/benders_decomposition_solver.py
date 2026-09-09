@@ -760,7 +760,14 @@ class BendersDecompositionSolver:
         """
         start = time.time()
         solved = solve_and_handle_errors(self.master_model, verbose=verbose)
-        if not solved and self.master_model.Status == GRB.INFEASIBLE:
+        retry_cold = not solved and self.master_model.Status in (
+            GRB.UNBOUNDED, GRB.INF_OR_UNBD, GRB.NUMERIC)
+        if retry_cold:
+            print(f"Master reported {get_status_string(self.master_model.Status)}; "
+                  "retrying once from a cold solve with unchanged parameters.")
+            self.master_model.reset()
+            solved = solve_and_handle_errors(self.master_model, verbose=verbose)
+        elif not solved and self.master_model.Status == GRB.INFEASIBLE:
             # A badly scaled cut matrix can make Gurobi presolve report a false
             # INFEASIBLE status even though, for example, action=0 with
             # sufficiently low theta is feasible. Keep presolve disabled for
@@ -775,7 +782,9 @@ class BendersDecompositionSolver:
             self.master_model.Params.Presolve = 0
             solved = solve_and_handle_errors(self.master_model, verbose=verbose)
         if not solved:
-            diagnostics = self._save_master_failure_diagnostics(global_iteration)
+            # A failed cold retry must not trigger another diagnostic solve.
+            diagnostics = self._save_master_failure_diagnostics(
+                global_iteration, clarify_status=not retry_cold)
             raise RuntimeError(
                 f"Master model optimal solution not found: {diagnostics['reason']} "
                 f"Diagnostics saved to {diagnostics['directory']}"
@@ -835,7 +844,7 @@ class BendersDecompositionSolver:
             gaps[i] = (v - theta) if is_min else (theta - v)
         return gaps
 
-    def _save_master_failure_diagnostics(self, global_iteration):
+    def _save_master_failure_diagnostics(self, global_iteration, *, clarify_status=True):
         """Persist a failed master and identify the most likely failure mode."""
         model = self.master_model
         original_status = int(model.Status)
@@ -845,7 +854,7 @@ class BendersDecompositionSolver:
         # Presolve reductions can make infeasible and unbounded indistinguishable.
         # Re-solving without dual reductions is Gurobi's documented way to
         # distinguish the two before producing an IIS or an unbounded diagnosis.
-        if original_status == GRB.INF_OR_UNBD:
+        if clarify_status and original_status == GRB.INF_OR_UNBD:
             try:
                 original_dual_reductions = model.Params.DualReductions
                 model.Params.DualReductions = 0
