@@ -73,7 +73,6 @@ class PolicyEvaluator:
     
     def sample_path_absolute_gap_evaluate(self, benchmark_solver, state, t, sample_path, action=None):
         state_tuple = iter_to_tuple(state)
-        # sample_path should start from period t+1 
         benchmark_solver.set_sample_path(sample_path)
         _, benchmark_value, info = benchmark_solver.solve(state, t, action=action)
         sample_average_V = self.simulation_evaluate_helper(state, t, [sample_path], action=action)
@@ -127,7 +126,6 @@ class PolicyEvaluator:
         return states, actions, rewards, penalties
 
 
-
 if __name__ == '__main__':
     from experiments import get_config_by_type
     from decision_maker import InfiniteSAAAgent, ALPRowGenerationAgent, InfinitePenalizedSAAAgent, MyopicAgent
@@ -139,8 +137,7 @@ if __name__ == '__main__':
     init_state, info = env.reset(**config.reset_params)
     print('Initial state:', init_state)
     alp_agent = MyopicAgent(env=env, discount_factor=0.99)
-    #print("Action:", sa_advance_agent.policy(init_state, t))
     alp_policy_evaluator = PolicyEvaluator(env, alp_agent, discount_factor=env.discount_factor, is_inf=True)
     states, actions, rewards, penalties = alp_policy_evaluator.penalized_sample_path_evaluate(init_state, t, sample_path)
     print(penalties)
-    print(rewards) # 339483.0489337634
+    print(rewards)

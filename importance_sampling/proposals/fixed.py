@@ -6,7 +6,6 @@ from .base import SamplePathLengthProposal, _validate_max_length
 
 
 class FixedLengthProposal(SamplePathLengthProposal):
-    """Deterministic length proposal with L = max_length."""
 
     def __init__(self, max_length: int):
         self.max_length = _validate_max_length(max_length)
@@ -23,5 +22,4 @@ class FixedLengthProposal(SamplePathLengthProposal):
         return (periods <= self.max_length + 1).astype(float)
 
     def terminal_for(self, lengths, arrival_generator=None):
-        """A fixed horizon never observes absorption: every path is truncated."""
         return [Terminal.TRUNCATED for _ in lengths]

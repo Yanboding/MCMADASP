@@ -1,5 +1,3 @@
-"""Coefficient training for penalty / ALP / value-function policies."""
-
 from pprint import pprint
 
 import numpy as np
@@ -21,12 +19,6 @@ from param_generation.generating_functions import (
 
 
 def train_penalty_coefficients(env_args, experiment_name, agent_args=None):
-    '''
-    Train coefficients for the penalty function used in the hindsight
-    approximation with penalty agent. ``agent_args`` may include a
-    JSON-serializable ``sample_path_length_proposal`` spec dict that is
-    materialized into a SamplePathLengthProposal before constructing the agent.
-    '''
     agent_args = dict(agent_args or {})
     train_agent_args = {
         'sample_path_number': agent_args['agent_args']['sample_path_number'],
@@ -68,7 +60,6 @@ def train_penalty_coefficients(env_args, experiment_name, agent_args=None):
         agent_args.get('agent_args', {}).get('training_generating_function_spec')
     )
     generating_function = _build_generating_function(env=env, spec=training_generating_function_spec)
-    # generating_function = MulticlassLinearPenaltyFunction(env=env)
     inner = dict(agent_args.get('agent_args', {}))
     for key in (
         'generating_function_spec',
@@ -79,8 +70,6 @@ def train_penalty_coefficients(env_args, experiment_name, agent_args=None):
     ):
         inner.pop(key, None)
     inner['generating_function'] = generating_function
-    # Materialize the IS proposal spec (legacy key ``sample_path_length_proposal``
-    # or ``sample_path_proposal``) into a built proposal instance for the agent.
     proposal_spec = inner.pop('sample_path_length_proposal', None)
     if 'sample_path_proposal' in inner:
         proposal_spec = inner['sample_path_proposal']
@@ -124,9 +113,6 @@ def train_penalty_coefficients(env_args, experiment_name, agent_args=None):
 
 
 def train_alp_coefficients(env_args, experiment_name):
-    '''
-    This function can be implemented to train the coefficients for the ALP row generation agent. The training can be done using a simple grid search or a more sophisticated optimization algorithm.
-    '''
     cached = _load_cached_training_result(experiment_name, 'alp_train.jsonl', env_args, agent_args={})
     if cached is not None:
         cached_result = cached.get('result', {})
@@ -151,10 +137,5 @@ def train_alp_coefficients(env_args, experiment_name):
     return obj, coefficients
 
 
-def zero_penalty_coefficients(env):
-    return [0] * (
-        env.planning_horizon * 2
-        + env.num_types
-        + env.booking_window_size * env.num_types
-        + env.planning_horizon
-    )
+def zero_penalty_coefficients(env, generating_function_spec=None):
+    return [0.0] * _build_generating_function(env, generating_function_spec).number_of_coefficients

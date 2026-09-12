@@ -25,7 +25,6 @@ POLICY_DISPLAY_NAMES = {'row_gen_alp': 'ALP', 'myopic': 'Myopic'}
 
 
 def load_costs_by_policy(results_dir, policies):
-    """Return {policy_id: 2-D array of shape (num_paths, num_periods)}."""
     costs_by_policy = {policy_id: [] for policy_id in policies}
     for jsonl_file in sorted(Path(results_dir).glob('*.jsonl')):
         with open(jsonl_file) as fh:

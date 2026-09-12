@@ -1,4 +1,3 @@
-"""Exact expectations under the arrival generator's truncated distribution."""
 import numpy as np
 import pytest
 
@@ -19,7 +18,7 @@ def test_mean_by_type_matches_enumerated_distribution(rate, cap):
     exact_mean = np.asarray(probabilities) @ np.asarray(arrivals)
 
     np.testing.assert_allclose(generator.mean_by_type, exact_mean, rtol=1e-12, atol=1e-12)
-    assert generator.mean_arrival == rate  # Preserve the nominal Poisson parameter.
+    assert generator.mean_arrival == rate
 
 
 @pytest.mark.parametrize("penalty_class", [LinearPenaltyFunction, AbsorptionLinearPenaltyFunction])

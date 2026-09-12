@@ -1,29 +1,3 @@
-"""Tests for inactive-cut purging in ``BendersDecompositionSolver.solve``.
-
-Builds a small generalized-Benders toy that mirrors the coefficient-training
-setup of ``ApproxQAgent.benders_decomposition_train``: a maximization master
-over bounded coefficients ``a`` with one theta per scenario, and per-scenario
-LP subproblems
-
-    Q_s(a) = min_x  c_s . x + a . (x - 0.5)   s.t.  x in [0,1]^n, sum(x) >= 2,
-
-whose Benders cut at ``a_k`` is ``theta_s <= Q_s(a_k) + phi_s(x*) . (a - a_k)``
-with ``phi_s(x*) = x* - 0.5`` read off an auxiliary feature variable, exactly
-like the training subproblems. The ``- 0.5`` shift makes the feature gradient
-change sign across coordinates so the master genuinely zigzags for several
-iterations and old cuts go slack.
-
-Verifies that
-1. purging drops master cuts that stay inactive for ``purge_after``
-   consecutive master solves without changing the converged objective, while
-   every theta keeps at least one supporting cut; and
-2. with checkpointing enabled the cuts file is rewritten to exactly the
-   surviving cuts (file records == meta cut_count == master cut rows, and
-   fewer than the baseline run's total), and resuming from the purged
-   checkpoint reproduces the same objective.
-
-Run from the repo root:  python -m test.test_benders_cut_purging
-"""
 import json
 import os
 import tempfile
@@ -162,13 +136,6 @@ def test_purged_checkpoint_rewrite_and_resume():
 
 
 def test_train_enables_purging_by_default():
-    """``benders_decomposition_train`` must forward purging to the solver.
-
-    Runs a real (tiny) coefficient training on the toy config and checks that
-    the underlying ``BendersDecompositionSolver`` ran with inactive-cut
-    purging enabled -- the whole point of the feature is that the long
-    case-study trainings get it without touching run.py.
-    """
     from decision_maker import ApproxQAgent
     from experiments import get_config_by_type
     from generating_function import LinearPenaltyFunction

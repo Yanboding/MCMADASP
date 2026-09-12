@@ -1,15 +1,3 @@
-"""Generators that turn experiment variants into job-array .dat datasets.
-
-Three datasets are produced:
-
-* :func:`generate_test_paths_and_init_state` -- test sample paths + initial
-  states with resolved policy specs (grouped command file).
-* :func:`generate_train_env` -- (X, Y) training commands for the tight
-  penalized lower bound (one command per initial state).
-* :func:`generate_policy_efficiency_data` -- policy-efficiency commands
-  (one command per initial state).
-"""
-
 import copy
 import os
 
@@ -40,23 +28,12 @@ from param_generation.training import (
 
 
 def _pin_sampling_seeds(env_args, seed):
-    """Pin arrival/stop-time/env seeds so every initial state for a variant
-    trains against the *same* set of arrival sample paths.
-
-    NOTE: in experiment_config.py the env's ``init_state_random_seed`` is
-    derived from ``env_random_seed``; we therefore use ``env_random_seed`` ONLY
-    for arrival/sampling and override it on a *separate* sampler env (see
-    :func:`_make_sampler_env`) when drawing initial states.
-    """
     env_args['arrival_random_seed'] = seed
     env_args['stop_time_random_seed'] = seed
     env_args['env_random_seed'] = seed
 
 
 def offset_sample_generation_seeds(env_args, seed_offset):
-    """Return a deepcopy of ``env_args`` whose arrival/stop-time/env seeds are
-    shifted by ``seed_offset``, so path generation draws from a random stream
-    disjoint from training (and from any other offset)."""
     sample_gen_args = copy.deepcopy(env_args)
     sample_gen_args['env_random_seed'] = env_args.get('env_random_seed', 0) + seed_offset
     sample_gen_args['arrival_random_seed'] = env_args.get('arrival_random_seed', 42) + seed_offset
@@ -65,38 +42,16 @@ def offset_sample_generation_seeds(env_args, seed_offset):
 
 
 def _make_sampler_env(base_env_args, init_state_rng):
-    """Build a sampler env with a *different* env_random_seed so the
-    initial-state RNG is independent of the (pinned) sample-path RNGs."""
     sampler_env_args = copy.deepcopy(base_env_args)
     sampler_env_args['env_random_seed'] = int(init_state_rng.integers(0, 2**31 - 1))
     return get_config_by_type('infinite_custom', args=sampler_env_args).env
 
 
 def _state_to_jsonable(state):
-    """Normalize a single initial state to a 3-list of plain Python lists."""
     return [np.asarray(component).tolist() for component in state]
 
 
 def _evaluation_period_weights(proposal, discount_factor, tail_length, arrival_generator=None):
-    """Per-period importance-sampling weights for the post-warm-up evaluation
-    horizon, or ``None`` when no reweighting is needed.
-
-    When ``proposal`` is ``None`` the tail was drawn from the target geometric
-    horizon by the legacy path and no reweighting is applied, so we return
-    ``None`` to keep the evaluation byte-identical to the
-    non-importance-sampling path.
-
-    Otherwise the tail was drawn from ``proposal``. Rolling the policy over
-    ``tail_length`` sampled arrivals visits ``tail_length + 1`` decision
-    periods (the trailing period carries a stage cost but no arrival), so
-    period ``s`` is visited iff the sampled length ``L >= s - 1`` and its
-    unbiased weight is ``gamma ** (s - 1) / P_proposal(L >= s - 1)``. In terms
-    of the proposal's per-period ratios ``u_t = gamma ** (t - 1) / P(L >= t)``
-    this is ``w_1 = 1`` and ``w_s = gamma * u_{s-1}`` for ``s >= 2`` -- the
-    proposal's ``survival_weights`` (whose validation -- gamma match, positive
-    survival -- is reused). For a fixed-length proposal the weights are
-    ``gamma ** (s - 1)``; for the arrival generator's own law they are all 1.
-    """
     if proposal is None:
         return None
     weights = proposal.survival_weights([tail_length], discount_factor, arrival_generator)[0]
@@ -104,30 +59,16 @@ def _evaluation_period_weights(proposal, discount_factor, tail_length, arrival_g
 
 
 def _evaluation_terminal(proposal, tail_length, arrival_generator=None):
-    """How the post-warm-up tail ended (``'absorbed'`` / ``'truncated'``), or
-    ``None`` when no length proposal drew it."""
     if proposal is None:
         return None
     return proposal.terminal_for([tail_length], arrival_generator)[0].value
 
 
 def _normalize_penalty_training_init_state(init_state, sample_path_number):
-    """Validate and JSON-normalize the ``init_state`` argument of
-    :func:`generate_penalty_coefficient_training_env`.
-
-    Returns ``(init_state_mode, normalized_init_state)`` where:
-
-      * ``('generate', None)`` -- ``init_state is None``; the runner draws one
-        initial state per scenario from a seeded sampler env.
-      * ``('shared', state)`` -- a single state shared across all scenarios.
-      * ``('per_scenario', [state, ...])`` -- one state per scenario; the list
-        length must equal ``sample_path_number``.
-    """
     if init_state is None:
         return 'generate', None
     if is_single_init_state(init_state):
         return 'shared', _state_to_jsonable(init_state)
-    # Otherwise it must be a per-scenario sequence of states.
     if not isinstance(init_state, (list, tuple)):
         raise ValueError(
             "init_state must be None, a single (regular, overtime, waitlist) "
@@ -150,7 +91,6 @@ def _normalize_penalty_training_init_state(init_state, sample_path_number):
     return 'per_scenario', normalized
 
 
-
 _COEFFICIENTS_SOURCE_KEYS = (
     'uid', 'file', 'sample_path_number', 'init_state_mode', 'init_state_seed',
     'tight_penalized_lower_bound',
@@ -158,21 +98,16 @@ _COEFFICIENTS_SOURCE_KEYS = (
 
 
 def normalize_penalty_ratios(penalty_ratios):
-    """Sorted, de-duplicated float grid that always contains 0 and 1, so the
-    legacy ``zero_/penalized_`` record fields are always populated."""
     ratios = {float(ratio) for ratio in penalty_ratios}
     ratios.update((0.0, 1.0))
     return sorted(ratios)
 
 
 def _coefficients_source(record):
-    """Provenance of a training record, carried on every evaluation record."""
     return {key: record.get(key) for key in _COEFFICIENTS_SOURCE_KEYS}
 
 
 def _warn_initial_state_mismatch(coefficients_source, is_random_initial_state):
-    """Print a warning when the evaluation's initial-state distribution does
-    not match the one the coefficients were trained on."""
     mode = coefficients_source.get('init_state_mode')
     if mode == 'generate' and not is_random_initial_state:
         print("WARNING: initial-state distribution mismatch: the coefficients were "
@@ -187,54 +122,6 @@ def _warn_initial_state_mismatch(coefficients_source, is_random_initial_state):
 
 
 def generate_test_paths_and_init_state(test_envs, test_sample_path_num, warm_up_periods=0, num_periods=None, dat_file=None, num_groups=None, is_require_penalty_coefficients=True, is_random_initial_state=False, policy_ids=None, warm_up_policy_id=None, evaluation_proposal_spec=None, penalty_coefficients_dir=None, warm_up_paths=None, sample_gen_seed_offset=1001, penalty_ratios=None):
-    '''
-    Inital state is considered as period 1. sample path will start from period 2.
-
-    ``policy_ids`` is an optional iterable of policy_ids registered in
-    ``POLICY_SPECS``. The resolved policy spec dicts are embedded in every
-    saved params record under the ``policies`` key so the runner knows which
-    policies to evaluate against the corresponding sample path.
-
-    ``warm_up_policy_id`` optionally names one of ``policy_ids`` (e.g.
-    ``'row_gen_alp'``) as the shared warm-up policy. By default every policy
-    warms itself up over the first ``warm_up_periods`` periods of its sample
-    path before costs are counted. With ``warm_up_policy_id`` set, the runner
-    instead rolls ONLY that policy over the warm-up prefix of each sample path
-    and starts every other policy from the resulting per-path warm-up state,
-    evaluating them on the post-warm-up tail only. This makes all policies
-    start from the warm-up policy's steady state.
-
-    ``evaluation_proposal_spec`` optionally decouples the EVALUATION-path
-    proposal from the agent's own IS proposal: when given (a
-    ``build_proposal``-style spec dict), the post-warm-up tails and
-    ``period_weights`` are drawn from it while the embedded ``policy_specs``
-    keep the untouched agent proposal. When ``None`` the tails fall back to
-    the agent's spec (legacy coupled behavior).
-
-    ``penalty_coefficients_dir`` optionally points the trained-coefficient
-    lookup at another experiment's results folder (passed through as
-    ``folder_path``), so a new experiment name can reuse coefficients without
-    copying files or retraining.
-
-    ``warm_up_paths`` optionally supplies one pre-drawn warm-up arrival prefix
-    (shape ``(warm_up_periods, num_types)``) per sample path. Use it to make
-    several experiments share byte-identical warm-up prefixes while their
-    post-warm-up tails are still drawn per experiment. Only supported when
-    ``num_periods`` is None.
-
-    ``sample_gen_seed_offset`` shifts the arrival/stop-time/env seeds used for
-    path generation (default 1001, the historical offset). Give different
-    experiments different offsets so their evaluation tails come from disjoint
-    random streams.
-
-    ``penalty_ratios`` optionally lists scale factors ``t``; when given, every
-    record carries the normalised grid (0 and 1 always included) under
-    ``penalty_ratios`` plus the provenance of the trained coefficients under
-    ``coefficients_source``, and the runner evaluates the lower bound with the
-    coefficients scaled by each ``t``. The coefficients MUST already exist in
-    ``penalty_coefficients_dir`` (or the experiment's results folder): missing
-    coefficients raise instead of triggering a Benders training run.
-    '''
     policy_ids = list(policy_ids or [])
     policy_id_set = set(policy_ids)
     if penalty_ratios is not None:
@@ -270,10 +157,6 @@ def generate_test_paths_and_init_state(test_envs, test_sample_path_num, warm_up_
         env = get_config_by_type('infinite_custom', args=env_args).env
         print(f"Processing env_uid: {env_uid}, experiment_name: {experiment_name}, mutate_val: {mutate_val}")
         inner_agent_args = variant.get('agent_args', {}).get('agent_args', {})
-        # Policy basis: prefer an explicit ``policy_generating_function_spec``;
-        # otherwise fall back to the agent's ``generating_function_spec`` so the
-        # spec configured in ``build_variation_test_env`` actually drives the
-        # approx_Q / hindsight policy basis.
         policy_generating_function_spec = _normalize_generating_function_spec(
             inner_agent_args.get('policy_generating_function_spec')
             or inner_agent_args.get('generating_function_spec')
@@ -300,12 +183,11 @@ def generate_test_paths_and_init_state(test_envs, test_sample_path_num, warm_up_
                 },
             })
 
-        direct_coefficients = _zero_penalty_coefficients(env)
+        direct_coefficients = _zero_penalty_coefficients(env, lowerbound_generating_function_spec)
         coefficients_source = None
         if is_require_penalty_coefficients:
             sample_path_number = variant.get('agent_args', {}).get('agent_args', {}).get('sample_path_number')
             if penalty_ratios is not None:
-                # Penalty-ratio grid: evaluate EXISTING coefficients only.
                 record = _load_trained_coefficient_record_from_folder(
                     experiment_name=experiment_name,
                     mutate_val=mutate_val,
@@ -356,7 +238,7 @@ def generate_test_paths_and_init_state(test_envs, test_sample_path_num, warm_up_
                     base_agent_args=variant['agent_args'],
                     policy_id='approx_hindsight',
                     solver_name='approx_penalized_hindsight',
-                    penalty_coefficients= _zero_penalty_coefficients(env),
+                    penalty_coefficients=_zero_penalty_coefficients(env, policy_generating_function_spec),
                     generating_function_spec=policy_generating_function_spec,
                 )
             )
@@ -384,9 +266,6 @@ def generate_test_paths_and_init_state(test_envs, test_sample_path_num, warm_up_
                 )
             )
 
-        # Inject the freshly trained coefficients into the matching policy specs
-        # for this variant so each saved record carries everything the runner
-        # needs to instantiate its agents.
         max_length = 0
         # Path-generation seeds are offset from the training seeds so evaluation
         # paths stay independent of the ALP/penalty training paths; distinct
@@ -394,11 +273,6 @@ def generate_test_paths_and_init_state(test_envs, test_sample_path_num, warm_up_
         sample_gen_args = offset_sample_generation_seeds(env_args, sample_gen_seed_offset)
         config_for_sample_path = get_config_by_type('infinite_custom', args=sample_gen_args)
         env_for_sample_path = config_for_sample_path.env
-        # Draw the post-warm-up evaluation tails from ``evaluation_proposal_spec``
-        # when given, else from the SAME importance-sampling proposal used for
-        # penalty-coefficient training. Falls back to the target geometric
-        # horizon (``build_proposal(None) is None``) when no proposal is
-        # configured, keeping the legacy behaviour unchanged.
         eval_proposal_spec = (
             evaluation_proposal_spec
             if evaluation_proposal_spec is not None
@@ -429,8 +303,6 @@ def generate_test_paths_and_init_state(test_envs, test_sample_path_num, warm_up_
         if num_periods is None and sample_path_proposal is not None:
             # Validate the allocation before sampling: every positive-mass
             # stratum needs a sample for the weighted estimator to be valid.
-            # Record order preserves proposal order, so these weights align
-            # positionally with the sampled tails.
             path_weights = sample_path_proposal.path_weights(test_sample_path_num)
             path_strata = sample_path_proposal.path_strata(test_sample_path_num)
             proposal_tails, _ = sample_path_proposal.sample_arrival_paths(
@@ -504,7 +376,6 @@ def generate_test_paths_and_init_state(test_envs, test_sample_path_num, warm_up_
             results.append(save_params)
         print("max sample path length:", max_length)
         print("average sample path length:", average_sample_path_length / test_sample_path_num)
-    # Write to dat file if specified
     if dat_file:
         _split_list_into_groups(results=results, num_groups=num_groups, dat_file=dat_file)
 
@@ -519,28 +390,6 @@ def generate_train_env(
     init_state_seed=12345,
     sample_paths_seed=42,
 ):
-    """Generate (X, Y) training-data commands for the tight penalized
-    information-relaxation lower bound.
-
-    For each variant in ``test_envs``:
-            * X = ``num_init_states`` initial states generated from the environment's
-                ``generate_initial_state()`` quasi-Monte Carlo reference distribution
-                (daily total bookings use inverse-binomial sampling with
-                horizon-decaying occupancy probability; waitlists use inverse sampling
-                from the one-period arrival distribution). This emphasizes
-                representative congestion levels for training.
-      * Y (computed by ``run.py`` when each command runs) = the tight
-        penalized information-relaxation lower bound at that initial state,
-        obtained by Benders training on a *fixed* set of arrival sample paths.
-        We force the same sample paths across all initial states by pinning
-        ``arrival_random_seed`` (and the related env seeds) to a constant
-        value in every emitted ``env_args``; ``reset_random_seeds()`` is then
-        called inside the trainer before sampling, so every initial state
-        sees the identical Monte-Carlo set.
-
-    One command (one initial state) is written per line so the workload can be
-    farmed out to job-array schedulers.
-    """
     results = []
     for (env_uid, experiment_name, mutate_val), variant in test_envs.items():
         init_state_rng = np.random.default_rng(init_state_seed)
@@ -589,31 +438,6 @@ def generate_penalty_coefficient_training_env(
     init_state_seed=12345,
     sample_paths_seed=42,
 ):
-    """Generate penalty-coefficient training commands (one command per variant).
-
-    Unlike :func:`generate_train_env` -- which sweeps many initial states and
-    emits one command each to build an ``(X, Y)`` regression dataset -- this
-    emits a *single* command per variant in ``test_envs``. Each command trains
-    one set of penalty coefficients by Benders decomposition over
-    ``sample_path_number`` arrival sample paths. The sample paths are held fixed
-    across commands by pinning the arrival/stop-time/env seeds to
-    ``sample_paths_seed`` (``reset_random_seeds()`` is called inside the trainer
-    before sampling).
-
-    ``init_state`` controls the starting state of the training scenarios:
-
-      * ``None`` (default): the runner (``run.py``) draws one initial state per
-        scenario from the env's reference distribution, seeded by
-        ``init_state_seed`` for reproducibility ("let the solver generate"). The
-        emitted record carries ``init_state_seed`` so the draw is reproducible.
-      * a single initial state -- a 3-tuple ``(regular, overtime, waitlist)`` of
-        per-class arrays: every scenario starts from this same state.
-      * a list of initial states with length ``sample_path_number``: scenario
-        ``i`` starts from ``init_state[i]``.
-
-    The emitted records are consumed by ``train_penalty_coefficients_for_env``
-    in ``run.py`` (dispatched on the ``init_state_mode`` key).
-    """
     init_state_mode, normalized_init_state = _normalize_penalty_training_init_state(
         init_state, sample_path_number
     )

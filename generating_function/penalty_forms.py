@@ -1,32 +1,10 @@
-"""Penalty forms: which weight multiplies each term of a path's penalty.
-
-A form never sees states or features. Given a ``SamplePath`` it produces
-
-* ``period_weights(path, gamma)`` -- ``W[0 .. L]``, where ``W[k]`` multiplies
-  the stage cost ``c_{k+1}`` of decision period ``k + 1``;
-* ``term_weights(s, tau, W, gamma, terminal)`` -- the pair
-  ``(expected_weight, realized_weight)`` of period ``s`` (0-based, ``tau``
-  periods in total), so that the path's penalty feature is
-
-      Phi = sum_s expected_weight_s * E[phi](s_s, a_s)
-                - realized_weight_s * phi(s_s, a_s, delta_s)
-
-  and the penalty is ``theta . Phi``.
-
-``AbsorptionForm`` is the Brown-Haugh absorption-time penalty: every term is
-weighted by the survival weight of the period in which it is revealed, the
-expected term of the last period is kept when the process was absorbed
-(``g(x_a) = 0`` is the realized term) and dropped when the path was truncated.
-``LegacyForm`` reproduces the three index conventions of the pre-refactor code
-(training, hindsight, evaluation) so the legacy numbers are unchanged.
-"""
 import numpy as np
 
 from importance_sampling.sample_path import Terminal
 
 
 class PenaltyForm:
-    hindsight_scenario_weights = 'uniform'   # 'uniform' (1/N) | 'kappa' (proposal path weights)
+    hindsight_scenario_weights = 'uniform'
 
     def period_weights(self, path, gamma):
         raise NotImplementedError
@@ -35,8 +13,6 @@ class PenaltyForm:
         raise NotImplementedError
 
     def combine(self, path, gamma, expected_terms, realized_terms):
-        """``theta . Phi`` from per-period numeric terms ``theta . E[phi]``
-        (one per visited period) and ``theta . phi`` (one per arrival)."""
         tau = path.periods
         if len(expected_terms) != tau or len(realized_terms) != tau - 1:
             raise ValueError(
@@ -72,14 +48,6 @@ class AbsorptionForm(PenaltyForm):
 
 
 class LegacyForm(PenaltyForm):
-    """The pre-refactor conventions, one per consumer.
-
-    ``training``:   W = [1, u_1, ..., u_L],       period s uses W[s + 1] for both terms
-    ``hindsight``:  W = [1, gamma u_1, ...],      period s uses W[s + 1] (the old outer gamma)
-    ``evaluation``: W = the record's period weights (None -> ones), period s uses W[s]
-    No penalty in the last period. ``u`` defaults to ones when the path carries
-    no likelihood ratios.
-    """
     MODES = ('training', 'hindsight', 'evaluation')
 
     def __init__(self, mode):

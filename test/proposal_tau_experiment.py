@@ -1,22 +1,3 @@
-"""Empirical E[tau] / Var[tau] comparison across sample-path-length proposals.
-
-For a target geometric horizon with discount factor ``gamma`` the importance
-sampling estimators reweight each sampled path of length ``tau`` so that the
-estimate targets ``E_target[tau] = sum_t gamma^(t-1) = 1 / (1 - gamma)``. This
-script reports, for every proposal:
-
-  * ``E[tau]`` / ``Var[tau]``: the distribution of the raw sampled horizon
-    length (a proxy for per-sample compute cost), and
-  * the per-path IS estimator ``Z = sum_t w_t`` of ``1 / (1 - gamma)`` together
-    with its mean (correctness / bias check) and variance (efficiency).
-
-Standalone script with its own sys.path bootstrap (it does not import
-``test/__init__.py``).
-
-Run:
-    PYTHONPATH=. python test/proposal_tau_experiment.py
-    python test/proposal_tau_experiment.py
-"""
 import os
 import sys
 
@@ -34,13 +15,6 @@ from importance_sampling.proposals import (
 
 
 class _ArrivalGeneratorStub:
-    """Minimal stand-in exposing only what ``sample_lengths`` reads.
-
-    A sampled path length depends solely on ``rng`` / ``geom_p`` / ``max_periods``,
-    so this faithfully exercises each proposal's real ``sample_lengths`` code
-    without constructing the full environment arrival generator (which would also
-    build an unused high-dimensional Sobol sampler).
-    """
 
     def __init__(self, seed, geom_p, max_periods):
         self.rng = np.random.default_rng(seed)
@@ -67,9 +41,9 @@ def summarize(name, proposal, target_discount_factor, n_samples, seed, geom_p, m
 
 def main():
     target = 0.99
-    target_mean = 1.0 / (1.0 - target)  # 100.0
-    geom_p = 1.0 - target               # env natural length dist == target geometric
-    max_periods = 10 ** 8               # effectively no truncation for the baseline
+    target_mean = 1.0 / (1.0 - target)
+    geom_p = 1.0 - target
+    max_periods = 10 ** 8
     n_samples = 100_000
     seed = 12345
 

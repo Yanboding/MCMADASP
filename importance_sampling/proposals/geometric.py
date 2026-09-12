@@ -10,11 +10,6 @@ from .base import (
 
 
 class GeometricLengthProposal(SamplePathLengthProposal):
-    """Geometric proposal with support {1, 2, ...}.
-
-    If discount_factor_proposal is gamma_q, then
-    P(L >= t) = gamma_q ** (t - 1).
-    """
 
     def __init__(self, discount_factor_proposal: float):
         _validate_discount_factor(discount_factor_proposal, 'discount_factor_proposal')
@@ -29,7 +24,6 @@ class GeometricLengthProposal(SamplePathLengthProposal):
 
 
 class TruncatedGeometricLengthProposal(SamplePathLengthProposal):
-    """Geometric proposal conditioned on L <= max_length."""
 
     def __init__(self, discount_factor_proposal: float, max_length: int):
         _validate_discount_factor(discount_factor_proposal, 'discount_factor_proposal')
@@ -60,6 +54,5 @@ class TruncatedGeometricLengthProposal(SamplePathLengthProposal):
         return survival
 
     def terminal_for(self, lengths, arrival_generator=None):
-        """Absorbed unless the draw sits exactly at the truncation bound."""
         return [Terminal.TRUNCATED if int(length) >= self.max_length else Terminal.ABSORBED
                 for length in lengths]

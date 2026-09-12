@@ -1,7 +1,3 @@
-"""Tests for the ``--penalty-ratios`` evaluation-record generation.
-
-Run from the repo root:  python -m test.test_penalty_ratio_generation
-"""
 import contextlib
 import io
 import json
@@ -42,7 +38,6 @@ def test_record_loader_returns_record_with_file():
         assert record['coefficients'] == [0.5, -0.5, 1.0]
         assert load_trained_coefficients_from_folder(
             'x', mutate_val=0.1, folder_path=tmp) == [0.5, -0.5, 1.0]
-        # mutate_val filter still applies
         assert load_trained_coefficient_record_from_folder(
             'x', mutate_val=0.2, folder_path=tmp) is None
 

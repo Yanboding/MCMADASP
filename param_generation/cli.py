@@ -1,11 +1,3 @@
-"""Command-line interface for generating experiment parameter files.
-
-``main`` exposes argparse subcommands (``train`` / ``eval`` / ``lowerbound``
-plus the two multi-step orchestration recipes); each thin handler drives the
-generation entry points in :mod:`param_generation.datasets` and writes a
-``run.py`` job-array ``.dat`` file.
-"""
-
 import argparse
 import copy
 import json
@@ -41,18 +33,6 @@ def recipe_toy_eval_proposal_comparison(
         'experiments', 'results', 'mixture_probability_toy_study'
     ),
 ):
-    """Evaluation-proposal comparison on the toy env (spec:
-    docs/superpowers/specs/2026-07-29-eval-proposal-comparison-design.md).
-
-    ONE fixed approx_penalized_hindsight policy (internal mixture IS proposal
-    lambda_0=0.1, trained coefficients reused from
-    ``mixture_probability_toy_study``) is evaluated on tails drawn from three
-    different length proposals; each record carries the matching
-    ``period_weights`` so ``run.py`` stays unbiased per arm. All
-    3 x ``test_sample_path_num`` records go into ONE grouped dat file.
-    """
-    # Fail fast if the trained coefficients are missing: silently retraining
-    # per arm would be slow and would break the fixed-policy comparison.
     coefficients = load_trained_coefficients_from_folder(
         experiment_name='mixture_probability_toy_study',
         mutate_val=0.1,
@@ -114,38 +94,6 @@ def recipe_saure_ejor_case_study(
         'experiments', 'results', 'case_study_099_mixture_geometric_proposal_095'
     ),
 ):
-    """Emit all evaluation commands for the Saure EJOR case-study pair (spec:
-    docs/superpowers/specs/2026-08-02-saure-ejor-case-study-design.md).
-
-    Experiment 1 (``case_study_ejor_replication``):
-    ALP and myopic on ``test_sample_path_num`` fixed-length paths
-    (``warm_up_periods`` warm-up + ``evaluation_periods`` evaluation periods).
-    Each policy warms itself up; the evaluation tail is weighted by
-    gamma**(t-1) via a fixed-length proposal, i.e. the discounted tail cost.
-
-    Experiment 2 (``case_study_ejor_alp_steady_state``): penalized hindsight, ALP and myopic on paths
-    whose warm-up prefixes are IDENTICAL to experiment 1's. ALP alone rolls the
-    warm-up (``warm_up_policy_id``) and every policy starts from its per-path
-    steady state. Tail lengths come from the same mixture-geometric proposal the
-    penalty coefficients were trained with (lambda_0=0.1, q=0.95, target 0.99),
-    with unbiased per-period importance weights.
-
-    Both experiments reuse the trained overtime-100 penalty coefficients and one
-    shared ALP. Warm-up prefixes are drawn once from a dedicated seed stream
-    (offset 3003); the experiments' tails use offsets 1001/2002, so tails are
-    independent across experiments while warm-ups coincide. All ``2 * test_sample_path_num`` records are written into ONE grouped
-    ``dat_file`` (default ``table.dat``); ``run.py`` routes each record to its
-    own experiment results folder via ``experiment_name``. The file is
-    SEGMENTED: lines ``1..num_groups//2`` hold experiment 1 only (with
-    ``skip_information_relaxation=True`` — policy costs only), the remaining
-    lines experiment 2 only, so cluster jobs can be resourced per experiment.
-
-    For a quick local smoke run pass a small ``test_sample_path_num``
-    explicitly (e.g. ``recipe_saure_ejor_case_study(test_sample_path_num=4,
-    dat_file='table_smoke.dat')``) instead of editing the default: a bare
-    ``python generate_params.py`` must keep producing the full 4096-path
-    deliverable.
-    """
     shared_coefficients = load_trained_coefficients_from_folder(
         experiment_name='case_study_099_mixture_geometric_proposal_095',
         mutate_val=0.1,
@@ -154,10 +102,6 @@ def recipe_saure_ejor_case_study(
     )
 
     def resolve_penalty_coefficients_dir(experiment_name):
-        """Prefer trained coefficients already present in the experiment's OWN
-        results folder (e.g. a per-experiment ``penalty_coefficients.jsonl``);
-        fall back to the shared overtime-100 training folder. Returning ``None``
-        makes ``generate_test_paths_and_init_state`` load from the own folder."""
         own_coefficients = load_trained_coefficients_from_folder(
             experiment_name=experiment_name,
             mutate_val=0.1,
@@ -176,8 +120,6 @@ def recipe_saure_ejor_case_study(
         print(f'Using shared penalty coefficients from {penalty_coefficients_dir} for {experiment_name}.')
         return penalty_coefficients_dir
 
-    # Resolve both experiments up front so a missing-coefficients error fires
-    # before any ALP training or path generation.
     replication_penalty_dir = resolve_penalty_coefficients_dir('case_study_ejor_replication')
     steady_state_penalty_dir = resolve_penalty_coefficients_dir('case_study_ejor_alp_steady_state')
 
@@ -198,9 +140,6 @@ def recipe_saure_ejor_case_study(
         )
     env_args = replication_variant['env_args']
 
-    # Train (or load) the shared ALP once under the replication experiment,
-    # then copy the cache so the steady-state experiment embeds the same
-    # coefficients instead of retraining.
     train_alp_coefficients(
         env_args=env_args, experiment_name='case_study_ejor_replication'
     )
@@ -214,9 +153,6 @@ def recipe_saure_ejor_case_study(
         os.makedirs(os.path.dirname(target_path), exist_ok=True)
         shutil.copyfile(source_path, target_path)
 
-    # Both experiments must start every path from the SAME warm-up arrivals, so
-    # the prefixes are drawn once from a dedicated stream and passed to both
-    # generation calls.
     warm_up_env = get_config_by_type(
         'infinite_custom', args=offset_sample_generation_seeds(env_args, 3003)
     ).env
@@ -250,8 +186,6 @@ def recipe_saure_ejor_case_study(
         dat_file=None,
         is_require_penalty_coefficients=True,
         is_random_initial_state=False,
-        # No evaluation_proposal_spec: tails fall back to the agent's own
-        # mixture-geometric proposal, matching the trained coefficients.
         policy_ids=['approx_penalized_hindsight', 'row_gen_alp', 'myopic'],
         warm_up_policy_id='row_gen_alp',
         penalty_coefficients_dir=steady_state_penalty_dir,
@@ -418,9 +352,6 @@ def build_parser():
 
 
 def _select_variants(test_envs, variants):
-    """Keep only the variants whose ``mutate_val`` is listed in ``variants``
-    (a comma-separated CLI string; values are compared as strings so numeric
-    and non-numeric mutate_vals both work). ``None`` keeps everything."""
     if variants is None:
         return test_envs
     wanted = {value.strip() for value in variants.split(',') if value.strip()}
@@ -435,9 +366,6 @@ def _select_variants(test_envs, variants):
 
 
 def _draw_fixed_init_states(env_args, init_state_seed, count):
-    """Draw ``count`` initial states from the env's reference distribution,
-    reproducibly seeded by ``init_state_seed`` (same sampler as run.py's
-    per-scenario draw, so state k here equals scenario k's state there)."""
     sampler_env_args = copy.deepcopy(env_args)
     sampler_env_args['env_random_seed'] = init_state_seed
     sampler_env = get_config_by_type('infinite_custom', args=sampler_env_args).env
@@ -449,12 +377,10 @@ def _draw_fixed_init_states(env_args, init_state_seed, count):
 
 
 def _regularization_tag(reg_type, lam):
-    """``('l1', 1e-3) -> 'l1_0_001'``; ``('l2', 1e-5) -> 'l2_1em05'``."""
     return f"{reg_type}_{lam:g}".replace('.', '_').replace('-', 'm')
 
 
 def _parse_regularization(args):
-    """``(type, sorted lambdas)`` from the train flags; ``(None, [])`` when off."""
     reg_type = getattr(args, 'regularization', None)
     lambdas_text = getattr(args, 'regularization_lambda', None)
     if reg_type is None and lambdas_text is None:
@@ -477,10 +403,6 @@ def _parse_regularization(args):
 
 
 def _apply_regularization(test_envs, reg_type, lambdas, scale):
-    """One variant copy per (variant, lambda): ``agent_args['agent_args']
-    ['regularization'] = {type, lambda, scale}``, ``policy_id`` and
-    ``experiment_name`` suffixed with the tag, re-keyed on the env+agent uid so
-    every lambda trains and stores separately."""
     updated = {}
     for (_, experiment_name, mutate_val), variant in test_envs.items():
         for lam in lambdas:
@@ -495,25 +417,16 @@ def _apply_regularization(test_envs, reg_type, lambdas, scale):
     return updated
 
 
-# Every generating-function spec a variant may carry; ``--penalty-function``
-# stamps the chosen name on each (creating missing ones) so the training,
-# the two lower bounds and the penalty-family policies all use one form.
 _PENALTY_SPEC_KEYS = (
     'generating_function_spec',
     'policy_generating_function_spec',
     'penalized_lowerbound_generating_function_spec',
     'training_generating_function_spec',
 )
-_PENALTY_FUNCTION_TAGS = {'absorption_linear_penalty': 'bh'}
+_PENALTY_FUNCTION_TAGS = {'absorption_linear_penalty': 'bh', 'absorption_alp_penalty': 'alp'}
 
 
 def _apply_penalty_function(test_envs, name):
-    """Stamp generating function ``name`` on every spec of every variant.
-
-    ``linear_penalty`` (the legacy default) leaves names and keys untouched
-    apart from the stamp; ``absorption_linear_penalty`` also suffixes
-    ``policy_id`` and ``experiment_name`` with ``_bh`` and re-keys the variant
-    on the env+agent uid, so its coefficients train and store separately."""
     if name is None:
         return test_envs
     if name not in GENERATING_FUNCTION_CLASSES:
@@ -537,15 +450,10 @@ def _apply_penalty_function(test_envs, name):
 
 
 def _coefficient_bound_tag(bound):
-    """``1000.0 -> 'cb1000'``; ``2.5 -> 'cb2_5'``."""
     return f"cb{bound:g}".replace('.', '_').replace('+', '')
 
 
 def _apply_coefficient_bound(test_envs, bound):
-    """``agent_args['agent_args']['coefficient_bound'] = bound`` on every
-    variant, ``policy_id`` and ``experiment_name`` suffixed with ``_cb<bound>``,
-    re-keyed on the env+agent uid (the runner pops the key and passes it to
-    ``benders_decomposition_train(coefficient_bound=...)``)."""
     if bound is None:
         return test_envs
     bound = float(bound)
@@ -581,8 +489,6 @@ def _run_train(args):
         sample_path_number = (variant.get('agent_args', {})
                               .get('agent_args', {})
                               .get('sample_path_number', 256))
-        # None -> the runner draws one state per scenario (default); otherwise
-        # each fixed state yields its own command, shared by all scenarios.
         init_states = [None]
         if args.num_init_states > 0:
             init_states = _draw_fixed_init_states(
@@ -618,10 +524,6 @@ def _deep_update(target, updates):
 
 
 def _apply_init_occupancy(test_envs, occupancy):
-    """Pin every variant's reset initial state to ``occupancy`` of total
-    capacity (see ``mutate_initial_state_congestion``) and re-key the variants
-    on the resulting env uid, so ``group_id`` in the emitted records reflects
-    the changed initial state."""
     updated = {}
     for (_, experiment_name, mutate_val), variant in test_envs.items():
         variant = copy.deepcopy(variant)
@@ -633,14 +535,6 @@ def _apply_init_occupancy(test_envs, occupancy):
 
 
 def _apply_policy_spec(test_envs, policy_spec_path, policy_ids):
-    """Deep-merge per-policy ``agent_args`` overrides into each variant.
-
-    ``policy_spec_path`` is a JSON object ``{policy_id: {agent_args...}}``.
-    Only ids in ``policy_ids`` are honoured (unknown ids raise). The variant's
-    single ``agent_args`` block feeds every penalty-family policy, so overrides
-    for different policy ids are merged into the same block; conflicting keys
-    across ids raise instead of silently winning by order.
-    """
     with open(policy_spec_path, encoding='utf-8') as handle:
         spec = json.load(handle)
     unknown = sorted(set(spec) - set(policy_ids))
@@ -666,9 +560,6 @@ def _apply_policy_spec(test_envs, policy_spec_path, policy_ids):
 
 
 def _guard_against_retrain(args, test_envs):
-    """With --policy-spec the overridden config may have no cached penalty
-    coefficients; refuse to fall through to a full Benders training run
-    unless --allow-retrain was passed."""
     if args.allow_retrain:
         return
     for (env_uid, experiment_name, mutate_val), variant in test_envs.items():
@@ -688,9 +579,6 @@ def _guard_against_retrain(args, test_envs):
 
 
 def _parse_penalty_ratios(text):
-    """``'1,0.5,0'`` -> ``[0.0, 0.5, 1.0]``; ``None`` passes through.
-
-    Rejects empty entries, non-numeric entries and negative factors."""
     if text is None:
         return None
     ratios = set()

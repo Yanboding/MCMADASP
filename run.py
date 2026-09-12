@@ -9,6 +9,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from pprint import pprint
 
 from generate_params import _save_training_result, _load_cached_training_result
+from param_generation.training import train_alp_coefficients
 import numpy as np
 import pandas as pd
 from gurobipy import GRB
@@ -19,7 +20,7 @@ from importance_sampling import build_proposal
 from utils import iter_to_tuple, get_uid, safe_open, RunningStats, encode, decode, get_solution_value, acquire_grb_env, read_lines_with_pattern
 from decision_maker import MyopicAgent, ALPRowGenerationAgent, ApproxQAgent
 from policy_evaluator import PolicyEvaluator
-from generating_function import AbsorptionLinearPenaltyFunction, LinearPenaltyFunction
+from generating_function import AbsorptionALPPenaltyFunction, AbsorptionLinearPenaltyFunction, LinearPenaltyFunction
 from importance_sampling.sample_path import sample_path_from_record
 
 
@@ -49,20 +50,16 @@ def _build_generating_function(env, spec, coefficients=None):
         raise ValueError(f"Unsupported generating function name: {name}; use one of {sorted(_GENERATING_FUNCTION_CLASSES)}")
     generating_function = _GENERATING_FUNCTION_CLASSES[name](env=env, coefficients=coefficients)
     if coefficients is None:
-        # No coefficients supplied anywhere -> treat all coefficients as zeros.
         generating_function.set_coefficients([0.0] * generating_function.number_of_coefficients)
     return generating_function
 
 
-# Spec name -> generating-function class (``linear_penalty`` is the legacy
-# default, ``absorption_linear_penalty`` the Brown-Haugh absorption-time form).
 _GENERATING_FUNCTION_CLASSES = {
-    cls.spec_name: cls for cls in (LinearPenaltyFunction, AbsorptionLinearPenaltyFunction)
+    cls.spec_name: cls
+    for cls in (LinearPenaltyFunction, AbsorptionLinearPenaltyFunction, AbsorptionALPPenaltyFunction)
 }
 
 
-# Config-only keys describing a generating function. They never belong in the
-# runtime keyword arguments forwarded to an agent constructor.
 _GENERATING_FUNCTION_SPEC_KEYS = (
     'generating_function_spec',
     'policy_generating_function_spec',
@@ -73,15 +70,6 @@ _GENERATING_FUNCTION_SPEC_KEYS = (
 
 
 def _set_sample_path_proposal(agent_args):
-    """Materialize the IS proposal into ``agent_args['sample_path_proposal']``.
-
-    Config payloads carry a JSON-serializable proposal spec under either
-    ``sample_path_length_proposal`` (legacy) or ``sample_path_proposal``.
-    ``ApproxQAgent`` expects a built ``SamplePathLengthProposal`` instance via
-    ``sample_path_proposal``, so convert the spec here (in the caller) and drop
-    the legacy key. ``build_proposal(None)`` returns ``None`` and lets the agent
-    fall back to its default proposal.
-    """
     spec = agent_args.pop('sample_path_length_proposal', None)
     if 'sample_path_proposal' in agent_args:
         spec = agent_args['sample_path_proposal']
@@ -94,14 +82,6 @@ def _set_sample_path_proposal(agent_args):
 
 
 def _resolve_period_weights(period_weights, num_periods):
-    """Return a length-``num_periods`` array of per-period importance weights.
-
-    ``period_weights`` is the reweighting vector for the post-warm-up evaluation
-    horizon produced by the sampling proposal (see
-    ``generate_test_paths_and_init_state``). ``None`` means the horizon was drawn
-    from the target geometric distribution, so every period weight is 1 and the
-    estimator reduces to the plain (non-importance-sampling) sum.
-    """
     if period_weights is None:
         return np.ones(num_periods)
     weights = np.asarray(period_weights, dtype=float)
@@ -114,7 +94,6 @@ def _resolve_period_weights(period_weights, num_periods):
 
 
 def jsonl_result_exists(path, uid, policy_id):
-    """Return True if (uid, policy_id) already exists in JSONL output."""
     if not os.path.isfile(path):
         return False
     with open(path, 'r') as f:
@@ -131,7 +110,6 @@ def jsonl_result_exists(path, uid, policy_id):
     return False
 
 def jsonl_uid_exists(path, uid):
-    """Return True if a record with ``uid`` already exists in JSONL output."""
     if not os.path.isfile(path):
         return False
     with open(path, 'r') as f:
@@ -148,7 +126,6 @@ def jsonl_uid_exists(path, uid):
     return False
 
 def load_pickle_if_exists(path):
-    """Return file contents if the file exists, otherwise return None."""
     if os.path.isfile(path):
         try:
             with open(path, 'rb') as f:
@@ -166,7 +143,6 @@ def load_pickle_if_exists(path):
 
 
 def atomic_pickle_dump(path, payload):
-    """Atomically persist a pickle payload to avoid truncated files."""
     tmp_path = f"{path}.tmp.{os.getpid()}.{time.time_ns()}"
     try:
         with open(tmp_path, 'wb') as f:
@@ -197,27 +173,6 @@ def calculate_policy_costs_with_penalty(uid,
                            warm_up_trajectory=None,
                            return_warm_up_trajectory=False,
                            terminal=None):
-    """Roll ``policy_id`` over ``sample_path`` and account costs after warm-up.
-
-    ``period_weights`` and ``terminal`` describe the post-warm-up tail as the
-    evaluation record does (survival weights, how the tail ended); the
-    accounting penalty is ``theta . Phi`` with ``Phi`` assembled over that tail
-    by the generating function's evaluation form from the per-period terms
-    ``theta . E[phi]`` / ``theta . phi`` recorded along the rollout.
-
-    ``warm_up_trajectory`` optionally supplies the already-executed warm-up
-    prefix of a SHARED warm-up policy (states/actions/costs/penalties plus the
-    ``end_state`` it reached). When given, this policy is NOT rolled over the
-    warm-up periods itself: the rollout is seeded with the prefix and starts at
-    period ``warm_up_periods + 1`` from ``end_state``. The returned record then
-    carries the full-length trajectory (shared warm-up prefix + this policy's
-    tail), so downstream aggregation can slice by ``warm_up_periods`` uniformly,
-    while the cost totals still only count the post-warm-up tail.
-
-    ``return_warm_up_trajectory=True`` adds this run's own warm-up prefix to the
-    result under ``'warm_up_trajectory'`` so the caller can seed other policies
-    with it.
-    """
     def _to_float(v):
         if hasattr(v, "getValue"):
             return float(v.getValue())
@@ -291,9 +246,6 @@ def calculate_policy_costs_with_penalty(uid,
     serializable_agent_args = {k: _to_jsonable(v) for k, v in runtime_agent_args.items() if k != 'grb_env'}
     serializable_agent_args['generating_function_spec'] = policy_generating_function_spec
 
-    # Penalty used for cost accounting on the executed trajectory. Built by the
-    # caller as a separate instance sharing the lower-bound generating-function
-    # spec/coefficients.
     local_generating_function = generating_function
 
     if agent_name in {"approx_hindsight", "approx_penalized_hindsight"}:
@@ -318,9 +270,6 @@ def calculate_policy_costs_with_penalty(uid,
     actions = []
     costs = []
     penalties = []
-    # Per executed period: theta . E[phi](s_t, a_t) for every visited period
-    # and theta . phi(s_t, a_t, delta_t) for every period an arrival follows.
-    # ``penalties`` keeps their per-period difference (legacy view).
     expected_terms = []
     realized_terms = []
     theta = local_generating_function.coefficient_vector()
@@ -343,9 +292,6 @@ def calculate_policy_costs_with_penalty(uid,
         solving_time_per_state = checkpoint.get('solving_time_per_state', RunningStats())
         s, _ = env.reset(init_state=s, t=t, new_arrivals=sample_path)
     elif warm_up_trajectory is not None:
-        # Seed the rollout with the shared warm-up policy's executed prefix
-        # (like resuming from a checkpoint at the end of the warm-up), so this
-        # policy only simulates the tail but its record carries the full path.
         states = [tuple(np.array(component) for component in state) for state in warm_up_trajectory['states']]
         actions = [tuple(np.array(component) for component in action) for action in warm_up_trajectory['actions']]
         costs = list(warm_up_trajectory['costs'])
@@ -425,13 +371,6 @@ def calculate_policy_costs_with_penalty(uid,
         postponing_decisions.append(waitlist - advance_scheduling_decision.sum(axis=0))
 
     postponing_decisions = np.array(postponing_decisions).sum(axis=0) if postponing_decisions else np.zeros(env.num_types)
-    # Reweight each post-warm-up period by its importance-sampling weight so the
-    # estimator stays unbiased when the sample path was drawn from a proposal
-    # whose length distribution differs from the target geometric horizon. With
-    # no proposal (period_weights is None) the weights are all 1 and this reduces
-    # to the plain sum. The penalty of the tail is theta . Phi, assembled by the
-    # evaluation form over the tail SamplePath (tail arrivals, the record's
-    # weights, its terminal outcome) from the recorded per-period terms.
     tail_costs = costs[warm_up_periods:]
     total_cost = float(np.dot(cost_weights, tail_costs))
     tail_expected_terms = expected_terms[warm_up_periods:]
@@ -479,14 +418,6 @@ def calculate_policy_costs_with_penalty(uid,
 
 def _build_lowerbound_instances(env, generating_function_spec, grb_env, grb_sub_envs,
                                 penalty_ratios=(0, 1)):
-    """Build one information-relaxation solver per penalty ratio ``t``.
-
-    Returns ``{t: ApproxQAgent}``; each solver scales the penalty of the shared
-    spec (type + coefficients) by ``t`` (``ApproxQAgent.penalty_ratio``), so
-    ``t = 0`` is the zero-penalty bound and ``t = 1`` the trained one. Each
-    solver gets its OWN generating-function instance because instances are
-    stateful.
-    """
     return {
         float(penalty_ratio): ApproxQAgent(
             env,
@@ -503,9 +434,6 @@ def _build_lowerbound_instances(env, generating_function_spec, grb_env, grb_sub_
 
 
 def _information_relaxation_bounds(instances, state, sample_path_tail, period_weights, terminal=None):
-    """Solve every instance's lower bound at ``state`` over the tail.
-
-    Returns ``{t: cost}`` in the key order of ``instances``."""
     bounds = {}
     for penalty_ratio, instance in instances.items():
         start = time.time()
@@ -517,7 +445,6 @@ def _information_relaxation_bounds(instances, state, sample_path_tail, period_we
 
 
 def _append_jsonl_record(output_file, record):
-    """Append ``record`` unless a (uid, policy_id) duplicate already exists."""
     if jsonl_result_exists(output_file, record['uid'], record['policy_id']):
         print(f"Skip saving duplicate result: uid={record['uid']}, policy_id={record['policy_id']}")
         return
@@ -526,7 +453,6 @@ def _append_jsonl_record(output_file, record):
 
 
 def _order_policy_specs_for_warm_up(policy_specs, warm_up_policy_id):
-    """Put the warm-up policy first: its warm-up state seeds all later policies."""
     if warm_up_policy_id is None:
         return list(policy_specs)
     warm_up_specs = [spec for spec in policy_specs if spec['policy_id'] == warm_up_policy_id]
@@ -559,38 +485,6 @@ def evaluate_policy_costs_with_information_relaxation(uid,
                                                       penalty_ratios=None,
                                                       coefficients_source=None,
                                                       terminal=None):
-    '''
-    This function evaluates the costs of different policies and their gaps to the information relaxation lower bounds.
-
-    ``terminal`` (``'absorbed'`` / ``'truncated'`` / ``None``) is how the
-    record's post-warm-up tail ended; with ``period_weights`` it defines the
-    tail ``SamplePath`` the bounds and the penalty accounting are evaluated on.
-
-    ``warm_up_policy_id`` optionally names one of the ``policy_specs`` (e.g.
-    ``'row_gen_alp'``) as the shared warm-up policy. When set, that policy is
-    evaluated first over the full sample path (its costs are still counted
-    from ``warm_up_periods`` onward, as usual) and its executed warm-up prefix
-    seeds EVERY other policy: they start from the state it reached after the
-    warm-up and only simulate the post-warm-up tail. This makes all policies
-    start from the warm-up policy's per-sample-path steady state instead of
-    each warming itself up. Every saved record still carries the full-length
-    ``costs``/``penalties``/``scheduled_patients``/``overtime`` trajectory
-    (shared warm-up prefix + the policy's own tail), so aggregation can slice
-    by ``warm_up_periods`` uniformly across all policies.
-
-    ``skip_information_relaxation=True`` skips building and solving the two
-    information-relaxation lower bounds entirely (each is a direct model over
-    the full evaluation tail — the dominant cost for long tails); the saved
-    records carry ``None`` in the four bound/gap fields. Policy costs are
-    unaffected.
-
-    ``penalty_ratios`` (from ``generate_test_paths_and_init_state(...,
-    penalty_ratios=...)``) evaluates the bound with the coefficients scaled by
-    every factor of the grid; the ``information_relaxation_only`` record then
-    also carries ``penalty_ratios``, ``information_relaxation_cost_by_penalty_ratio``
-    (``[t, cost]`` pairs) and ``coefficients_source``. Policy records are
-    unaffected. Without it the legacy ``t in {0, 1}`` pair is evaluated.
-    '''
     init_state = tuple(np.array(item) for item in init_state)
     sample_path = np.array(sample_path)
     sample_path_tail = sample_path[warm_up_periods:]
@@ -599,8 +493,6 @@ def evaluate_policy_costs_with_information_relaxation(uid,
     os.makedirs(os.path.dirname(output_file), exist_ok=True)
 
     env = get_config_by_type(case_type='infinite_custom', args=env_args).env
-    # One self-contained spec (type + coefficients) drives the two lower bounds
-    # and the penalty accounting on each executed trajectory.
     generating_function_spec = _normalize_generating_function_spec(generating_function_spec)
     policy_costs_generating_function = _build_generating_function(env=env, spec=generating_function_spec)
     ratios = [0.0, 1.0] if penalty_ratios is None else sorted({0.0, 1.0, *map(float, penalty_ratios)})
@@ -613,7 +505,6 @@ def evaluate_policy_costs_with_information_relaxation(uid,
     # state, so memoize them instead of re-solving identical problems.
     bounds_by_state = {}
     def bounds_at(state):
-        """``{t: cost}`` at ``state`` (``None`` when bounds are skipped)."""
         if skip_information_relaxation:
             return None
         key = iter_to_tuple(state)
@@ -623,7 +514,6 @@ def evaluate_policy_costs_with_information_relaxation(uid,
         return bounds_by_state[key]
 
     def legacy_pair(bounds):
-        """The zero-penalty and unit-penalty costs of a ``bounds_at`` result."""
         if bounds is None:
             return None, None
         return bounds[0.0], bounds[1.0]
@@ -664,10 +554,6 @@ def evaluate_policy_costs_with_information_relaxation(uid,
     summary_rows = []
     shared_warm_up_trajectory = None
     for policy_spec in ordered_policy_specs:
-        # With a warm-up policy configured, the first (warm-up) policy rolls the
-        # full path and hands its executed warm-up prefix to every later policy,
-        # which then simulates the tail only but still records the full-length
-        # trajectory (shared prefix + own tail) for uniform aggregation.
         is_warm_up_policy = warm_up_policy_id is not None and policy_spec['policy_id'] == warm_up_policy_id
         policy_result = calculate_policy_costs_with_penalty(
             uid=uid,
@@ -729,26 +615,6 @@ def train_lowerbound_for_init_state(
     job_id,
     training_generating_function_spec=None,
 ):
-    """Compute the tight penalized information-relaxation lower bound at a
-    single supplied initial state.
-
-    X = ``init_state`` (one of the states drawn by ``generate_train_env``).
-    Y = the Benders-trained tight penalized lower bound at X using the same
-    Monte-Carlo arrival sample paths for every command (forced by
-    ``env.reset_random_seeds()`` and the pinned arrival seeds in env_args).
-
-    The generating function used for the penalty is created entirely from
-    ``training_generating_function_spec`` (its ``name``/type). The penalty
-    coefficients are NOT supplied to this function: they are the decision
-    variables optimized by the Benders training below, so the generating
-    function is built without coefficients and any coefficients that happen to
-    be present in the spec are ignored.
-
-    One JSONL record per init_state is appended to
-    ``experiments/results/<experiment_name>/<job_id>.jsonl`` so the workload
-    can be split across a job array. Records that already exist (matched on
-    ``uid``) are skipped.
-    """
     output_file = os.path.join(
         'experiments', 'results', experiment_name, f'{job_id}.jsonl'
     )
@@ -774,9 +640,6 @@ def train_lowerbound_for_init_state(
         spec=training_generating_function_spec,
     )
 
-    # Runtime keyword arguments for the trainer come from the nested
-    # ``agent_args``; strip the config-only generating-function spec keys so
-    # they are not forwarded to the agent constructor.
     inner = dict((agent_args or {}).get('agent_args', {}))
     for spec_key in _GENERATING_FUNCTION_SPEC_KEYS:
         inner.pop(spec_key, None)
@@ -806,12 +669,6 @@ def train_lowerbound_for_init_state(
         f"sample_path_number={sample_path_number}"
     )
     start = time.time()
-    # obj, coefficients, info = agent.extensive_form_train(
-    #     coefficient_bound=GRB.INFINITY,
-    #     init_state=init_state_tuple,
-    #     crossover=False,
-    #     verbose=False,
-    # )
     checkpoint_dir = os.path.join(
         'experiments', 'results', experiment_name, 'benders_checkpoints'
     )    
@@ -849,14 +706,6 @@ def train_lowerbound_for_init_state(
     return record
 
 def _draw_per_scenario_init_states(env_args, init_state_seed, sample_path_number):
-    """Draw one reproducible initial state per scenario from a sampler env.
-
-    The sampler env is a copy of ``env_args`` with ``env_random_seed`` (and
-    hence the derived ``init_state_random_seed``) set to ``init_state_seed``, so
-    the per-scenario initial states are reproducible and independent of the
-    pinned arrival/sample-path seeds. States are drawn single-threaded here so
-    the subsequent parallel Benders worker build stays deterministic.
-    """
     sampler_env_args = copy.deepcopy(env_args)
     sampler_env_args['env_random_seed'] = init_state_seed
     sampler_env = get_config_by_type('infinite_custom', args=sampler_env_args).env
@@ -881,25 +730,6 @@ def train_penalty_coefficients_for_env(
     grb_sub_envs,
     job_id,
 ):
-    """Train one set of penalty coefficients for an env variant by Benders
-    decomposition over ``sample_path_number`` arrival sample paths.
-
-    Emitted by ``generate_penalty_coefficient_training_env``. ``init_state_mode``
-    selects how each scenario's starting state is chosen:
-
-      * ``'generate'``: draw one initial state per scenario from a sampler env
-        seeded by ``init_state_seed`` (reproducible); ``init_state`` is ``None``.
-      * ``'shared'``: every scenario starts from the single ``init_state``.
-      * ``'per_scenario'``: scenario ``i`` starts from ``init_state[i]`` and
-        ``len(init_state) == sample_path_number``.
-
-    Like ``train_lowerbound_for_init_state`` the penalty coefficients are the
-    Benders decision variables (NOT supplied): the generating function is built
-    from ``training_generating_function_spec`` with any coefficients stripped.
-    One JSONL record (uid, coefficients, objective) is appended to
-    ``experiments/results/<experiment_name>/<job_id>.jsonl``; duplicates
-    (matched on ``uid``) are skipped.
-    """
     solver_choice = os.environ.get('PENALTY_TRAIN_SOLVER', 'benders').strip().lower()
     if solver_choice != 'benders':
         raise ValueError(
@@ -917,8 +747,6 @@ def train_penalty_coefficients_for_env(
     config = get_config_by_type('infinite_custom', args=env_args)
     env = config.env
 
-    # Build the generating function solely from the self-contained training
-    # spec; coefficients are trained, not given.
     training_generating_function_spec = _normalize_generating_function_spec(
         training_generating_function_spec
     )
@@ -934,11 +762,7 @@ def train_penalty_coefficients_for_env(
     inner['generating_function'] = generating_function
     _set_sample_path_proposal(inner)
     inner['sample_path_number'] = sample_path_number
-    # Optional L1/L2 master regularization ({'type', 'lambda', 'scale'}),
-    # carried in agent_args by generation; not an ApproxQAgent constructor arg.
     regularization = inner.pop('regularization', None)
-    # Optional box constraint |theta_k| <= coefficient_bound on the master's
-    # coefficients, carried in agent_args by generation (--coefficient-bound).
     coefficient_bound = inner.pop('coefficient_bound', None)
     coefficient_bound = GRB.INFINITY if coefficient_bound is None else float(coefficient_bound)
 
@@ -950,10 +774,6 @@ def train_penalty_coefficients_for_env(
         **inner,
     )
 
-    # Resolve the unified init_state argument from the init_state mode:
-    #   generate     -> one drawn state per scenario (list of length N)
-    #   per_scenario -> the supplied list of states, one per scenario
-    #   shared       -> a single state shared across all scenarios
     if init_state_mode == 'generate':
         resolved_init_state = _draw_per_scenario_init_states(
             env_args=env_args,
@@ -1021,6 +841,26 @@ def train_penalty_coefficients_for_env(
     with open(output_file, 'a') as f:
         f.write(json.dumps(record) + '\n')
     return record
+
+def train_alp_coefficients_for_env(uid, experiment_name, env_args, grb_env, grb_sub_envs, job_id):
+    output_file = os.path.join('experiments', 'results', experiment_name, f'{job_id}.jsonl')
+    os.makedirs(os.path.dirname(output_file), exist_ok=True)
+    if jsonl_uid_exists(output_file, uid):
+        print(f"Skip duplicate ALP training result: uid={uid}")
+        return None
+    start = time.time()
+    objective, coefficients = train_alp_coefficients(env_args=env_args, experiment_name=experiment_name)
+    record = {
+        'uid': uid,
+        'experiment_name': experiment_name,
+        'alp_objective': float(objective),
+        'coefficients': [float(value) for value in coefficients],
+        'training_time_seconds': time.time() - start,
+    }
+    with open(output_file, 'a') as f:
+        f.write(json.dumps(record) + '\n')
+    return record
+
 
 def evaluated_hindsight_policy_solving_time(uid,
                                             experiment_name,
@@ -1115,13 +955,10 @@ if __name__ == '__main__':
     # only hold `min(sample_path_number, num_cpus)` tokens instead of one per
     # subproblem.
     def _sample_path_number_for_param(param):
-        # 1) Evaluation records embed it under each policy_spec.agent_args.
         for spec in param.get('policy_specs', []) or []:
             n = spec.get('agent_args', {}).get('sample_path_number', 0)
             if n:
                 return n
-        # 2) Training records (generate_train_env) put it at the top level
-        #    and / or under agent_args.agent_args.
         n = param.get('sample_path_number', 0)
         if n:
             return n
@@ -1188,9 +1025,16 @@ if __name__ == '__main__':
                 grb_sub_envs=grb_sub_envs,
                 job_id=args.job_id,
             )
+        elif param.pop('alp_training', False):
+            train_alp_coefficients_for_env(
+                **param,
+                grb_env=grb_env,
+                grb_sub_envs=grb_sub_envs,
+                job_id=args.job_id,
+            )
         else:
             raise ValueError(
                 "Unrecognized params payload: expected 'policy_specs' "
                 "(evaluation), 'init_state_mode' (penalty-coefficient training), "
-                "or 'init_state_index' (lower-bound training) in record."
+                "'init_state_index' (lower-bound training) or 'alp_training' in record."
             )

@@ -4,9 +4,6 @@ from .fixed import FixedLengthProposal
 from .arrival_generator_proposal import ArrivalGeneratorSamplePathProposal
 from .mixture import MixtureGeometricStratifiedQMCProposal
 
-# Spec-type string -> proposal class. ``build_proposal`` uses this to turn the
-# JSON-style proposal specs stored in experiment configs into instances. To add
-# a proposal: create its module, import the class above, add one line here.
 _PROPOSAL_TYPES = {
     'geometric': GeometricLengthProposal,
     'truncated_geometric': TruncatedGeometricLengthProposal,
@@ -17,13 +14,6 @@ _PROPOSAL_TYPES = {
 
 
 def build_proposal(spec):
-    """Build a proposal from a spec.
-
-    ``spec`` is one of:
-      * ``None`` -> returns ``None`` (no importance sampling),
-      * a ``SamplePathLengthProposal`` instance -> returned unchanged,
-      * a ``dict`` with a ``'type'`` key plus constructor keyword arguments.
-    """
     if spec is None:
         return None
     if isinstance(spec, SamplePathLengthProposal):

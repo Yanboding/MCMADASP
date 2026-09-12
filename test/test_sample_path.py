@@ -1,7 +1,3 @@
-"""``SamplePath`` and the proposals' survival weights / terminal outcomes.
-
-Run from the repo root:  python -m test.test_sample_path
-"""
 import numpy as np
 
 from environment.arrival_generator import MultiClassPoissonArrivalGenerator
@@ -31,7 +27,7 @@ def test_sample_path_basics_and_record_rebuild():
     assert empty.periods == 1 and empty.terminal is Terminal.UNSPECIFIED and empty.survival_weights is None
     record = sample_path_from_record([[1, 0]], period_weights=[1.0, 0.5, 0.25], terminal=None)
     assert record.terminal is Terminal.UNSPECIFIED
-    assert np.allclose(record.survival_weights, [1.0, 0.5])  # extra entries dropped
+    assert np.allclose(record.survival_weights, [1.0, 0.5])
     for bad in (dict(survival_weights=[1.0]), dict(likelihood_ratios=[1.0, 1.0, 1.0])):
         try:
             SamplePath(np.array([[1, 0], [0, 2]]), **bad)
@@ -56,10 +52,8 @@ def test_default_proposal_weights_are_one_and_lengths_start_at_zero():
     for path in paths:
         assert np.all(path.survival_weights == 1.0) and path.survival_weights.shape == (path.length + 1,)
         assert np.all(path.likelihood_ratios == 1.0) and path.terminal is Terminal.ABSORBED
-    # Same RNG consumption as the legacy path sampler.
     legacy, _ = proposal.sample_arrival_paths(generator(0.9), 200)
     assert all(np.array_equal(a, b.arrivals) for a, b in zip(legacy, paths))
-    # Capped draws are truncated.
     capped = generator(0.9, max_periods=2)
     assert Terminal.TRUNCATED in {p.terminal for p in proposal.sample_paths(capped, 50, 0.9)}
     # Positive-integer support: first arrival certain, gamma afterwards.
@@ -108,7 +102,6 @@ def test_discount_factor_mismatch_raises():
 
 
 def test_survival_weights_are_unbiased_for_the_target_horizon():
-    """E_q[sum_s w_s 1{L >= s - 1}] = sum_s gamma ** (s - 1) = 1 / (1 - gamma)."""
     gamma, draws = 0.9, 40000
     for proposal in (ArrivalGeneratorSamplePathProposal(),
                      GeometricLengthProposal(0.8),

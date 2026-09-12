@@ -100,7 +100,6 @@ def main():
     means, half_window = mean_and_half_window(coefficients)
     print(f"{N_REPS} replications, {coefficients.shape[1]} coefficients")
 
-    # relative variation: CI half-window as a fraction of |mean|
     with np.errstate(divide="ignore", invalid="ignore"):
         relative = np.where(np.abs(means) > 0, half_window / np.abs(means), np.nan)
     order = np.argsort(half_window)[::-1][: args.top_k]

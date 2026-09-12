@@ -16,27 +16,21 @@ from visualization.line_plot import approximate_value_plot_from_running_stats
 # --- 1. Top-level Factory Functions (Required for Pickling) ---
 
 def dd_int_factory():
-    """Returns a defaultdict of integers (0)."""
     return defaultdict(int)
 
 def dd_rs_factory():
-    """Returns a defaultdict of RunningStats."""
     return defaultdict(RunningStats)
 
 def dd_dd_rs_factory():
-    """Returns a 2-level nested defaultdict of RunningStats."""
     return defaultdict(dd_rs_factory)
 
 def dd_float_factory():
-    """Returns a defaultdict of floats (0.0)."""
     return defaultdict(float)
 
 def dd_dd_float_factory():
-    """Returns a 2-level nested defaultdict of floats (0.0)."""
     return defaultdict(dd_float_factory)
 
 def dd_dd_dd_float_factory():
-    """Returns a 3-level nested defaultdict of floats (0.0)."""
     return defaultdict(dd_dd_float_factory)
 
 
@@ -80,11 +74,6 @@ EXPERIMENT_PLOT_CONFIGS = [
 
 IMPROVEMENT_YLABEL = "Lower Bound Improvement (%)"
 
-'''
-cumulateive costs: [1, 2, 3, 4, 5], [5, 4, 3, 2, 1]
-algo: 
-1. calculate cumulative costs after warm-up period
-'''
 class SimulateEvaluationResult:
 
     _CACHE_KEYS = (
@@ -121,13 +110,9 @@ class SimulateEvaluationResult:
         self.waiting_time_targets = np.array([env.holding_cost.get_waiting_target(i) for i in range(env.num_types)])
         self.group_ids = group_ids if group_ids is not None else []
         self.is_reuse = is_reuse
-        # Using named functions instead of lambdas
         self.scenario_results = dd_dd_dd_float_factory()
         
         # Built-in types (int, list) and Classes (RunningStats) are already picklable.
-        # Core cross-path statistics use StratifiedRunningStats so records from
-        # stratified proposals aggregate with their path weights (legacy records
-        # without weight fields fall back to the plain equal-weight mean).
         self.policy_costs = defaultdict(StratifiedRunningStats)
         self.zero_penalized_information_relaxation_cost = defaultdict(StratifiedRunningStats)
         self.penalized_information_relaxation_cost = defaultdict(StratifiedRunningStats)
@@ -139,36 +124,22 @@ class SimulateEvaluationResult:
         # Equal-weight by scope decision: operational metrics below ignore the
         # stratified path weights for now (revisit if the stratified proposal
         # is used for operational reporting).
-        # Discountred total cost gap after warmup period (if the information relaxation includes the discount factor, then we should use discounted gap.)
         self.after_warmup_policy_costs = defaultdict(RunningStats)
-        # Per-sample-path after-warmup cost, keyed (group_id, policy_id) -> {uid: cost}, used for paired comparisons
         self.after_warmup_cost_by_uid = defaultdict(dict)
-        # Per-sample-path importance-weighted discounted tail cost (``total_cost``),
-        # keyed (group_id, policy_id) -> {uid: cost}, used for paired comparisons
         self.cost_by_uid = defaultdict(dict)
-        # Per-uid stratified-sampling metadata (None -> legacy uniform).
         self.weight_by_uid = defaultdict(dict)
         self.stratum_by_uid = defaultdict(dict)
-        # Per-path lower bounds of ``information_relaxation_only`` records,
-        # keyed (group_id, mutate_val) -> {uid: value}, for the paired
-        # (delta-method) relative improvement of the penalized bound.
         self.ir_zero_by_uid = defaultdict(dict)
         self.ir_penalized_by_uid = defaultdict(dict)
         self.ir_weight_by_uid = defaultdict(dict)
         self.ir_stratum_by_uid = defaultdict(dict)
-        # Per-path lower bounds at every penalty ratio of a ``--penalty-ratios``
-        # evaluation, keyed (group_id, mutate_val) -> {uid: {t: cost}}, plus the
-        # provenance of the evaluated coefficients (see report_penalty_shrinkage).
         self.ir_cost_by_ratio_by_uid = defaultdict(dict)
         self.ir_coefficients_source = {}
-        # Waiting time target violation
         self.waiting_time_target_ptc_by_type_day = defaultdict(dd_dd_rs_factory)
         self.waiting_time_target_ptc_by_day = defaultdict(dd_rs_factory)
         self.waiting_time_violation = defaultdict(RunningStats)
         
-        # Average ovetime utilization per day
         self.overtime_utilization = defaultdict(RunningStats)
-        # Average postponement rate
         self.postponement_rate = defaultdict(RunningStats)
         
         self.gap_to_information_relaxation = defaultdict(StratifiedRunningStats)
@@ -181,7 +152,6 @@ class SimulateEvaluationResult:
         self.information_relaxation_id = None
 
         pickle_file = os.path.join(self.directory_path, 'simulate_evaluation_result', 'scenario_results.pickle')
-        # Make sure the parent directories exist
         os.makedirs(os.path.dirname(pickle_file), exist_ok=True)
         cached_data = load_pickle_if_exists(pickle_file)
         if self.is_reuse and self._has_valid_cache(cached_data):
@@ -195,8 +165,6 @@ class SimulateEvaluationResult:
             self.penalized_improvement[(group_id, policy_id)] = self.penalized_gap[(group_id, policy_id)] / self.penalized_information_relaxation_cost[(group_id, policy_id)].mean / 0.01
         for (group_id, mutate_val), stats in self.gap_to_information_relaxation.items():
             self.improvement[(group_id, mutate_val)] = self.gap_to_information_relaxation[(group_id, mutate_val)] / self.zero_penalized_information_relaxation_cost[(group_id, mutate_val)].mean / 0.01
-        # # for (group_id, mutate_val), stats in self.zero_penalized_gap.items():
-        #     self.zero_penalized_improvement[(group_id, mutate_val)] = self.zero_penalized_gap[(group_id, mutate_val)] / self.zero_penalized_information_relaxation_cost[(group_id, mutate_val)].mean / 0.01
     
     def _has_valid_cache(self, data):
         if data is None:
@@ -217,7 +185,6 @@ class SimulateEvaluationResult:
         for file_path in jsonl_files:
             with open(file_path, 'r') as f:
                 for line in f:
-                    # self.lowerbound_load(json.loads(line))
                     self.load(json.loads(line))
 
     def _save_cache(self, pickle_file):
@@ -245,8 +212,6 @@ class SimulateEvaluationResult:
             return
         if uid is not None:
             self.uids_by_policy[policy_id].add((uid, mutate_val))
-        # Stratified-sampling metadata (absent/None on legacy records -> the
-        # stats fall back to weight 1 / a single stratum).
         path_weight = data.get('path_weight')
         path_stratum = data.get('path_stratum')
         if policy_id == 'information_relaxation_only':
@@ -278,7 +243,6 @@ class SimulateEvaluationResult:
             self.cost_by_uid[(group_id, policy_id)][uid] = data['total_cost']
             self.weight_by_uid[(group_id, policy_id)][uid] = path_weight
             self.stratum_by_uid[(group_id, policy_id)][uid] = path_stratum
-        # use the first loaded policy as the information relaxation benchmark
         self.information_relaxation_id = policy_id
         # Runs launched with skip_information_relaxation=True carry None here.
         if data['zero_information_relaxation_cost'] is not None:
@@ -297,7 +261,6 @@ class SimulateEvaluationResult:
             self.one_time_cost_by_policy[policy_id][t] += cost
         
         warm_up_periods = data["warm_up_periods"]
-        # becarful abount the warm-up period.
         costs_after_warmup = data['costs'][warm_up_periods:] if len(data['costs']) > warm_up_periods else data['costs']
 
         after_warmup_cost = sum(cost for t, cost in enumerate(costs_after_warmup))
@@ -320,7 +283,6 @@ class SimulateEvaluationResult:
         cum_total_scheduled_patients_by_day = scheduled_patients.sum(axis=1).cumsum(axis=0)
         total_scheduled_patients_ptc_by_day = (cum_total_scheduled_patients_by_day/total_scheduled_patients if total_scheduled_patients > 0 else np.ones_like(cum_total_scheduled_patients_by_day)) * 100
 
-
         for day in range(len(scheduled_patients)):
             # One sample per path and day: keep this OUT of the type loop, or the
             # Total row's n is inflated by num_types and its CI shrinks by sqrt(num_types).
@@ -336,8 +298,6 @@ class SimulateEvaluationResult:
                          else data["overtime"][:num_simulated_days])
         for overtime in overtime_days:
             self.overtime_utilization[(group_id, policy_id)] += overtime / self.env.overtime_capacity * 100
-        # calculate the waiting time violation rate
-        # scheduled_patients is a 2D array of shape (num_days, num_types), where each entry represents the number of patients of a certain type scheduled on a certain day. We need to calculate the percentage of patients that are scheduled outside of their waiting time target. For each treatment type, we have a waiting time target (e.g., 1 day, 5 days, etc.). We can calculate the cumulative percentage of patients scheduled by each day and compare it to the waiting time target to determine the violation rate.
         patients_outside_target = sum(
             total_scheduled_patients_by_type[t] - cum_scheduled_patients[self.waiting_time_targets[t] - 1][t]
             for t in range(self.env.num_types)
@@ -355,7 +315,6 @@ class SimulateEvaluationResult:
             ('row_gen_alp', 'ALP'),
             ('myopic', 'M'),
         ]
-        # Keep only the policies present in the loaded data.
         policies = [(pid, plabel) for pid, plabel in policy_order
                     if pid in self.waiting_time_target_ptc_by_type_day]
         num_policies = len(policies)
@@ -444,18 +403,6 @@ Type
 
     def improvement_over_baseline(self, group_id, policy_id, baseline_id='myopic', confidence=0.95,
                                   cost_by_uid=None):
-        """Paired relative improvement (%) of `policy_id` over `baseline_id`,
-        matched by uid (common random numbers). By default the after-warmup
-        raw cost is compared; pass ``cost_by_uid`` (e.g. ``self.cost_by_uid``,
-        the importance-weighted discounted tail cost) to compare another
-        per-uid cost.
-
-        Uses the ratio-of-paired-means estimator mean(C_b - C_p) / mean(C_b)
-        (per-path ratios are undefined when a baseline path has zero cost),
-        with a delta-method confidence-interval half-width.
-
-        Returns (improvement_pct, half_width_pct, n_pairs).
-        """
         if cost_by_uid is None:
             cost_by_uid = self.after_warmup_cost_by_uid
         policy_costs = cost_by_uid[(group_id, policy_id)]
@@ -475,12 +422,6 @@ Type
         return improvement, half_width, n
 
     def information_relaxation_improvement(self, group_id, mutate_val, confidence=0.95):
-        """Paired relative improvement (%) of the penalized over the
-        zero-penalty information-relaxation lower bound on the
-        ``information_relaxation_only`` records of ``(group_id, mutate_val)``:
-        mean(penalized - zero) / mean(zero) with a stratified delta-method
-        confidence-interval half-width. Returns (improvement_pct,
-        half_width_pct, n_paths)."""
         key = (group_id, mutate_val)
         zero_costs = self.ir_zero_by_uid.get(key, {})
         penalized_costs = self.ir_penalized_by_uid.get(key, {})
@@ -497,9 +438,6 @@ Type
         return improvement, half_width, n
 
     def overall_performance_table(self, gamma='0.99', baseline_id='myopic', confidence=0.95):
-        """Generates the overall case-study performance LaTeX table with
-        discounted total cost, relative improvement over the baseline policy,
-        wait-time violations, and overtime utilization."""
         policy_order = [
             ('approx_penalized_hindsight', 'Penalized Hindsight'),
             ('row_gen_alp', 'ALP'),
@@ -513,7 +451,6 @@ Type
             body = f'{fmt(mean, mean_decimals)} \\pm {fmt(half_width, hw_decimals)}'
             return f'\\(\\mathbf{{{body}}}\\)' if bold else f'\\({body}\\)'
 
-        # Keep only policies present in the data; assume a single group_id.
         group_ids = {gid for gid, _ in self.after_warmup_policy_costs.keys()}
         rows = []
         n_paths = 0
@@ -581,8 +518,6 @@ Policy
         return table
 
     def group_id_to_mutate_val(self):
-        """Map each ``group_id`` (the env-variant uuid the aggregation dicts are
-        keyed by) to its ``mutate_val`` by scanning the result files once."""
         mapping = {}
         pattern = os.path.join(self.directory_path, self.file_pattern)
         for file_path in sorted(glob.glob(pattern)):
@@ -597,16 +532,6 @@ Policy
         return mapping
 
     def mixture_probability_table(self, policy_id='approx_penalized_hindsight', confidence=0.95):
-        """LaTeX table of policy-quality sensitivity to the defensive mixing
-        probability (``mixture_probability_toy_study``).
-
-        Each row is one variant (``group_id``, labelled by its ``mutate_val``,
-        the mixing probability epsilon). The two columns are the existing
-        ``zero_penalized_improvement`` / ``penalized_improvement`` statistics:
-        the policy's gap to the zero-penalty and penalized information-relaxation
-        lower bounds as a percentage of the respective bound's mean; the +- term
-        is the t-based half-window at ``confidence``.
-        """
         group_id_by_mixing_probability = sorted(
             (mutate_val, group_id)
             for group_id, mutate_val in self.group_id_to_mutate_val().items()
@@ -653,7 +578,6 @@ Defensive mixing probability \\(\\varepsilon\\)
 \\end{{table}}"""
 
     def plot_percentage_improvement(self, scale, xlabel, ylabel, file_name):
-        # Plot percentage improvement of myopic and ALP over the information relaxation benchmark
         plot_stats = {
             (mutate_val * scale if scale is not None else mutate_val): self.zero_penalized_improvement[(group_id, mutate_val)]
             for (group_id, mutate_val) in self.zero_penalized_improvement.keys()
@@ -667,8 +591,6 @@ Defensive mixing probability \\(\\varepsilon\\)
 
 
 def _uid_weights_and_strata(uids, weights_map, strata_map):
-    """Per-uid path weights / strata as arrays; legacy records (``None``)
-    fall back to weight 1 and stratum 0."""
     weights = np.array([
         1.0 if weights_map.get(uid) is None else float(weights_map[uid])
         for uid in uids])
@@ -679,13 +601,6 @@ def _uid_weights_and_strata(uids, weights_map, strata_map):
 
 
 def _stratified_relative_improvement(diff, base, weights, strata, confidence):
-    """Ratio-of-paired-means estimator ``mean(diff) / mean(base)`` in percent
-    with a stratified delta-method confidence-interval half-width (percent).
-
-    The covariance of the two weighted means is
-    ``sum_h What_h^2 * Cov_h / n_h`` (within-stratum sample covariance);
-    one stratum with unit weights reduces to ``cov / n``.
-    """
     from scipy.stats import norm
     diff = np.asarray(diff, dtype=float)
     base = np.asarray(base, dtype=float)
@@ -711,7 +626,6 @@ def _stratified_relative_improvement(diff, base, weights, strata, confidence):
 
 
 def _merge_stats_by_policy(stats_dict, policy_id):
-    """Merge the RunningStats of ``policy_id`` across all group_ids."""
     merged = RunningStats()
     for (group_id, pid), stats in stats_dict.items():
         if pid == policy_id:
@@ -731,14 +645,6 @@ def policy_performance_comparison_table(
     is_reuse=True,
     confidence=0.95,
 ):
-    """Build the policy-performance comparison table (one column pair per
-    initial-state condition: 95% CI and Gap %).
-
-    ``conditions`` is a sequence of ``(label, folder_name, show_gap_percent)``
-    tuples; each folder under ``base_results_dir`` holds the evaluation JSONL
-    files of one initial-state condition. When ``show_gap_percent`` is False
-    the Gap % cells of that condition are printed as NA.
-    """
     policy_order = [
         ('approx_hindsight', 'Hindsight'),
         ('approx_penalized_hindsight', 'Penalized hindsight'),
@@ -771,7 +677,6 @@ def policy_performance_comparison_table(
             return 'NA'
         return f"\\({round(stats.mean)} \\pm {round(stats.half_window(confidence), 1)}\\)"
 
-    # --- header ---------------------------------------------------------
     col_spec = 'l' + 'r' * (2 * len(results))
     group_header = '\n'.join(
         f"& \\multicolumn{{2}}{{c}}{{{label}}}" for label, _, _ in results
@@ -781,7 +686,6 @@ def policy_performance_comparison_table(
     )
     ci_header = '& ' + ' \n& '.join('95\\% CI & Gap \\%' for _ in results) + ' \\\\'
 
-    # --- body -----------------------------------------------------------
     blocks = []
     for pid, policy_label in policies:
         lines = [f"{policy_label} {'& ' * 2 * len(results)}\\\\"]
@@ -839,18 +743,15 @@ Initial-state condition
 
 
 def _fmt_latex_number(value, decimals=0):
-    """Format a number for LaTeX math mode with ``{,}`` thousands separators."""
     return f'{value:,.{decimals}f}'.replace(',', '{,}')
 
 
 def _value_cell(mean, half_width, mean_decimals=0, hw_decimals=1, bold=False):
-    """``mean \\pm half-width`` LaTeX cell."""
     body = f'{_fmt_latex_number(mean, mean_decimals)} \\pm {_fmt_latex_number(half_width, hw_decimals)}'
     return f'\\(\\mathbf{{{body}}}\\)' if bold else f'\\({body}\\)'
 
 
 def _metric_cell(stats, confidence, mean_decimals=0, hw_decimals=1, bold=False):
-    """``mean \\pm half-width`` LaTeX cell for a RunningStats-like object."""
     return _value_cell(stats.mean, stats.half_window(confidence), mean_decimals, hw_decimals, bold)
 
 
@@ -862,14 +763,6 @@ def saure_ejor_steady_state_table(
     baseline_id='myopic',
     confidence=0.95,
 ):
-    """Case-study table for ``case_study_ejor_alp_steady_state``: per policy the
-    discounted total cost (importance-weighted ``total_cost`` of the evaluation
-    tail), the paired relative improvement over the Myopic policy, wait-time
-    violations, overtime utilization, and the suboptimality gaps to the
-    zero-penalty and penalized information-relaxation lower bounds. Both gaps
-    are reported in cost units, not percentages: the penalized bound's sample
-    mean is near zero under the mixture-geometric importance weights, so a
-    percentage of it would be meaningless."""
     from experiments import get_config_by_type
     env = get_config_by_type('ejor').env
 
@@ -969,9 +862,6 @@ def saure_ejor_replication_table(
     is_reuse=True,
     confidence=0.95,
 ):
-    """Case-study table for ``case_study_ejor_replication`` (empty start with a
-    750-day warm-up): discounted total cost, wait-time violations, and overtime
-    utilization for the ALP and Myopic policies."""
     from experiments import get_config_by_type
     env = get_config_by_type('ejor').env
 
@@ -1040,7 +930,6 @@ Policy
 
 
 def run_saure_ejor_waiting_time_tables(is_reuse=True):
-    """Print ``waiting_time_target_ptc_table`` for each Saure EJOR case-study folder."""
     from experiments import get_config_by_type
     env = get_config_by_type('ejor').env
     for folder, label in (('case_study_ejor_alp_steady_state', 'tab:case_study_thresholds'),
@@ -1073,8 +962,6 @@ def run_improvement_plots(base_results_dir, file_pattern, env_info, group_ids, i
             file_name=f"{config['name']}_lower_bound_improvement.svg",
         )
 def run_mixture_probability_table(is_reuse=True, policy_id='approx_penalized_hindsight'):
-    """Load ``mixture_probability_toy_study`` results and print the LaTeX table
-    of policy-quality sensitivity to the defensive mixing probability."""
     from experiments import get_config_by_type
     config = get_config_by_type('toy')
     ser = SimulateEvaluationResult(
@@ -1093,8 +980,6 @@ def run_mixture_probability_table(is_reuse=True, policy_id='approx_penalized_hin
 
 
 def report_eval_proposal_policy_costs(is_reuse=True, confidence=0.95):
-    """LaTeX table of policy costs: one row per policy, one column per
-    evaluation-path proposal."""
     from experiments import get_config_by_type
     proposals = (
         ('toy_eval_proposal_fixed_459',
@@ -1160,17 +1045,8 @@ Policy
     return table
 
 
-# I want to plot discount improvement
 def report_information_relaxation_lower_bounds(experiment_name, config_type='ejor',
                                                confidence=0.95, is_reuse=False):
-    """Print, per (group_id, mutate_val) of the ``information_relaxation_only``
-    records in ``experiments/results/<experiment_name>``, the zero-penalty and
-    penalized information-relaxation lower bounds (stratified, path-weighted
-    mean +/- CI half-window) and their paired per-path improvement
-    (penalized - zero), absolute and relative to the zero-penalty bound (the
-    relative CI is a stratified delta-method interval, see
-    :meth:`SimulateEvaluationResult.information_relaxation_improvement`).
-    Returns the rows as a list of dicts."""
     from experiments import get_config_by_type
     ser = SimulateEvaluationResult(
         os.path.join('.', 'experiments', 'results', experiment_name),
@@ -1208,20 +1084,6 @@ def report_information_relaxation_lower_bounds(experiment_name, config_type='ejo
 
 
 def penalty_shrinkage_rows(ser, key, zetas=(0.0, 0.05), confidence=0.95):
-    """Per-ratio statistics of a ``--penalty-ratios`` evaluation for one
-    ``(group_id, mutate_val)`` key of ``ser``.
-
-    Uses the paths that carry the full (most common) grid. For every ratio
-    ``t``: the stratified path-weighted lower bound +/- CI, the paired
-    difference to ``t = 0`` (absolute +/- CI and relative with a
-    delta-method CI), and per ``zeta`` the weighted share of paths whose
-    bound falls below ``(1 - zeta)`` times the zero-penalty bound. The summary
-    holds ``t_star`` (grid argmax of the mean), the paired gain of ``t_star``
-    over ``t = 1`` +/- CI, and the verdict flags ``overfitting`` (``t_star < 1``
-    and the gain's CI excludes zero) and ``unit_below_zero`` (``t = 1``
-    significantly below ``t = 0``). Returns ``(rows, summary)``; ``([], None)``
-    when the key has no grid data.
-    """
     by_uid = ser.ir_cost_by_ratio_by_uid.get(key, {})
     if not by_uid:
         return [], None
@@ -1270,9 +1132,6 @@ def penalty_shrinkage_rows(ser, key, zetas=(0.0, 0.05), confidence=0.95):
 
 
 def print_penalty_shrinkage(ser, experiment_name, zetas=(0.0, 0.05), confidence=0.95):
-    """Print the penalty-ratio shrinkage diagnostic for every key of ``ser``
-    that carries grid data; returns ``(rows, summaries)`` with ``summaries``
-    keyed by ``(group_id, mutate_val)``."""
     level = round(confidence * 100)
     all_rows, summaries = [], {}
     print(f"{experiment_name}: penalty-ratio shrinkage diagnostic ({level}% CI)")
@@ -1309,9 +1168,6 @@ def print_penalty_shrinkage(ser, experiment_name, zetas=(0.0, 0.05), confidence=
 
 def report_penalty_shrinkage(experiment_name, config_type='ejor', zetas=(0.0, 0.05),
                              confidence=0.95, is_reuse=False):
-    """Load ``experiments/results/<experiment_name>`` and print the
-    penalty-ratio shrinkage diagnostic (see :func:`penalty_shrinkage_rows`).
-    Returns ``(rows, summaries)``."""
     from experiments import get_config_by_type
     ser = SimulateEvaluationResult(
         os.path.join('.', 'experiments', 'results', experiment_name),
@@ -1323,58 +1179,9 @@ def report_penalty_shrinkage(experiment_name, config_type='ejor', zetas=(0.0, 0.
 
 
 if __name__ == "__main__":
-    # from experiments import get_config_by_type
-    # config = get_config_by_type('toy')
-    # env = config.env
-    # waiting_time_targets = [env.holding_cost.get_waiting_target(i) for i in range(env.num_types)]
-    # base_results_dir = os.path.join('.', 'experiments', 'results', 'alp_steady_state_toy_study')
-    # file_pattern = '[0-9]*.jsonl'
-    # # group_ids = ['73d11360affe39305e7716cf5c42ac04', '841708e72300000ddfd948daf08d6805', 'a3202d39ed34711b47ecebb72aabad43']
-    # # run_improvement_plots(
-    # #     base_results_dir=base_results_dir,
-    # #     file_pattern=file_pattern,
-    # #     env_info=env_info,
-    # #     group_ids=group_ids,
-    # #     is_reuse=False,
-    # # )
-    # ser = SimulateEvaluationResult(
-    #         base_results_dir,
-    #         file_pattern,
-    #         env,
-    #         is_reuse=True,
-    #     )
     
-    # # print(ser.last_decision_period_distribution_table())
-    # print('ser.zero_penalized_gap')
-    # pprint(ser.zero_penalized_gap)
-    # print('ser.penalized_gap')
-    # pprint(ser.penalized_gap)
-    # print('ser.after_warmup_policy_costs')
-    # pprint(ser.after_warmup_policy_costs)
-    # print('ser.zero_penalized_information_relaxation_cost')
-    # pprint(ser.zero_penalized_information_relaxation_cost)
-    # print('ser.penalized_information_relaxation_cost')
-    # pprint(ser.penalized_information_relaxation_cost)
-    # print('ser.zero_penalized_improvement')
-    # pprint(ser.zero_penalized_improvement)
-    # print('ser.penalized_improvement')
-    # pprint(ser.penalized_improvement)
-    # print(ser.waiting_time_target_ptc_table())
-    # print('Summary table')
-    # print(ser.performance_summary_table())
-    # print('Overall performance table')
-    # print(ser.overall_performance_table(gamma='0.99'))
-    # print('Policy performance comparison table')
-    # print(policy_performance_comparison_table(env, is_reuse=True))
-    # print('Mixture probability table')
-    # run_mixture_probability_table(is_reuse=False)
-    # report_eval_proposal_policy_costs()
     print(saure_ejor_steady_state_table())
     print()
     print(saure_ejor_replication_table())
     print()
     run_saure_ejor_waiting_time_tables()
-    # print('gap_to_information_relaxation')
-    # pprint(ser.gap_to_information_relaxation)
-    # print('improvement')
-    # pprint(ser.improvement)

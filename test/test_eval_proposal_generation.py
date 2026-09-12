@@ -22,7 +22,6 @@ MIXTURE_SPEC = {
 
 
 def make_test_envs():
-    """Single-variant toy env identical to mixture_probability_toy_study val=0.1."""
     spec = ExperimentSpec(
         name='eval_prop_unit_test',
         config_type='toy',
@@ -59,8 +58,6 @@ class TestEvaluationProposalDecoupling(unittest.TestCase):
             self.assertEqual(len(record['period_weights']), 459)
             for observed, expected in zip(record['period_weights'], expected_weights):
                 self.assertAlmostEqual(observed, expected, places=12)
-            # Decoupling: the embedded policy still carries the agent's own
-            # mixture proposal, untouched by the evaluation proposal.
             self.assertEqual(
                 record['policy_specs'][0]['agent_args']['sample_path_length_proposal'],
                 MIXTURE_SPEC,
@@ -125,9 +122,6 @@ class TestEvaluationProposalDecoupling(unittest.TestCase):
                 self.assertAlmostEqual(observed, gamma ** (s - 1) / survival, places=12)
 
     def test_none_falls_back_to_agent_proposal_spec(self):
-        # Regression guard: omitting evaluation_proposal_spec must reproduce the
-        # coupled behavior (tails drawn from the agent's own spec). Both calls
-        # rebuild the env from the same seeds, so records must match exactly.
         records_default = generate(None)
         records_explicit = generate(MIXTURE_SPEC)
         self.assertEqual(len(records_default), len(records_explicit))
@@ -153,9 +147,6 @@ class TestPenaltyCoefficientsDir(unittest.TestCase):
             }
             with open(os.path.join(tmp_dir, 'coefficients.jsonl'), 'w') as f:
                 f.write(json.dumps(record) + '\n')
-            # If the override dir is ignored, the loader misses and the code
-            # falls back to retraining — patch that path so the test fails
-            # fast instead of launching a real (slow, Gurobi-bound) training.
             with mock.patch(
                 'param_generation.datasets.train_penalty_coefficients',
                 side_effect=AssertionError(
@@ -203,7 +194,6 @@ class TestEvaluationArmSpecs(unittest.TestCase):
             ((group_uid, experiment_name, val), variant) = next(iter(variants.items()))
             self.assertEqual(experiment_name, name)
             self.assertEqual(val, 0.1)
-            # Same env + same policy as the reference arm: only the name differs.
             self.assertEqual(variant, reference_variant)
 
 
@@ -221,7 +211,7 @@ class TestEvalProposalComparisonRecipe(unittest.TestCase):
                 f.write(json.dumps(record) + '\n')
             dat_file = os.path.join(tmp_dir, 'table.dat')
             records = recipe_toy_eval_proposal_comparison(
-                test_sample_path_num=8,  # Both positive-mass mixture strata must be sampled.
+                test_sample_path_num=8,
                 num_groups=2,
                 dat_file=dat_file,
                 penalty_coefficients_dir=tmp_dir,

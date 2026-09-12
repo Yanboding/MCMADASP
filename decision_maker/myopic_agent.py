@@ -14,7 +14,6 @@ class MyopicAgent(InfiniteRTAgent):
         super().__init__(env, discount_factor, V, Q, grb_env=grb_env)
 
     def solve(self, state, t, action=None, verbose=False):
-        # ---------- shortcuts ----------
         with (gp.Model("myopic_policy", env=self.grb_env) as policy_model):
             policy_model.setParam("MultiObjPre", 0)
             policy_model.setParam('DualReductions', 0)
@@ -22,7 +21,6 @@ class MyopicAgent(InfiniteRTAgent):
             policy_model.setParam("OptimalityTol", 1e-8)
             policy_model.setParam("OutputFlag", 0)
             policy_model.setParam("LogToConsole", 0)
-            # ---------- 1. today’s increments ----------
             action_var = self.get_action_var(policy_model, advance_scheduling_type=GRB.INTEGER)
             self.add_action_space_constraints(policy_model, state, action_var)
             if action is not None:
@@ -32,7 +30,6 @@ class MyopicAgent(InfiniteRTAgent):
 
             if not solve_and_handle_errors(policy_model, verbose=verbose):
                 raise RuntimeError("Master model optimal solution not found")
-            # ---------- 8. return ----------
             action = self.get_solution(action_var, is_final=True)
             return policy_model.ObjVal, action, {}
 
@@ -47,14 +44,6 @@ if "__main__" == __name__:
     coefficients = train_args['result']['args']['coefficients']
     print("coefficients:", coefficients)
     agent = MyopicAgent(env=env, discount_factor=0.99)
-    #print('ALP')
-    #print([agent.coeff_C(i,n) for n in range(agent.env.booking_window_size) for i in range(agent.env.num_types)])
-    #print('Myopic')
-    #print([agent.myopic_coeff_C(i,n) for n in range(agent.env.booking_window_size) for i in range(agent.env.num_types)])
-    #print('ALP')
-    #print([agent.coeff_H(m) for m in range(agent.env.planning_horizon)])
-    #print('Myopic')
-    #print([agent.myopic_coeff_H(m) for m in range(agent.env.planning_horizon)])
     '''
     action, obj, info = agent.solve(state=state, t=1)
     x, y = action
@@ -63,9 +52,5 @@ if "__main__" == __name__:
     print(obj)
     '''
     
-    #print(list(agent.generate_initial_state_action_pairs()))
-    #agent.train(verbose=False)
-    #print(agent.coeff_C(0,1))
 
-    # master obj: 25250
 

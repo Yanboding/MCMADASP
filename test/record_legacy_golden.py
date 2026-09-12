@@ -1,31 +1,3 @@
-"""Record golden values of the legacy penalty code (toy env, fixed seeds).
-
-Run from the repo root ONCE on the untouched tree (before the generating
-function / penalty-form refactor; it was, on 2026-09-04 -- the file in
-``test/golden`` is that recording, this script now only documents it and
-reads the same quantities through the current ``SamplePath`` API):
-
-    python -m test.record_legacy_golden
-
-It writes ``test/golden/legacy_penalty.json``; ``test/test_penalty_builder.py``
-replays every entry through the rewritten code and asserts agreement at
-rtol 1e-9. Everything is deterministic: fixed numpy seeds, fresh env RNGs per
-block, one single-threaded Gurobi env shared by all models, serial solves.
-
-Blocks (see the plan, Task 0):
-  ir_evaluation        calculate_information_relaxation_cost, 3 paths x 2 theta,
-                       period_weights None and mixture-proposal weights
-  training_subproblems worker.solve(theta) value + cut gradient, 4 scenarios,
-                       default proposal (u == 1) and mixture proposal (u != 1),
-                       per-scenario initial states, sampled paths / ratios
-  benders_training     benders_decomposition_train objective + coefficients;
-                       solver objective after 3 iterations with a checkpoint,
-                       and after resuming 2 more iterations from it
-  hindsight            hindsight_solve objective + action, default and mixture
-  policy_accounting    calculate_policy_costs_with_penalty totals for
-                       warm_up 0, warm_up 2, and a run seeded from a shared
-                       warm-up trajectory
-"""
 import json
 import os
 import tempfile
@@ -50,7 +22,6 @@ MIXTURE = dict(target_discount_factor=0.99, discount_factor_proposal=0.95, lambd
 
 
 def fresh_env():
-    """A toy env with every RNG (init state, stop time, arrivals) at its seed."""
     config = get_config_by_type('toy')
     env = config.env
     env.reset_random_seeds()

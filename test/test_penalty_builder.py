@@ -1,12 +1,3 @@
-"""The single path builder: legacy golden regression and absorption-form checks.
-
-Run from the repo root:  python -m test.test_penalty_builder
-
-Part 1 replays ``test/golden/legacy_penalty.json`` (recorded by
-``test/record_legacy_golden.py`` on the pre-refactor tree) through the
-rewritten code and asserts every legacy number at rtol 1e-9. Part 2 checks
-the properties the absorption form must have.
-"""
 import json
 import os
 import tempfile
@@ -38,7 +29,6 @@ def golden():
 
 
 def same_states(observed, expected):
-    """Component-wise equality of (regular, overtime, waitlist) state tuples."""
     return len(observed) == len(expected) and all(
         len(a) == len(b) and all(np.array_equal(np.asarray(c1, dtype=float), np.asarray(c2, dtype=float))
                                  for c1, c2 in zip(a, b))
@@ -54,7 +44,6 @@ def close(observed, expected, rtol=RTOL, atol=1e-6, what=''):
         raise AssertionError(f"{what}: mismatch at {worst}: {observed.flat[worst]!r} vs golden {expected.flat[worst]!r}")
 
 
-# --------------------------------------------------------------------------- goldens
 def test_golden_ir_evaluation(grb_env):
     block = golden()['ir_evaluation']
     config, env = fresh_env()
@@ -179,8 +168,6 @@ def test_golden_policy_accounting(grb_env):
                 for key in ('penalized_cost', 'total_cost', 'total_penalty', 'costs', 'penalties'):
                     close(result[key], expected[key], what=f'{what} {key}')
                 assert same_states([result['warmup_state']], [expected['warmup_state']]), what
-                # penalties == expected - realized wherever the terms were recorded
-                # (a legacy prefix carries NaN placeholders there).
                 difference = np.asarray(result['expected_terms'][:len(result['penalties'])]) - np.asarray(result['realized_terms'])
                 recorded = np.isfinite(difference)
                 close(difference[recorded], np.asarray(result['penalties'])[recorded], what=f'{what} terms vs penalties')
@@ -194,7 +181,6 @@ def test_golden_policy_accounting(grb_env):
             assert len(trajectory['expected_terms']) == 2 and len(trajectory['realized_terms']) == 2
             seeded = run_policy('myopic_seeded', 2, entries['seeded']['period_weights'], warm_up_trajectory=trajectory)
             check(seeded, entries['seeded'], 'seeded')
-            # A legacy prefix without the per-period terms is padded and sliced away.
             legacy_trajectory = {k: v for k, v in trajectory.items() if k not in ('expected_terms', 'realized_terms')}
             legacy_seeded = run_policy('myopic_seeded_legacy', 2, entries['seeded']['period_weights'], warm_up_trajectory=legacy_trajectory)
             check(legacy_seeded, entries['seeded'], 'seeded from legacy prefix')
@@ -203,13 +189,11 @@ def test_golden_policy_accounting(grb_env):
             os.chdir(old_cwd)
 
 
-# --------------------------------------------------------------------------- absorption form
 def numeric(components):
     return tuple(np.array(c, dtype=float) for c in components)
 
 
 def myopic_rollout(env, myopic, gf, theta, state, path, gamma):
-    """Weighted stage costs and theta . Phi of the myopic policy along ``path``."""
     form = gf.form('evaluation')
     W = form.period_weights(path, gamma)
     cost, expected_terms, realized_terms = 0.0, [], []

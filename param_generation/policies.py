@@ -1,5 +1,3 @@
-"""Builders for runtime policy specs embedded in saved params records."""
-
 import copy
 
 from param_generation.generating_functions import (
@@ -21,7 +19,6 @@ def build_penalty_policy(base_agent_args, policy_id, solver_name, penalty_coeffi
     policy['agent_args'].pop('zero_lowerbound_generating_function_spec', None)
     policy['agent_args'].pop('penalized_lowerbound_generating_function_spec', None)
     policy['agent_args'].pop('training_generating_function_spec', None)
-    # Self-contained spec: embed the policy's penalty coefficients in the spec.
     spec = _normalize_generating_function_spec(generating_function_spec)
     spec['coefficients'] = penalty_coefficients
     policy['agent_args']['generating_function_spec'] = spec

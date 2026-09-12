@@ -1,7 +1,3 @@
-"""Feature interface of the generating functions (toy env).
-
-Run from the repo root:  python -m test.test_generating_function_features
-"""
 import numpy as np
 import gurobipy as gp
 from gurobipy import GRB
@@ -31,7 +27,6 @@ def setup(seed=0):
 
 
 def legacy_penalty(env, theta, state, action, arrival):
-    """The pre-refactor formula ``(sum mean - sum delta) * theta . phi_0``."""
     post = env.post_action_state(state, action, is_var=False)
     x, y = action
     phi_0 = np.concatenate([post[0], post[1], post[2], x.reshape(-1), y])
@@ -59,7 +54,6 @@ def test_numeric_identities_match_legacy_formula():
             direct = c_e * gf.expected_features(state, action).dense() - c_r * gf.features(state, action, arrival).dense()
             assert np.allclose(combined, direct, rtol=1e-12)
         assert gf.penalty_features(state, action, None, 0.5, 0.0).dot(theta) == 0.5 * expected
-    # An arrival equal to the mean total gives an empty (all-zero) feature.
     state, action, _ = samples[0]
     mean_total = float(np.sum(env.arrival_generator.mean_by_type))
     if float(mean_total).is_integer():
@@ -92,7 +86,6 @@ def test_absorption_class_continuation_is_expected_value():
                           absorption.expected_value(theta, state, action), rtol=1e-12)
         workload = float((post[2] + env.arrival_generator.mean_by_type).sum())
         assert np.isclose(linear.calculate_expected_continuation_value(state, action), workload * float(theta @ phi_0), rtol=1e-12)
-        # Same penalty features on both classes; different forms.
         assert np.allclose(absorption.penalty_features(state, action, arrival, 0.3, 0.8).dense(),
                            linear.penalty_features(state, action, arrival, 0.3, 0.8).dense())
     assert type(absorption.forms['training']).__name__ == 'AbsorptionForm'
@@ -117,7 +110,6 @@ def test_symbolic_features_are_affine_and_agree_with_numeric():
         model.optimize()
         numeric = gf.penalty_features(state, action, arrival, 0.9, 1.0).dot(theta)
         assert np.isclose(model.ObjVal, numeric, rtol=1e-9, atol=1e-9), (model.ObjVal, numeric)
-        # Symbolic theta (MVar) against numeric features: the Benders-master view.
         theta_var = gf.get_coefficient_var(model, GRB.INFINITY)
         theta_var.lb = theta
         theta_var.ub = theta

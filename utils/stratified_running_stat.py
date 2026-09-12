@@ -1,4 +1,3 @@
-"""Weighted stratified running statistics (single-class module)."""
 import numbers
 from math import sqrt
 
@@ -9,34 +8,12 @@ from .numpy_running_stat import RunningStats
 
 
 class StratifiedRunningStats:
-    """Weighted stratified statistics; one ``RunningStats`` per stratum.
-
-    mean = sum(w_i x_i) / sum(w_i)  (self-normalized: robust to missing
-    records; the plain mean when all weights are 1, which is the fallback
-    for legacy records without weight fields).
-
-    half_window = t_{n - H} * sqrt( sum_h What_h^2 * s_h^2 / n_h ) with
-    ``What_h`` the stratum's share of total weight, ``s_h^2`` its
-    within-stratum sample variance, and ``H`` the number of strata. With a
-    single stratum and unit weights this reduces to ``RunningStats``' own
-    ``t_{n-1} * s / sqrt(n)``, so legacy data reproduces legacy numbers.
-
-    Assumes weights are equal WITHIN each stratum (true for the stratified
-    mixture-geometric proposal). Derived operations (division,
-    ``mean_difference``, formatting) collapse to an equivalent plain
-    ``RunningStats`` via :meth:`to_running_stats` and reuse its machinery;
-    the collapsed object uses df ``n - 1`` instead of ``n - H`` (negligible
-    for n >> H) and drops stratum detail, so derived objects are summary
-    statistics that cannot be further stratified.
-    """
 
     def __init__(self):
-        self._strata = {}        # stratum label -> RunningStats
-        self._weight_sums = {}   # stratum label -> sum of weights
+        self._strata = {}
+        self._weight_sums = {}
         self._weighted_sum = 0.0
         self._weight_total = 0.0
-        # Total sample count and self-normalized weighted mean, refreshed by
-        # ``record`` and ``__iadd__``.
         self.n = 0
         self.mean = 0.0
 
@@ -54,7 +31,6 @@ class StratifiedRunningStats:
         self._refresh_mean()
 
     def variance_of_mean(self):
-        """sum_h What_h^2 * s_h^2 / n_h — within-stratum variance only."""
         if not self._weight_total:
             return 0.0
         variance = 0.0
@@ -72,8 +48,6 @@ class StratifiedRunningStats:
         return float(t_crit * sqrt(self.variance_of_mean()))
 
     def to_running_stats(self):
-        """Collapse to a plain ``RunningStats`` reproducing this estimator's
-        mean and half-window (``variance / n == variance_of_mean``)."""
         n = self.n
         m2 = self.variance_of_mean() * n * max(n - 1, 0)
         return RunningStats(n=n, mean=self.mean, m2=m2)

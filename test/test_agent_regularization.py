@@ -1,7 +1,3 @@
-"""``ApproxQAgent.benders_decomposition_train`` with L1/L2 master regularization (toy env).
-
-Run from the repo root:  python -m test.test_agent_regularization
-"""
 import numpy as np
 
 from decision_maker import ApproxQAgent
@@ -72,7 +68,7 @@ def test_master_builder_rejects_bad_regularization():
         raise AssertionError('non-positive scale must raise')
     master, coefficient_vars, theta_vars = agent.train_master_builder_fn(
         regularization={'type': 'l1', 'lambda': 1.0})
-    assert master.NumVars == 2 * n + theta_vars.shape[0]  # coefficients + coefficient_abs + theta
+    assert master.NumVars == 2 * n + theta_vars.shape[0]
 
 
 if __name__ == '__main__':

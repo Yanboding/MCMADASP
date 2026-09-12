@@ -1,4 +1,3 @@
-"""The project's linear penalty: ``g(x) = (sum delta) * theta . phi_0(s+, a)``."""
 import numpy as np
 import gurobipy as gp
 from gurobipy import GRB
@@ -9,16 +8,6 @@ from .penalty_forms import legacy_forms
 
 
 class LinearPenaltyFunction(GeneratingFunction):
-    """Transition-scaled linear generating function.
-
-    ``phi_0(s+, a)`` is the five-block vector [post-action regular bookings,
-    post-action overtime, post-action waitlist, scheduling decision, overtime
-    decision]; the feature of an arrival ``delta`` is ``phi = (sum delta) *
-    phi_0`` and its expectation ``E[phi] = (sum mean) * phi_0``. Both are
-    affine in the decisions, so every model that carries them stays an LP,
-    and a period's penalty feature ``c_e * E[phi] - c_r * phi`` is one scalar
-    times ``phi_0`` (:meth:`penalty_features`, one ``post_action_state`` call).
-    """
     spec_name = 'linear_penalty'
     forms = legacy_forms()
 
@@ -28,7 +17,6 @@ class LinearPenaltyFunction(GeneratingFunction):
                                        + self.env.num_types
                                        + self.env.booking_window_size * self.env.num_types
                                        + self.env.planning_horizon)
-        # ``E[sum delta]``: the arrival-total scale of the expected features.
         self.expected_arrival_total = float(np.sum(self.env.arrival_generator.mean_by_type))
 
     def _block_offsets(self):
@@ -50,9 +38,7 @@ class LinearPenaltyFunction(GeneratingFunction):
         theta_y = solution[offsets[4]:offsets[5]]
         return theta_u, theta_v, theta_w, theta_x, theta_y
 
-    # ---- features ------------------------------------------------------------
     def base_features(self, state, action, is_var=False):
-        """``phi_0(s+, a)``: the arrival-free part shared by ``phi`` and ``E[phi]``."""
         (post_action_regular_bookings, post_action_overtimes, post_action_waitlist) = self.env.post_action_state(state, action, is_var)
         (advance_scheduling_decision, overtime_decision) = action
         offsets = self._block_offsets()
@@ -81,7 +67,6 @@ class LinearPenaltyFunction(GeneratingFunction):
             return Features(self.number_of_coefficients)
         return self.base_features(state, action, is_var).scaled(scale)
 
-    # ---- policy value function (legacy body, kept) --------------------------
     def calculate_expected_continuation_value(self, state, action, is_var=False, coefficients=None):
         (post_action_regular_bookings, post_action_overtimes, post_action_waitlist) = self.env.post_action_state(state, action, is_var)
         (advance_scheduling_decision, overtime_decision) = action

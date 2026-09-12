@@ -1,4 +1,3 @@
-"""Evaluation caches must identify the complete validated evaluation record."""
 import copy
 import json
 import os
@@ -117,8 +116,6 @@ class EvaluationCacheConsistencyTest(unittest.TestCase):
         self.assertNotIn('stale_legacy_result', actual)
 
     def test_changed_terminal_does_not_resume_absorbed_checkpoint(self):
-        # A completed rollout checkpoint is a valid resume point; poison only
-        # the old input's terms to make accidental cross-input reuse visible.
         saved_dump = run.atomic_pickle_dump
         def interrupt_before_result(path, payload):
             if str(path).endswith('-result.pickle'):
@@ -186,7 +183,6 @@ class PenaltySolverSelectionTest(unittest.TestCase):
                         init_state_seed=1, env_args={}, agent_args={},
                         training_generating_function_spec=None, grb_env=None,
                         grb_sub_envs=None, job_id='job')
-            # A real matching output used to bypass the unsupported selection.
             Path(tmp, 'job.jsonl').write_text(json.dumps({'uid': 'cached'}) + '\n')
             for solver in ('extensive', 'extensive_form', 'ef', 'deterministic_equivalent', 'typo'):
                 with self.subTest(solver=solver), mock.patch.dict(os.environ, PENALTY_TRAIN_SOLVER=solver):

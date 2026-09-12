@@ -1,7 +1,3 @@
-"""Tests for the information-relaxation lower-bound aggregation.
-
-Run from the repo root:  python -m test.test_ir_lower_bound_report
-"""
 import json
 import os
 import tempfile
@@ -42,7 +38,6 @@ def test_ir_only_records_uniform_match_numpy_and_delta_method():
     penalized = zero + rng.normal(50, 80, n)
     records = [_ir_record(f'u{i}', float(zero[i]), float(penalized[i]), 1.0 / n, 0)
                for i in range(n)]
-    # a penalty-coefficient training record in the same folder must be skipped
     records.append({'uid': 'train', 'coefficients': [1.0], 'tight_penalized_lower_bound': 1.0})
     ser = _load(records)
     key = ('g', 512)
@@ -57,7 +52,6 @@ def test_ir_only_records_uniform_match_numpy_and_delta_method():
     diff = penalized - zero
     assert np.isclose(ds.mean, diff.mean())
     assert np.isclose(ds.half_window(0.95), t * diff.std(ddof=1) / np.sqrt(n))
-    # relative improvement: ratio of means with a delta-method CI
     pct, hw, n_pairs = ser.information_relaxation_improvement('g', 512, 0.95)
     dm, bm = diff.mean(), zero.mean()
     cov = np.cov(np.vstack([diff, zero])) / n
@@ -100,14 +94,11 @@ def test_penalty_shrinkage_rows_match_numpy():
     rng = np.random.default_rng(1)
     n = 60
     zero = rng.normal(1000, 50, n)
-    # Concave-in-t shape peaking at t=0.5, with t=1 below zero penalty.
     costs = {0.0: zero, 0.5: zero + 40 + rng.normal(0, 10, n), 1.0: zero - 30 + rng.normal(0, 10, n)}
     weights = np.where(np.arange(n) < 20, 0.2 / 20, 0.8 / 40)
     strata = np.where(np.arange(n) < 20, 0, 1)
     records = [_ratio_record(f'u{i}', {t: float(costs[t][i]) for t in costs}, float(weights[i]), int(strata[i]))
                for i in range(n)]
-    # A legacy record without the grid must be ignored by the shrinkage report
-    # but still feed the classic report.
     records.append(_ir_record('legacy', 1000.0, 1010.0, 0.01, 0))
     ser = _load(records)
     key = ('g', 512)
@@ -125,7 +116,6 @@ def test_penalty_shrinkage_rows_match_numpy():
     assert np.isclose(summary['gain_over_unit_mean'], weights @ (costs[0.5] - costs[1.0]) / weights.sum())
     assert summary['overfitting'] is True and summary['unit_below_zero'] is True
     assert summary['coefficients_source']['uid'] == 'train-uid'
-    # The classic report still sees all n + 1 records.
     assert ser.zero_penalized_information_relaxation_cost[key].n == n + 1
     printed_rows, summaries = print_penalty_shrinkage(ser, 'unit', zetas=(0.0, 0.05))
     assert len(printed_rows) == 3 and summaries[key]['t_star'] == 0.5

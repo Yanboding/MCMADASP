@@ -4,9 +4,6 @@ import numpy as np
 
 
 def str2treatment_pattern(treatment_pattern_str):
-    '''
-    1*2 + 15*1 + 1*2 + 3*1
-    '''
     term_re = re.compile(r'\s*(\d+)\s*\*\s*(\d+)\s*')
     result = []
     for term in treatment_pattern_str.split('+'):
@@ -19,53 +16,29 @@ def str2treatment_pattern(treatment_pattern_str):
     return np.array(result)
 
 def concat_ragged(arrays, fill_value=0, axis=1):
-    """
-    Convert a list of 1-D arrays with different lengths into a
-    regular 2-D NumPy array, padding missing spots with `fill_value`.
-
-    Parameters
-    ----------
-    arrays : list of array-like (1-D)
-        The data to concatenate.  Lengths may differ.
-    fill_value : scalar, default 0
-        The value used to pad and to replace any existing NaNs.
-    axis : {1, 0}, default 1
-        1  → each *column* is an input array  (shape = [max_len, n_arrays])
-        0  → each *row*    is an input array  (shape = [n_arrays, max_len])
-
-    Returns
-    -------
-    ndarray
-        Padded 2-D array.
-    """
-    # ------ 0. edge case ------------------------------------------------
     if not arrays:
         return np.empty((0, 0), dtype=float)
 
-    # ------ 1. normalise inputs ----------------------------------------
     cleaned = []
     for arr in arrays:
-        a = np.asarray(arr, dtype=float).ravel()        # 1-D view
-        a = np.nan_to_num(a, nan=fill_value)            # replace NaNs
+        a = np.asarray(arr, dtype=float).ravel()
+        a = np.nan_to_num(a, nan=fill_value)
         cleaned.append(a)
 
-    # ------ 2. work out final shape ------------------------------------
     max_len   = max(a.size for a in cleaned)
     n_arrays  = len(cleaned)
 
-    if axis == 1:                       # columns = inputs
+    if axis == 1:
         out_shape = (max_len, n_arrays)
-    else:                               # rows = inputs
+    else:
         out_shape = (n_arrays, max_len)
 
-    # ------ 3. create output filled with pad value ---------------------
     out = np.full(out_shape, fill_value, dtype=float)
 
-    # ------ 4. copy each array into the right slice --------------------
     for idx, a in enumerate(cleaned):
-        if axis == 1:                   # column-wise
+        if axis == 1:
             out[:a.size, idx] = a
-        else:                           # row-wise
+        else:
             out[idx, :a.size] = a
 
     return out
@@ -75,9 +48,6 @@ def str2treatment_patterns(treatment_pattern_strs):
     return concat_ragged(treatment_patterns)
 
 def treatment_pattern2str(treatment_pattern):
-    '''
-    [1 2 2 1 1 1]  ->  '1*1 + 2*2 + 3*1'
-    '''
     result = []
     n = len(treatment_pattern)
     i = 0
@@ -93,10 +63,6 @@ def treatment_pattern2str(treatment_pattern):
     return ' + '.join(result)
 
 def wait_time(l):
-    '''
-    [0,0,100,100,100, 100, 100,150]
-    []
-    '''
     cumulative_cost_by_day = []
     for start, end, cost in l:
         cumulative_cost_by_day += [cost]*(end - start)

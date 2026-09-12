@@ -81,9 +81,8 @@ def main():
                          grb_env=grb_env, subproblem_grb_envs=grb_sub_envs,
                          **agent_args)
 
-    # --- instrument SubproblemWorker.solve ---------------------------------
     lock = threading.Lock()
-    solve_log = []          # (epoch, seconds)
+    solve_log = []
     current_epoch = {'value': 0}
     original_solve = SubproblemWorker.solve
 

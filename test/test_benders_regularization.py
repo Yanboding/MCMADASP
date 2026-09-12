@@ -1,12 +1,3 @@
-"""L1/L2 regularization of the Benders master (toy generalized-Benders problem).
-
-The toy master is regularized here the same way
-``ApproxQAgent.train_master_builder_fn`` does it (L2: ``- lambda ||s theta||^2``
-on the objective; L1: ``coefficient_abs`` epigraph rows); the agent-level
-behaviour and input validation are covered by ``test_agent_regularization``.
-
-Run from the repo root:  python -m test.test_benders_regularization
-"""
 import os
 import tempfile
 
@@ -18,8 +9,6 @@ from test.test_benders_cut_purging import build_solver, COEFF_BOUND, N_COEFF
 
 
 def build_regularized(kind, lam, scale=None):
-    """Toy solver whose master carries ``- lam * R(scale * coeff)``; also
-    returns the numeric ``coeff -> lam * R(scale * coeff)``."""
     base = build_solver()
     master, coeff = base.master_model, base.action_vars
     scale = np.ones(N_COEFF) if scale is None else np.asarray(scale, dtype=float)
@@ -106,7 +95,6 @@ def test_evaluate_action_matches_worker_solve():
 
 
 def test_resume_from_unregularized_checkpoint_matches_fresh():
-    # Restored bounds are reporting only; the gap rule never consults them.
     with tempfile.TemporaryDirectory() as tmp:
         ckpt = os.path.join(tmp, 'free_ckpt')
         free = build_solver()
@@ -119,10 +107,6 @@ def test_resume_from_unregularized_checkpoint_matches_fresh():
 
 
 def test_init_solution_hard_bound_carries_the_regularizer():
-    # The pinned first iteration's value under the full (regularized) master
-    # objective is saa(theta_0) - R(theta_0); the hard bound must use exactly
-    # that, and the solve must still reach the fresh optimum.
-    # L1 keeps the master objective linear, so the hard bound is a linear row.
     theta_0 = np.array([0.5, -1.0, 2.0, -3.0])
     fresh, regularizer = build_regularized('l1', 0.5)
     obj_fresh, _ = solve(fresh)
@@ -130,7 +114,6 @@ def test_init_solution_hard_bound_carries_the_regularizer():
     _, saa_0 = solver.evaluate_action(theta_0, parallel=False)
     obj, theta = solve(solver, init_solution=theta_0, is_hard_bound=True)
     assert abs(obj - obj_fresh) < 1e-5, (obj, obj_fresh)
-    # The pinned bounds were restored: the returned action is the optimum, not theta_0.
     assert not np.allclose(theta, theta_0)
     assert np.allclose(np.array(solver.action_vars.lb), -COEFF_BOUND) and np.allclose(np.array(solver.action_vars.ub), COEFF_BOUND)
     solver.master_model.update()

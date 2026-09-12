@@ -1,4 +1,3 @@
-"""Cold-retry coverage without relying on a platform-specific numerical failure."""
 import gurobipy as gp
 import pytest
 from gurobipy import GRB
@@ -11,7 +10,6 @@ PARAMETERS = ('Method', 'Presolve', 'NumericFocus', 'DualReductions',
 
 
 class ControlledStatusModel:
-    """Inject selected statuses; None runs the real optimizer."""
     def __init__(self, model, statuses):
         self.model = model
         self.statuses = statuses

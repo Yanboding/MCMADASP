@@ -1,20 +1,3 @@
-"""Tests for the shared warm-up-policy evaluation mode.
-
-``evaluate_policy_costs_with_information_relaxation(warm_up_policy_id=...)``
-must (1) evaluate the warm-up policy first over the full sample path and
-capture its executed warm-up prefix, (2) seed every other policy with that
-prefix so it simulates the tail only, (3) memoize the information relaxation
-bounds shared by all policies, and (4) leave the legacy behaviour (no
-``warm_up_policy_id``) unchanged.
-
-``calculate_policy_costs_with_penalty(warm_up_trajectory=...)`` must produce a
-record whose costs/penalties/scheduled_patients cover the FULL path (shared
-warm-up prefix + own tail) while the cost totals only count the tail.
-
-The Gurobi-backed solvers are replaced by fakes, so the tests run without a
-Gurobi license.
-"""
-
 import json
 import os
 import sys
@@ -35,7 +18,6 @@ ALP_WARMUP_STATE = ([[7, 7], [6, 6]], [3, 3], [2, 1])
 
 
 class _FakeLowerBoundAgent:
-    """Stands in for the two ApproxQAgent lower-bound instances."""
 
     instances = []
 
@@ -77,7 +59,6 @@ def _fake_calculate_policy_costs(calls_log, **kwargs):
 
 
 class AlpSteadyStateWarmupTest(unittest.TestCase):
-    """Orchestration of evaluate_policy_costs_with_information_relaxation."""
 
     def setUp(self):
         self._tmpdir = tempfile.TemporaryDirectory()
@@ -139,8 +120,6 @@ class AlpSteadyStateWarmupTest(unittest.TestCase):
             ['approx_penalized_hindsight', 'myopic'],
         )
         for call in tail_calls:
-            # Full path + full warm_up_periods: the record keeps its full-length
-            # shape; the seeding trajectory makes the policy skip the warm-up.
             self.assertEqual(call['warm_up_periods'], 2)
             self.assertEqual(len(call['sample_path']), 6)
             self.assertFalse(call['return_warm_up_trajectory'])
@@ -152,8 +131,6 @@ class AlpSteadyStateWarmupTest(unittest.TestCase):
     def test_lower_bounds_memoized_across_shared_state(self):
         self._evaluate('row_gen_alp')
         zero_instance, penalized_instance = _FakeLowerBoundAgent.instances
-        # All three policies share the ALP warm-up state, so each bound is
-        # solved exactly once and evaluated on the tail.
         self.assertEqual(len(zero_instance.calls), 1)
         self.assertEqual(len(penalized_instance.calls), 1)
         self.assertEqual(zero_instance.calls[0]['sample_path_len'], 4)
@@ -170,7 +147,6 @@ class AlpSteadyStateWarmupTest(unittest.TestCase):
         )
         for row in rows:
             self.assertEqual(row['warm_up_periods'], 2)
-            # The warm-up trajectory is an internal hand-off, not a record field.
             self.assertNotIn('warm_up_trajectory', row)
 
     def test_unknown_warm_up_policy_raises(self):
@@ -180,7 +156,6 @@ class AlpSteadyStateWarmupTest(unittest.TestCase):
     def test_skip_information_relaxation_skips_bounds_and_writes_none(self):
         summary = self._evaluate('row_gen_alp', skip_information_relaxation=True)
         self.assertEqual(len(summary), 3)
-        # The two lower-bound solver instances are never even constructed.
         self.assertEqual(_FakeLowerBoundAgent.instances, [])
         output_file = os.path.join(
             'experiments', 'results', 'unit_test_alp_warmup', 'unittest.jsonl'
@@ -205,7 +180,6 @@ class AlpSteadyStateWarmupTest(unittest.TestCase):
 
 
 class _FakeSchedulingEnv:
-    """Deterministic env: cost of period t is 10*t, state counts periods."""
 
     discount_factor = 1.0
     planning_horizon = 1
@@ -237,7 +211,6 @@ class _FakeAgent:
 
 
 class CalculatePolicyCostsSeedingTest(unittest.TestCase):
-    """Warm-up-trajectory seeding inside calculate_policy_costs_with_penalty."""
 
     SAMPLE_PATH = [[1]] * 5
     WARM_UP = 2
@@ -255,8 +228,6 @@ class CalculatePolicyCostsSeedingTest(unittest.TestCase):
         for patcher in patchers:
             patcher.start()
             self.addCleanup(patcher.stop)
-        # Constant per-period terms: theta . E[phi] = 1.0, theta . phi = 0.5, so
-        # every period's penalty is 0.5 under the legacy evaluation form.
         self.generating_function = SimpleNamespace(
             coefficient_vector=lambda: np.array([0.0]),
             expected_value=lambda theta, state, action: 1.0,
@@ -287,7 +258,6 @@ class CalculatePolicyCostsSeedingTest(unittest.TestCase):
 
     def test_full_run_returns_warm_up_prefix(self):
         result = self._run_policy('warmup_policy', return_warm_up_trajectory=True)
-        # 5 arrivals + trailing period -> 6 stage costs of 10*t.
         self.assertEqual(result['costs'], [10.0, 20.0, 30.0, 40.0, 50.0, 60.0])
         self.assertEqual(result['total_cost'], 30.0 + 40.0 + 50.0 + 60.0)
         trajectory = result['warm_up_trajectory']
@@ -298,17 +268,14 @@ class CalculatePolicyCostsSeedingTest(unittest.TestCase):
     def test_seeded_run_records_full_trajectory_but_counts_tail_only(self):
         trajectory = self._run_policy('warmup_policy', return_warm_up_trajectory=True)['warm_up_trajectory']
         result = self._run_policy('seeded_policy', warm_up_trajectory=trajectory)
-        # The rollout resumed at period warm_up + 1 from the prefix end state.
         self.assertEqual(self.env.reset_args['t'], self.WARM_UP + 1)
         self.assertEqual(
             [_to_lists(component) for component in self.env.reset_args['init_state']],
             list(trajectory['end_state']),
         )
-        # Record covers the FULL path (prefix + own tail)...
         self.assertEqual(result['costs'], [10.0, 20.0, 30.0, 40.0, 50.0, 60.0])
         self.assertEqual(len(result['scheduled_patients']), 6)
         self.assertEqual(len(result['penalties']), 5)
-        # ...while totals only count the post-warm-up tail.
         self.assertEqual(result['total_cost'], 30.0 + 40.0 + 50.0 + 60.0)
         self.assertEqual(result['warmup_state'], trajectory['end_state'])
 

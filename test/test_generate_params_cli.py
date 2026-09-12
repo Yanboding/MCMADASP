@@ -1,7 +1,3 @@
-"""CLI dispatch tests for ``python generate_params.py``.
-
-Run from the repo root:  python -m test.test_generate_params_cli
-"""
 import json
 from unittest import mock
 
@@ -131,7 +127,7 @@ def test_dat_file_accumulates_across_calls_without_duplicates(tmp_path=None):
         dat = os.path.join(folder, 'table.dat')
         write_command_file([{'uid': 'a'}, {'uid': 'b'}], dat)
         write_command_file([{'uid': 'c'}], dat)
-        write_command_file([{'uid': 'b'}], dat)            # identical command -> skipped
+        write_command_file([{'uid': 'b'}], dat)
         write_grouped_command_file([{'uid': 'd'}], dat_file=dat)
         with open(dat) as f:
             lines = f.read().splitlines()
@@ -164,7 +160,6 @@ def test_policy_spec_overrides_variant_agent_args_and_guards_retrain():
         json.dump({'approx_penalized_hindsight': {'sample_path_number': 512,
                                                    'penalty_ratio': 0.5}},
                   open(spec_path, 'w'))
-        # Retrain guard: no cached coefficients for the overridden config -> exit.
         with mock.patch.object(cli, 'load_trained_coefficients_from_folder',
                                return_value=None):
             try:
@@ -174,7 +169,6 @@ def test_policy_spec_overrides_variant_agent_args_and_guards_retrain():
                 assert 'allow-retrain' in str(exc)
             else:
                 raise AssertionError('expected SystemExit from the retrain guard')
-        # With --allow-retrain the overrides reach the generator's test_envs.
         with mock.patch.object(cli, 'generate_test_paths_and_init_state',
                                return_value=[]) as generator, \
              mock.patch.object(cli, 'write_grouped_command_file'):
@@ -184,9 +178,7 @@ def test_policy_spec_overrides_variant_agent_args_and_guards_retrain():
         (variant,) = generator.call_args.kwargs['test_envs'].values()
         inner = variant['agent_args']['agent_args']
         assert inner['sample_path_number'] == 512 and inner['penalty_ratio'] == 0.5
-        # Untouched keys survive the deep merge.
         assert inner['current_decision_var_type'] == 'integer'
-        # Unknown policy id in the spec is rejected.
         json.dump({'ghost_policy': {'x': 1}}, open(spec_path, 'w'))
         try:
             cli.main(['eval', 'base_toy_study', '--policies', 'myopic',
@@ -195,7 +187,6 @@ def test_policy_spec_overrides_variant_agent_args_and_guards_retrain():
             assert 'ghost_policy' in str(exc)
         else:
             raise AssertionError('expected ValueError for unknown policy id')
-        # Conflicting overrides across policy ids are rejected.
         json.dump({'approx_penalized_hindsight': {'penalty_ratio': 0.5},
                    'approx_hindsight': {'penalty_ratio': 0.7}}, open(spec_path, 'w'))
         try:
@@ -217,16 +208,12 @@ def test_train_expands_init_states_and_path_seeds():
         records = cli.main(['train', 'base_toy_study', '--num-init-states', '3',
                             '--num-path-seeds', '2', '--sample-paths-seed', '42',
                             '--dat', dat])
-    # 1 variant x 3 fixed initial states x 2 path seeds.
     assert len(records) == 6
     assert all(r['init_state_mode'] == 'shared' for r in records)
     assert sorted({r['env_args']['arrival_random_seed'] for r in records}) == [42, 43]
-    # Three distinct fixed states, each paired with both seeds.
     states = {json.dumps(r['init_state'], sort_keys=True) for r in records}
     assert len(states) == 3
-    # All uids distinct (state and seed both feed the uid).
     assert len({r['uid'] for r in records}) == 6
-    # Same seed + same state -> reproducible: rerun yields identical uids.
     with tempfile.TemporaryDirectory() as tmp:
         again = cli.main(['train', 'base_toy_study', '--num-init-states', '3',
                           '--num-path-seeds', '2', '--sample-paths-seed', '42',
@@ -274,7 +261,6 @@ def test_lowerbound_penalty_ratios_flag():
         else:
             raise AssertionError(f'expected ValueError for --penalty-ratios {bad!r}')
 
-    # ``eval`` does not accept the flag (argparse exits).
     try:
         cli.build_parser().parse_args(['eval', 'base_toy_study', '--policies',
                                        'myopic', '--penalty-ratios', '0,1'])
@@ -346,14 +332,12 @@ def test_penalty_function_flag_stamps_specs_and_suffixes_names():
     inner = variant['agent_args']['agent_args']
     for key in cli._PENALTY_SPEC_KEYS:
         assert inner[key]['name'] == 'absorption_linear_penalty', key
-    # The legacy default stamps the name but changes neither names nor keys.
     with mock.patch.object(cli, 'generate_test_paths_and_init_state', side_effect=fake_generate), \
          mock.patch.object(cli, 'write_grouped_command_file'):
         cli.main(['lowerbound', 'base_toy_study', '--paths', '8', '--penalty-function', 'linear_penalty'])
     (uid, name, _), variant = next(iter(captured['envs'].items()))
     assert name == 'base_toy_study' and not variant['agent_args']['policy_id'].endswith('_bh')
     assert all(variant['agent_args']['agent_args'][key]['name'] == 'linear_penalty' for key in cli._PENALTY_SPEC_KEYS)
-    # No flag: untouched (only the default generating_function_spec exists).
     with mock.patch.object(cli, 'generate_test_paths_and_init_state', side_effect=fake_generate), \
          mock.patch.object(cli, 'write_grouped_command_file'):
         cli.main(['lowerbound', 'base_toy_study', '--paths', '8'])
@@ -361,7 +345,6 @@ def test_penalty_function_flag_stamps_specs_and_suffixes_names():
     assert name == 'base_toy_study'
     assert set(cli._PENALTY_SPEC_KEYS) & set(variant['agent_args']['agent_args']) == {'generating_function_spec'}
     assert variant['agent_args']['agent_args']['generating_function_spec'] == {'name': 'linear_penalty'}
-    # Canonical policy ids are forwarded unchanged.
     with mock.patch.object(cli, 'generate_test_paths_and_init_state', side_effect=fake_generate) as generator, \
          mock.patch.object(cli, 'write_grouped_command_file'):
         cli.main(['eval', 'base_toy_study', '--paths', '8', '--policies', 'approx_penalized_hindsight,myopic',
@@ -421,7 +404,6 @@ def test_absorption_records_need_a_length_proposal():
         assert record['generating_function_spec']['name'] == 'absorption_linear_penalty'
         assert record['policy_specs'][0]['agent_args']['generating_function_spec']['name'] == 'absorption_linear_penalty'
         assert record['experiment_name'] == 'base_toy_study_bh'
-    # Legacy records keep None terminals.
     legacy = generate_test_paths_and_init_state(
         test_envs=build_variation_test_env(EXPERIMENT_SPECS['base_toy_study']), test_sample_path_num=2,
         warm_up_periods=0, num_periods=None, dat_file=None, is_require_penalty_coefficients=False,

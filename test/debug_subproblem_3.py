@@ -1,26 +1,3 @@
-"""Standalone reproduction + root-cause analysis for the
-"Failed to retrieve Pi dual values for subproblem 3" bug.
-
-Subproblem 3 is the longest sample path (length 313) in case 2. With
-``future_decision_var_type = continuous`` the subproblem is a *pure LP*
-(IsMIP=0), so the Benders worker extracts duals through
-
-    duals = [c.Pi for c in self.link_rows]          # solver, LP branch
-
-That requires a simplex *basis*. The training builder solves the cold model
-with barrier (Method=2) + crossover, and only switches to dual simplex
-(Method=1) when the cold solve took <= 60s. On the busy compute node
-subproblem 3's cold solve took 256s, so it KEEPS barrier -- and a
-barrier-optimal point without a usable basis has no ``.Pi``.
-
-This script rebuilds ONLY subproblem 3 and then re-runs the LP with the exact
-production parameters, with the Gurobi log turned ON, so we can see why the
-solver does (or does not) return dual values. Each solve is time-limited so the
-whole run is bounded.
-
-Run (after the usual module/venv setup):
-    python -u test/debug_subproblem_3.py
-"""
 import os
 import sys
 import json
@@ -116,7 +93,6 @@ def build_subproblem(scenario_id):
 
 
 def read_pi(link_rows, tag):
-    """Try to read the link-row duals exactly like the Benders worker does."""
     try:
         duals = np.array([c.Pi for c in link_rows], dtype=float)
         print(f"  [{tag}] Pi OK   ||duals||={np.linalg.norm(duals):.6g} "
@@ -155,7 +131,7 @@ def main():
 
     def solve(tag, method, crossover, numfocus, feastol, opttol, reset):
         if reset:
-            sub_model.reset(1)  # clear solution AND warm-start basis -> cold solve
+            sub_model.reset(1)
         configure(method, crossover, numfocus, feastol, opttol)
         set_link_rhs(link_rows, zero)
         print("\n" + "=" * 72)

@@ -8,11 +8,7 @@ from utils import str2treatment_patterns, wait_time
 from scipy.stats import geom
 
 class HoldingCostCalculator:
-    """
-    A picklable, function-like object that calculates holding cost.
-    """
     def __init__(self, cost_data):
-        # Store the cost data when the object is created
         self.cost_data = cost_data
 
     def __call__(self, t, i):
@@ -24,19 +20,13 @@ class HoldingCostCalculator:
     
     def get_waiting_target(self, i):
         waiting_target = np.argmax(self.cost_data[:, i] > 0) if np.any(self.cost_data[:, i] > 0) else float('inf')
-        return waiting_target - 1 # think carefully about the -1 here
+        return waiting_target - 1
 
 class OvertimeCostCalculator:
-    """
-    A picklable, function-like object that calculates holding cost.
-    """
     def __init__(self, cost_data):
-        # Store the cost data when the object is created
         self.cost_data = cost_data
 
     def __call__(self, t):
-        # This method is executed when you call the instance.
-        # It ignores 't', just like the original lambda.
         if isinstance(self.cost_data, numbers.Number):
             overtime_cost = self.cost_data
         else:
@@ -44,16 +34,10 @@ class OvertimeCostCalculator:
         return overtime_cost
 
 class PostponingCostCalculator:
-    """
-    A picklable, function-like object that calculates holding cost.
-    """
     def __init__(self, cost_data):
-        # Store the cost data when the object is created
         self.cost_data = cost_data
 
     def __call__(self, i):
-        # This method is executed when you call the instance.
-        # It ignores 't', just like the original lambda.
         if isinstance(self.cost_data, numbers.Number):
             postponing_cost = self.cost_data
         else:
@@ -112,15 +96,6 @@ def small_case_config():
                           "1 * 2 + 19 * 1",
                           "1 * 2 + 32 * 1",
                           "1 * 2 + 32 * 1"]
-    '''
-    1*2 + 15*1 + 1*2 + 3*1
-    treatment_patterns = ["1*2 + 4*1", 
-                          "1*3 + 15*2 + 4*1",
-                          "1*2 + 14*1",
-                          "1*3 + 19*2 + 15*1",
-                          "1*2 + 21*1 + 1*2 + 14*1",
-                          "1 * 2 + 32 * 1"]
-    '''
     booking_window_size = 25
     arrival_rates = [0.41, 2.47, 4.09, 0.5, 0.74, 0.04]
     l = [[(0, 1, 0), (1, 5, 100), (5, 100, 150)],

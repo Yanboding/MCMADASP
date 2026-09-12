@@ -1,7 +1,3 @@
-"""Unit tests for per-path stratum weights and the stratified CI helper.
-
-Run from the repo root:  python -m test.test_stratified_path_weights
-"""
 import numpy as np
 
 from importance_sampling.proposals.arrival_generator_proposal import (
@@ -36,7 +32,6 @@ def test_mixture_weights_match_allocation():
     assert np.allclose(weights[n_long:], 0.9 / n_short)
     assert np.all(strata[:n_long] == 0)
     assert np.all(strata[n_long:] == 1)
-    # lambda_0 == 1 degenerates to a single uniform stratum, no raise.
     pure = MixtureGeometricStratifiedQMCProposal(
         target_discount_factor=0.99, discount_factor_proposal=0.95, lambda_0=1.0)
     assert np.allclose(pure.path_weights(8), 1.0 / 8)
@@ -46,7 +41,7 @@ def test_mixture_degenerate_stratum_raises():
     proposal = MixtureGeometricStratifiedQMCProposal(
         target_discount_factor=0.99, discount_factor_proposal=0.95, lambda_0=0.1)
     try:
-        proposal.path_weights(4)  # round(0.4) == 0 long paths
+        proposal.path_weights(4)
     except ValueError:
         pass
     else:
@@ -102,7 +97,7 @@ def test_stratified_running_stats_two_strata_hand_calc():
     # Var = W0^2 s0^2 / n0 + W1^2 s1^2 / n1 = 0.04 * 1 / 3 + 0.64 * 50 / 2
     expected_var = 0.04 * 1.0 / 3 + 0.64 * 50.0 / 2
     assert np.isclose(strat.variance_of_mean(), expected_var)
-    t_crit = st.t.ppf(0.975, 5 - 2)  # df = n - strata
+    t_crit = st.t.ppf(0.975, 5 - 2)
     assert np.isclose(strat.half_window(0.95), t_crit * np.sqrt(expected_var))
 
 
@@ -117,12 +112,10 @@ def test_stratified_running_stats_merge_collapse_percentage():
     assert a.n == 5
     # mean = (0.1*6 + 0.45*30) / (0.3 + 0.9) = 14.1 / 1.2
     assert np.isclose(a.mean, 14.1 / 1.2)
-    # Collapse bridge: variance/n of the collapsed object equals variance_of_mean.
     collapsed = a.to_running_stats()
     assert collapsed.n == a.n
     assert np.isclose(collapsed.mean, a.mean)
     assert np.isclose(collapsed.variance() / a.n, a.variance_of_mean())
-    # Percentage-conversion call chain used by the aggregation: stats / scalar / 0.01
     pct = a / a.mean / 0.01
     assert np.isclose(pct.mean, 100.0)
 
@@ -135,8 +128,6 @@ def test_aggregation_legacy_records_fallback():
     from experiments.new_result_aggregration import SimulateEvaluationResult
     env = get_config_by_type('toy').env
     num_types = env.num_types
-    # Shape (periods, booking days, types); 25 booking-day rows keep every
-    # waiting-time-target index in range after the sum over periods.
     scheduled = [[[0] * num_types for _ in range(25)] for _ in range(2)]
     scheduled[0][0] = [1] * num_types
     record = {
@@ -158,7 +149,6 @@ def test_aggregation_legacy_records_fallback():
             handle.write(json.dumps(record2) + '\n')
         ser = SimulateEvaluationResult(tmp, '[0-9]*.jsonl', env, is_reuse=False)
     stats = ser.policy_costs[('g', 'myopic')]
-    # No path_weight fields -> uniform fallback: plain mean of 10 and 14.
     assert stats.n == 2
     assert np.isclose(stats.mean, 12.0)
     assert np.isclose(ser.zero_penalized_gap[('g', 'myopic')].mean, 2.0)

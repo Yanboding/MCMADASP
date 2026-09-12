@@ -1,20 +1,3 @@
-"""Parameter-generation pipeline for MCMADASP experiments.
-
-This package splits the former monolithic ``generate_params.py`` into cohesive
-modules:
-
-* :mod:`param_generation.generating_functions` -- penalty/basis spec handling.
-* :mod:`param_generation.caching` -- training-result cache + regression-data I/O.
-* :mod:`param_generation.command_files` -- ``run.py`` job-array ``.dat`` writers.
-* :mod:`param_generation.mutators` -- per-experiment ``env_args``/``agent_args`` mutators.
-* :mod:`param_generation.experiment_specs` -- ``ExperimentSpec`` + variant builder.
-* :mod:`param_generation.registry` -- the ``EXPERIMENT_SPECS`` registry.
-* :mod:`param_generation.training` -- penalty/ALP/value-function training.
-* :mod:`param_generation.policies` -- policy-spec assembly.
-* :mod:`param_generation.datasets` -- the top-level ``generate_*`` entry points.
-* :mod:`param_generation.cli` -- runnable dataset-generation recipes.
-"""
-
 from param_generation.experiment_specs import (
     DEFAULT_AGENT_ARGS,
     ExperimentSpec,

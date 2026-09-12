@@ -1,7 +1,3 @@
-"""Penalty forms: weight tables, zero mean, legacy conventions (toy env).
-
-Run from the repo root:  python -m test.test_penalty_forms
-"""
 import numpy as np
 
 from decision_maker import MyopicAgent
@@ -30,7 +26,6 @@ def test_absorption_term_weights():
                     assert (expected_weight, realized_weight) == (gamma * W[s], 0.0)
                 else:
                     assert (expected_weight, realized_weight) == (0.0, 0.0)
-    # Weights come from the path; missing law or outcome is refused.
     path = path_of(2, Terminal.ABSORBED, [1.0, 0.7, 0.6])
     assert np.allclose(form.period_weights(path, gamma), [1.0, 0.7, 0.6])
     for bad in (path_of(2, Terminal.ABSORBED), path_of(2, Terminal.UNSPECIFIED, [1.0, 0.7, 0.6])):
@@ -44,7 +39,6 @@ def test_absorption_term_weights():
 
 
 def test_absorption_zero_mean_identity_under_survival_weights():
-    """sum_s [gamma P(L >= s-1) w_s - P(L >= s) w_{s+1}] = 0 term by term."""
     gamma = 0.9
     for proposal in (GeometricLengthProposal(0.8), MixtureGeometricStratifiedQMCProposal(gamma, 0.7, 0.4)):
         S = 30
@@ -65,7 +59,6 @@ def test_legacy_modes_reproduce_the_old_conventions():
     without = path_of(3, Terminal.UNSPECIFIED)
     assert np.allclose(LegacyForm('training').period_weights(without, gamma), 1.0)
     assert np.allclose(LegacyForm('hindsight').period_weights(without, gamma), [1.0, gamma, gamma, gamma])
-    # Evaluation reads the record's weights; a record without them means ones.
     record = path_of(3, Terminal.UNSPECIFIED, survival_weights=[1.0, 0.9, 0.8, 0.7])
     assert np.allclose(LegacyForm('evaluation').period_weights(record, gamma), [1.0, 0.9, 0.8, 0.7])
     assert np.allclose(LegacyForm('evaluation').period_weights(without, gamma), 1.0)
@@ -125,9 +118,6 @@ def rollout_terms(env, agent, gf, theta, state, path):
 
 
 def test_monte_carlo_zero_mean_along_myopic_rollouts():
-    """theta . Phi has mean zero under the absorption form for a fixed
-    (nonanticipative) policy: the length law, the survival weights and the
-    gamma given to the form all use gamma_test = 0.6 (plan C35)."""
     gamma_test = 0.6
     config = get_config_by_type('toy')
     env = config.env

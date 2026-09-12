@@ -29,16 +29,6 @@ def _resolve_parallel_workers(max_workers, worker_count):
 
 
 def _group_workers_by_env(workers):
-    """Partition workers into groups that share a Gurobi environment.
-
-    A Gurobi ``Env`` is not thread-safe for concurrent optimization, so two
-    workers whose models live in the same env must not be solved at the same
-    time. Returning one list per distinct env lets the caller solve each group
-    sequentially (on a single thread) while running different groups in
-    parallel. Workers without a recorded env (``grb_env is None``) are treated
-    as having their own private env, preserving the original one-thread-per-
-    worker parallelism.
-    """
     groups = {}
     order = []
     for worker in workers:
@@ -52,17 +42,6 @@ def _group_workers_by_env(workers):
 
 
 def _dispatch_subproblem_solves(env_groups, active_workers, solve_one, executor, progress=None):
-    """Solve every worker via ``solve_one(worker)``, respecting env grouping.
-
-    Workers in the same env group are solved sequentially on a single thread,
-    while different groups run concurrently on ``executor`` (a Gurobi ``Env`` is
-    not thread-safe for concurrent optimization). When ``executor`` is ``None``
-    the solves run sequentially. Results are returned in ``active_workers``
-    order. If ``progress`` is provided, ``progress.update(1)`` is called after
-    each worker's solve completes (tqdm is thread-safe). Any ``RuntimeError``
-    raised while starting worker threads propagates to the caller so it can
-    fall back to a sequential strategy.
-    """
     def _solve_and_tick(worker):
         result = solve_one(worker)
         if progress is not None:
@@ -90,19 +69,12 @@ def benders_callback(model, where):
         use_pareto_cuts = model._use_pareto
         pareto_epsilon = model._pareto_epsilon
         active_workers = model._workers[:theta_vars.shape[0]]
-        # The worker set, their env grouping and the thread pool are fixed for
-        # the whole solve, so they were built ONCE in solve_with_callback and are
-        # reused here instead of being rebuilt at every incumbent.
         env_groups = model._env_groups
         executor = model._executor
 
-        # 1. Get current candidate solution (xk). ``x_vars``/``theta_vars`` are
-        # MVars (see flatten/hindsight_master_builder_fn), so cbGetSolution
-        # already returns ndarrays -- no extra conversion needed.
         x_vals = model.cbGetSolution(x_vars)
         theta_vals = model.cbGetSolution(theta_vars)
 
-        # 2. Update the core point with diminishing step size: alpha = 1 / (k + 1)
         model._cb_iter += 1
         k = model._cb_iter
         if model._core_point is None:
@@ -149,24 +121,18 @@ def benders_callback(model, where):
                 progress.close()
         subproblem_time = time.time() - start_sub
 
-        # 4. Process results and add Lazy Constraints
         feasibility_cuts_added = 0
         optimality_cuts_added = 0
         cost_to_go = 0.0
-        # Shared affine term (x - x_k) as a single MLinExpr; each cut is then one
-        # vectorized dot product instead of a per-coefficient Python loop.
         action_delta = x_vars - x_vals
         for i, (is_feasible, obj_val, duals) in enumerate(results):
-            # Cut expression: theta[i] >= obj_val + duals^T * (x - x_vals)
             expr = obj_val + duals @ action_delta
 
             if not is_feasible:
-                # Feasibility cut (Farkas Ray)
                 model.cbLazy(expr >= 0)
                 feasibility_cuts_added += 1
             else:
                 cost_to_go += obj_val
-                # Optimality cut
                 if model.ModelSense == GRB.MINIMIZE:
                     if theta_vals[i] < (obj_val - tol):
                         model.cbLazy(theta_vars[i] >= expr)
@@ -176,12 +142,6 @@ def benders_callback(model, where):
                         model.cbLazy(theta_vars[i] <= expr)
                         optimality_cuts_added += 1
 
-        # 5. Intermediate progress output (mirrors solve()'s per-iteration log).
-        # Each MIPSOL is one incumbent, so report the incumbent objective against
-        # Gurobi's best bound (their difference is the live MIP gap), the cuts
-        # injected for this incumbent, the evaluated objective at this action
-        # (first-stage cost + averaged subproblem cost-to-go -- a valid bound just
-        # like solve() reports), and the time spent solving subproblems.
         worker_count = len(active_workers)
         mean_theta = float(np.mean(theta_vals)) if worker_count else 0.0
         mean_cost_to_go = cost_to_go / worker_count if worker_count else 0.0
@@ -197,48 +157,33 @@ def benders_callback(model, where):
         )
 
 class SubproblemWorker:
-    """
-    One worker per scenario. Owns its own gp.Env and gp.Model.
-    Build once, then call solve(action) repeatedly.
-    """
 
     def __init__(self, model, link_rows, state_linking_constraints, subproblem_id, verbose: bool = True,
                  objective_builder_fn=None, cut_gradient_fn=None, grb_env=None, initial_cut=None):
-        # Build the model and linking constraints inside THIS env.
         self.model = model
         # The Gurobi environment this worker's model lives in. Workers that
         # share an env must never be optimized concurrently (a Gurobi Env is
         # not thread-safe), so the solver groups workers by this env and solves
         # each group sequentially while running different envs in parallel.
         self.grb_env = grb_env
-        # Normalize link_rows to a flat list of scalar Constr objects so that
-        # per-element attributes like .index/.Pi/.FarkasDual/.RHS work uniformly.
-        # The input may be an MConstr, a plain list of Constr, or a mixed list
-        # containing MConstr elements (e.g. from addConstr on MVar scalars).
         def _flatten_constrs(obj):
             if obj is None:
                 return []
-            if hasattr(obj, "tolist"):  # MConstr or numpy array
+            if hasattr(obj, "tolist"):
                 return _flatten_constrs(obj.tolist())
             if isinstance(obj, (list, tuple)):
                 out = []
                 for x in obj:
                     out.extend(_flatten_constrs(x))
                 return out
-            return [obj]  # scalar Constr
+            return [obj]
         self.link_rows = _flatten_constrs(link_rows)
         self._link_indices = [c.index for c in self.link_rows]
         self.state_linking_constraints = state_linking_constraints
         self.subproblem_id = subproblem_id
         self.verbose = verbose
-        # Optional hooks for generalized Benders: treat first-stage values as constants
-        # in subproblem objective and return custom cut gradients.
         self.objective_builder_fn = objective_builder_fn
         self.cut_gradient_fn = cut_gradient_fn
-        # Build-time Benders cut (v0, g0) obtained by solving this subproblem at
-        # action a = 0 during construction (v0 = Q_s(0), g0 = subgradient at 0).
-        # The solver uses it to seed the master with one valid optimality cut per
-        # scenario before the first master solve. ``None`` for classical workers.
         self.initial_cut = initial_cut
 
     def _set_output_flag(self, model, verbose: bool):
@@ -249,7 +194,6 @@ class SubproblemWorker:
         return [rows_in_model[i] for i in self._link_indices]
 
     def _get_feasibility_ray_for_link_rows(self, action_values, verbose: bool = False):
-        """Standard Farkas Dual logic for infeasible LPs or LP-relaxations."""
         relax_model = self.model.relax() if self.model.IsMIP else self.model
         try:
             self._set_output_flag(relax_model, verbose)
@@ -284,7 +228,6 @@ class SubproblemWorker:
             if self.cut_gradient_fn is not None:
                 duals = np.asarray(self.cut_gradient_fn(self.model, action_values), dtype=float)
             else:
-                # For standard solve, we extract duals from the fixed MILP or the LP
                 if self.model.IsMIP:
                     fixed = self.model.fixed()
                     fixed.optimize()
@@ -303,13 +246,7 @@ class SubproblemWorker:
             return False, v, ray
 
     def solve_pareto(self, action_values, core_point, epsilon=1e-4, verbose: bool = False):
-        """
-        Fix-then-Perturb strategy: Solve MILP once, fix integers, 
-        then solve perturbed LP for Pareto-optimal duals.
-        """
         if self.link_rows is None or len(self.link_rows) == 0:
-            # Fallback for generalized workers that provide custom subgradients
-            # and do not expose classical linking-constraint duals.
             return self.solve(action_values, verbose)
         set_link_rhs(self.link_rows, action_values)
         if self.objective_builder_fn is not None:
@@ -323,12 +260,10 @@ class SubproblemWorker:
 
         z_star = self.model.ObjVal
 
-        # For MILP, we fix the optimal integer solution to find the strongest duals
-        # for that specific realization of the first-stage variables.
         if self.model.IsMIP:
             lp_model = self.model.fixed()
         else:
-            lp_model = self.model.copy() # For pure LP, just copy to avoid modifying original
+            lp_model = self.model.copy()
 
         try:
             self._set_output_flag(lp_model, verbose)
@@ -353,15 +288,6 @@ class SubproblemWorker:
 
 
 def objective_confidence_interval(values, weights=None, strata=None):
-    """Weighted mean and 95% half-width (normal approximation) of values.
-
-    With ``weights``/``strata`` from a stratified proposal, the mean is
-    ``sum(w_i v_i)`` and the variance uses the stratified formula
-    ``sum_h W_h^2 s_h^2 / n_h`` (within-stratum sample variance only,
-    ddof=1). Uniform weights with a single stratum reduce exactly to the
-    classic ``1.96 s / sqrt(N)`` interval. Within-stratum QMC sampling
-    breaks iid, so the interval is approximate (typically conservative).
-    """
     values = np.asarray(values, dtype=float)
     if values.size == 0:
         return 0.0, 0.0
@@ -387,37 +313,6 @@ def objective_confidence_interval(values, weights=None, strata=None):
 
 
 class BendersDecompositionSolver:
-    """Benders decomposition for two-stage stochastic programs.
-
-    The caller builds the master model and one ``SubproblemWorker`` per
-    scenario; this class only runs the cutting-plane loop.
-
-    Args:
-        master_model: gp.Model with first-stage variables and objective
-            ``imm_cost + mean(theta_vars)`` already set.
-        workers: list of SubproblemWorker, one per scenario, indexed so
-            that ``workers[i].subproblem_id == i`` matches ``theta_vars[i]``.
-        imm_cost: first-stage cost expression on the master (or a float
-            for a constant first stage).
-        theta_vars: MVar of per-scenario epigraph variables.
-        action_vars: MVar of first-stage action variables referenced by the
-            subproblem linking constraints.
-        scenario_weights: optional per-scenario aggregation weights summing
-            to 1 (stratified IS proposals); uniform 1/N when omitted.
-        scenario_strata: optional integer stratum label per scenario, used by
-            the confidence-interval reporting; single stratum when omitted.
-
-    The master objective may carry any further action-only terms (a
-    regularizer, a first-stage cost); the solver never looks at them.
-    Convergence is judged per iteration on the cut-model gap
-    ``sum_s w_s (theta_s - Q_s(a_k))`` between the master's epigraph values
-    at its proposed action ``a_k`` and that action's subproblem values, a
-    quantity in which every other master term cancels.
-
-    Entry points: ``solve`` (iterative cutting-plane loop with optional
-    checkpointing, cut purging, Pareto cuts) and ``solve_with_callback``
-    (single MIP solve injecting cuts lazily at each incumbent).
-    """
 
     def __init__(self, master_model, workers, imm_cost, theta_vars, action_vars,
                  scenario_weights=None, scenario_strata=None):
@@ -426,8 +321,6 @@ class BendersDecompositionSolver:
         self.imm_cost = imm_cost
         self.theta_vars = theta_vars
         self.action_vars = action_vars
-        # Per-scenario aggregation weights (stratified IS proposals); uniform
-        # when not supplied, which reproduces the classic 1/N average.
         scenario_count = theta_vars.shape[0]
         if scenario_weights is None:
             self._scenario_weights = np.full(scenario_count, 1.0 / scenario_count)
@@ -437,16 +330,12 @@ class BendersDecompositionSolver:
             self._scenario_strata = np.zeros(scenario_count, dtype=int)
         else:
             self._scenario_strata = np.asarray(scenario_strata)
-        # Lazily-created |action| epigraph variables for the min-norm
-        # optimal-face re-solve (see _min_norm_master_action).
         self._action_abs_vars = None
         # Purge bookkeeping; solve() re-initializes these per call. Set here
         # so _register_cut is safe to reach before/outside solve().
         self._cut_purge_enabled = False
         self._cut_registry = []
         self._latest_cut_by_scenario = {}
-
-    # ---- Public API ----
 
     def solve(self, 
               init_solution=None,
@@ -464,38 +353,18 @@ class BendersDecompositionSolver:
               min_norm_action=False,
               purge_after=None,
               purge_slack_tol=1e-6):
-        """Cutting-plane loop. Stops when the current iteration's cut-model gap
-        (see the class docstring) is below ``tol`` (absolute); the last master
-        action is then tol-optimal. ``init_solution`` pins the first
-        iteration's action (the master is solved with the action fixed, so
-        its gap and, with ``is_hard_bound``, its exact objective value are
-        available like in any other iteration). Returns ``(upper_bound, info)``
-        where ``upper_bound`` is the last master objective (maximization);
-        ``info`` carries ``master_objective``, ``evaluated_value`` (the last
-        action's value under the full master objective, i.e. master objective
-        minus gap), ``gap`` and ``iterations`` of the last completed
-        iteration, plus ``debug`` on failure."""
         info = {}
         summary = {}
         lower_bound = -GRB.INFINITY
         upper_bound = GRB.INFINITY
-        core_point = None  # For Pareto cuts; initialized after the first master solve.
+        core_point = None
         is_min = self.master_model.ModelSense == GRB.MINIMIZE
         scenario_count = self.theta_vars.shape[0]
 
-        # Cut purging keeps the master from growing without bound: optimality
-        # cuts that stay slack for ``purge_after`` consecutive master solves
-        # are removed (each scenario's newest cut and all feasibility cuts are
-        # kept). ``purge_after=None`` (the default) disables purging. Set up
-        # BEFORE seeding/checkpoint reload so those cuts are registered too.
         self._cut_purge_enabled = purge_after is not None
         self._cut_registry = []
         self._latest_cut_by_scenario = {}
 
-        # The worker set and their env grouping are fixed for the whole solve,
-        # so compute them once. Workers sharing an env must be solved
-        # sequentially (envs are not thread-safe for concurrent optimize), which
-        # makes the env group, not the individual worker, the unit of parallelism.
         active_workers = self.workers[:scenario_count]
         env_groups = _group_workers_by_env(active_workers)
         resolved_max_workers = _resolve_parallel_workers(max_workers, len(env_groups))
@@ -534,9 +403,6 @@ class BendersDecompositionSolver:
             for iteration in range(1, max_iter + 1):
                 global_iteration = iteration_offset + iteration
                 if init_solution is not None and iteration == 1:
-                    # Solve the master with the action pinned at init_solution:
-                    # its epigraph values give this iteration's gap exactly as
-                    # in any other iteration.
                     action, master_obj, theta_values = self._solve_master_with_fixed_action(
                         init_solution, global_iteration, purge_slack_tol, verbose)
                     print(f"Iteration {global_iteration}, action pinned at init_solution")
@@ -552,7 +418,6 @@ class BendersDecompositionSolver:
 
                 print(f"Iteration {global_iteration}, action from master: {action.tolist()}")
 
-                # Solve every subproblem for this candidate action.
                 if use_pareto_cuts:
                     solve_one = lambda w: w.solve_pareto(action, core_point, pareto_epsilon, verbose)
                 else:
@@ -569,15 +434,11 @@ class BendersDecompositionSolver:
                     self._build_cuts(results, active_workers, action)
 
                 if not all_feasible:
-                    # Some scenario infeasible: add feasibility cuts and repeat.
-                    # By design this skips bound refresh, core-point update,
-                    # purging and the checkpoint save.
                     self._add_cuts_to_master(feasibility_cuts, new_cut_records,
                                              global_iteration, 'feasibility')
                     print('-' * 20)
                     continue
 
-                # All scenarios feasible: add optimality cuts and refresh bounds.
                 self._add_cuts_to_master(optimality_cuts, new_cut_records,
                                          global_iteration, 'optimality')
                 # Convergence is judged on THIS iteration only, through the
@@ -594,8 +455,6 @@ class BendersDecompositionSolver:
                 scenario_ids = [worker.subproblem_id for worker in active_workers]
                 gap = float(self._scenario_weights[scenario_ids] @ scenario_gaps)
                 model_cost_to_go = float(self._scenario_weights @ theta_values)
-                # Evaluated value of the master's action under the full master
-                # objective (master value minus the gap).
                 if is_min:
                     upper_bound = master_obj + gap
                 else:
@@ -607,9 +466,6 @@ class BendersDecompositionSolver:
                     'iterations': global_iteration,
                 }
 
-                # If an init_solution was supplied, its evaluated cost is a valid
-                # bound on the master's optimum. Add it once as a hard constraint
-                # to prune the master's search space.
                 if init_solution is not None and iteration == 1 and is_hard_bound:
                     master_obj_expr = self.master_model.getObjective()
                     if is_min:
@@ -626,8 +482,6 @@ class BendersDecompositionSolver:
                       f"Master cost-to-go: {model_cost_to_go}, Subproblem cost-to-go: {cost_to_go_estimation}, "
                       f"max scenario gap: {float(np.max(scenario_gaps)):.6g}")
 
-                # Monte Carlo error of the scenario average: a wide interval
-                # means the scenario sample, not the cuts, limits accuracy.
                 obj_mean, obj_half_width = objective_confidence_interval(
                     [v for (is_feasible, v, _) in results if is_feasible],
                     weights=self._scenario_weights, strata=self._scenario_strata)
@@ -675,13 +529,6 @@ class BendersDecompositionSolver:
         self.master_model.Params.MIPGap = 0.0
         self.master_model.Params.LazyConstraints = 1
 
-        # 2. Subproblem parallelism, set up ONCE for the whole solve. Env groups
-        # are the unit of parallelism -- workers sharing a Gurobi env must be
-        # solved sequentially (envs are not thread-safe for concurrent optimize)
-        # while different env groups run concurrently. A single persistent
-        # ThreadPoolExecutor is reused by every callback so incumbents don't each
-        # pay thread-pool build/teardown; it is sized to the number of env groups
-        # (capped by max_workers / SLURM CPUs / cpu_count).
         active_workers = self.workers[:self.theta_vars.shape[0]]
         env_groups = _group_workers_by_env(active_workers)
         resolved_max_workers = _resolve_parallel_workers(max_workers, len(env_groups))
@@ -691,7 +538,6 @@ class BendersDecompositionSolver:
             else None
         )
 
-        # 3. Attach variables/data to the model object for the callback to access
         # We use the underscore prefix (_) to avoid namespace collisions
         self.master_model._action_vars = self.action_vars
         self.master_model._theta_vars = self.theta_vars
@@ -707,25 +553,18 @@ class BendersDecompositionSolver:
         self.master_model._max_workers = max_workers
         self.master_model._verbose = verbose
 
-        # 4. Start the single optimization call
         print("Starting Benders with Lazy Constraint Callback...")
         try:
             self.master_model.optimize(benders_callback)
         finally:
             if executor is not None:
                 executor.shutdown(wait=False)
-        # 5. Extract results
         info = {}
         if self.master_model.Status == GRB.OPTIMAL:
             return self.master_model.ObjVal, info
         return None, info
 
     def evaluate_action(self, action, parallel=True, max_workers=None):
-        """Solve every worker at ``action``; return ``(values, weighted_mean)``.
-
-        ``values`` are the per-scenario subproblem objectives (unregularized),
-        ``weighted_mean`` their scenario-weight average. Raises if any
-        scenario is infeasible at ``action``."""
         action = np.asarray(action, dtype=float)
         active_workers = self.workers[:self.theta_vars.shape[0]]
         env_groups = _group_workers_by_env(active_workers)
@@ -745,19 +584,7 @@ class BendersDecompositionSolver:
         values = np.array([v for (_, v, _) in results], dtype=float)
         return values, float(self._scenario_weights @ values)
 
-    # ---- Master step ----
-
     def _solve_master_step(self, global_iteration, purge_slack_tol, min_norm_action, verbose):
-        """Solve the master and return ``(action, master_obj, theta_values)``.
-
-        ``theta_values`` are the epigraph variables' values at ``action``
-        (the master's per-scenario cost-to-go estimates), read right after
-        the solve because Gurobi drops solution attributes once the model is
-        modified and updated. Cut activity is captured here for the same
-        reason. ``master_obj`` is read before the min-norm re-solve, which
-        only replaces a degenerate action with the minimum-L1 point on the
-        same optimal face (and returns that point's epigraph values).
-        """
         start = time.time()
         solved = solve_and_handle_errors(self.master_model, verbose=verbose)
         retry_cold = not solved and self.master_model.Status in (
@@ -807,16 +634,6 @@ class BendersDecompositionSolver:
 
     def _solve_master_with_fixed_action(self, fixed_action, global_iteration,
                                         purge_slack_tol, verbose):
-        """Solve the master with the action variables pinned at
-        ``fixed_action`` and return ``(action, master_obj, theta_values)``.
-
-        Used for a caller-supplied ``init_solution``: the master's objective at
-        the pinned action minus this iteration's gap is the action's exact
-        value under the full master objective, whatever action-only terms the
-        objective carries. The original variable bounds are restored without
-        ``update()`` so the solution attributes stay readable until the next
-        solve.
-        """
         fixed = np.asarray(fixed_action, dtype=float).reshape(-1)
         if fixed.shape != (self.action_vars.shape[0],):
             raise ValueError(f"init_solution must have {self.action_vars.shape[0]} entries; got {fixed.shape}")
@@ -833,9 +650,6 @@ class BendersDecompositionSolver:
         return fixed, master_obj, theta_values
 
     def _scenario_gaps(self, results, active_workers, theta_values):
-        """Per-scenario ``theta_s - Q_s`` (maximization) or ``Q_s - theta_s``
-        (minimization) for the given feasible subproblem ``results``, in
-        ``active_workers`` order; >= 0 in exact arithmetic for valid cuts."""
         is_min = self.master_model.ModelSense == GRB.MINIMIZE
         gaps = np.empty(len(active_workers), dtype=float)
         for i, (worker, (is_feasible, v, _)) in enumerate(zip(active_workers, results)):
@@ -845,7 +659,6 @@ class BendersDecompositionSolver:
         return gaps
 
     def _save_master_failure_diagnostics(self, global_iteration, *, clarify_status=True):
-        """Persist a failed master and identify the most likely failure mode."""
         model = self.master_model
         original_status = int(model.Status)
         clarified_status = original_status
@@ -976,22 +789,6 @@ class BendersDecompositionSolver:
         return {"directory": directory, "reason": reason, "summary": summary}
 
     def _min_norm_master_action(self, fallback_action, fallback_theta, verbose=False):
-        """Return ``(action, theta_values)`` at the minimum-L1-norm action on
-        the master's optimal face.
-
-        The master objective only involves the theta epigraph variables, so
-        with few cuts its optimal face is typically unbounded in the action
-        space and simplex returns a degenerate vertex with astronomically
-        large action values (which numerically break the subproblems). This
-        re-solve keeps the PRIMARY objective pinned at its optimal value and,
-        among all optimal solutions, picks the one minimizing ``sum |a_j|``.
-        The action variables themselves stay UNBOUNDED and the master optimum
-        is unchanged -- this is a tie-break on the optimal face, not a bound.
-
-        Any Benders optimality cut is valid at any action point, so cutting at
-        the min-norm optimum preserves correctness. On any failure the
-        first-phase ``(fallback_action, fallback_theta)`` is returned unchanged.
-        """
         model = self.master_model
         original_sense = model.ModelSense
         primary_objective = model.getObjective()
@@ -1033,29 +830,6 @@ class BendersDecompositionSolver:
 
     def _seed_initial_cuts(self, active_workers, iteration, lower_bound, upper_bound,
                            cut_count, checkpoint_path, core_point):
-        """Seed the master with each worker's build-time (a=0) optimality cut.
-
-        Every subproblem was solved once at coefficients ``a = 0`` while it was
-        built, producing ``Q_s(0)`` and the subgradient ``g_s = phi_s(x*(0))``.
-        Since ``Q_s`` is concave in ``a``, ``theta_s <= Q_s(0) + g_s . a`` is a
-        globally valid optimality cut (a tangent that upper-bounds the concave
-        ``Q_s`` for the maximization master; the inequality flips for a
-        minimization master). Injecting all available cuts BEFORE the first
-        master solve means the solver starts from the approximation it would
-        otherwise spend a full iteration (re-)deriving at ``a = 0`` -- so it
-        converges in fewer iterations and the first master action is
-        gradient-informed rather than an arbitrary extreme point.
-
-        When EVERY worker carries a build-time cut, the value at ``a = 0``,
-        ``(1/N) sum_s Q_s(0)``, is a valid incumbent bound (the optimum is no
-        worse than all-zero coefficients) and tightens ``upper_bound``
-        (minimization) or ``lower_bound`` (maximization); a partial average is
-        not a valid bound, so mixed worker sets leave the bounds untouched.
-        Seeded cuts are appended to the checkpoint store so a resume does not
-        lose them. Returns the (possibly tightened) ``(lower_bound,
-        upper_bound, cut_count)``; unchanged when no worker carries a
-        build-time cut.
-        """
         is_min = self.master_model.ModelSense == GRB.MINIMIZE
         seeded_workers, seeded_results = [], []
         for worker in active_workers:
@@ -1115,16 +889,7 @@ class BendersDecompositionSolver:
             )
         return lower_bound, upper_bound, cut_count
 
-    # ---- Cut construction / registration / purging ----
-
     def _build_cuts(self, results, active_workers, action):
-        """Convert subproblem results into Benders cuts and checkpoint records.
-
-        Returns ``(all_feasible, feasibility_cuts, optimality_cuts, cut_records,
-        cost_to_go)`` where ``cost_to_go`` is the scenario-weight-weighted sum
-        of feasible subproblem objectives (already the weighted average when
-        every scenario is feasible; weights sum to 1).
-        """
         is_min = self.master_model.ModelSense == GRB.MINIMIZE
         action_values = np.asarray(action, dtype=float)
         feasibility_cuts, optimality_cuts, cut_records = [], [], []
@@ -1155,11 +920,6 @@ class BendersDecompositionSolver:
         return all_feasible, feasibility_cuts, optimality_cuts, cut_records, cost_to_go
 
     def _add_cuts_to_master(self, cuts, records, iteration, kind):
-        """Add this iteration's cuts of one kind and register them for purging.
-
-        ``records`` is the full record list from ``_build_cuts``; the entries
-        with ``kind`` correspond one-to-one, in order, to ``cuts``.
-        """
         print(f"Iteration {iteration}, adding {len(cuts)} {kind} cuts")
         prefix = 'feas' if kind == 'feasibility' else 'opt'
         constrs = self.master_model.addConstrs(
@@ -1185,12 +945,6 @@ class BendersDecompositionSolver:
             self._latest_cut_by_scenario[record['scenario_id']] = entry
 
     def _update_cut_activity(self, iteration, slack_tol):
-        """Reset the purge clock of cuts tight at the current master solution.
-
-        Must run right after a successful master solve: Gurobi drops solution
-        attributes (Slack) as soon as the model is modified, e.g. by the
-        min-norm re-solve or by adding this iteration's cuts.
-        """
         entries = [e for e in self._cut_registry if e['record']['kind'] == 'optimality']
         if not entries:
             return
@@ -1202,14 +956,6 @@ class BendersDecompositionSolver:
                 entry['last_active'] = iteration
 
     def _purge_inactive_cuts(self, iteration, purge_after):
-        """Drop optimality cuts inactive for >= ``purge_after`` master solves.
-
-        Keeps each scenario's newest cut (every theta stays supported, so the
-        master stays bounded) and all feasibility cuts (dropping one could let
-        the master revisit an infeasible action and cycle). Removal is lazy --
-        no update() here, or Gurobi would discard the current solution that
-        callers still read (action_vars.X) after the final iteration.
-        """
         protected = {id(entry) for entry in self._latest_cut_by_scenario.values()}
         keep, stale = [], []
         for entry in self._cut_registry:
@@ -1221,8 +967,6 @@ class BendersDecompositionSolver:
             self.master_model.remove([entry['constr'] for entry in stale])
             self._cut_registry = keep
         return len(stale)
-
-    # ---- Checkpoint I/O ----
 
     def _checkpoint_paths(self, checkpoint_path):
         return f"{checkpoint_path}.meta.json", f"{checkpoint_path}.cuts.jsonl.gz"
@@ -1424,7 +1168,6 @@ class BendersDecompositionSolver:
         os.replace(tmp_path, meta_path)
 
     def _rewrite_cut_checkpoint_store(self, checkpoint_path):
-        """Rewrite the cuts file to exactly the surviving registry records."""
         cuts_path = self._checkpoint_paths(checkpoint_path)[1]
         tmp_path = f"{cuts_path}.tmp"
         with gzip.open(tmp_path, 'wt', encoding='utf-8') as handle:
@@ -1435,14 +1178,6 @@ class BendersDecompositionSolver:
     def _checkpoint_iteration(self, checkpoint_path, global_iteration, lower_bound,
                               upper_bound, core_point, cut_count, new_cut_records,
                               purge_after):
-        """Purge stale cuts, then persist this iteration's checkpoint state.
-
-        Purge runs AFTER this iteration's cuts were registered (so each
-        scenario's newest cut is protected) and BEFORE the save (so the store
-        reflects the surviving cuts). After a purge the cuts file is rewritten
-        to exactly the surviving registry; otherwise the new records are
-        appended. Returns the updated running cut count.
-        """
         purged_count = 0
         if self._cut_purge_enabled:
             purged_count = self._purge_inactive_cuts(global_iteration, purge_after)
@@ -1469,18 +1204,7 @@ class BendersDecompositionSolver:
             self._save_cut_checkpoint(checkpoint_path, checkpoint_state, new_cut_records=new_cut_records)
         return checkpoint_state['cut_count']
 
-    # ---- Subproblem dispatch / misc ----
-
     def _solve_all_subproblems(self, active_workers, env_groups, solve_one, executor, global_iteration):
-        """Solve every subproblem for the current master action.
-
-        Uses the parallel env-group dispatch when ``executor`` is available and
-        transparently falls back to a sequential solve (with per-subproblem
-        timing) if worker threads cannot be started. Returns the results aligned
-        to ``active_workers`` together with the (possibly disabled) executor.
-        A tqdm progress bar tracks per-worker completion (with ETA) regardless
-        of which path is taken.
-        """
         progress_kwargs = dict(
             total=len(active_workers),
             desc=f"Iter {global_iteration} subproblems",
@@ -1516,7 +1240,7 @@ class BendersDecompositionSolver:
         xk = np.asarray(xk, dtype=float)
         core = np.asarray(core, dtype=float)
         if alpha is None:
-            alpha = 1.0 / (k + 1.0)  # diminishing step
+            alpha = 1.0 / (k + 1.0)
         return (1.0 - alpha) * core + alpha * xk
 
     def _get_model_memory_usage(self, model):

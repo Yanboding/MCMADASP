@@ -34,7 +34,6 @@ def main():
 
     fig, ax_band = plt.subplots(1, 1, figsize=(14, 8))
 
-    # CI as smooth bands over runs sorted by penalized mean — no per-run bar clutter
     ax_band.fill_between(rank, df.final_mean - df.final_half_window,
                          df.final_mean + df.final_half_window,
                          alpha=0.25, color="tab:blue")

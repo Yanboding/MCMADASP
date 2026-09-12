@@ -1,4 +1,3 @@
-"""Regression tests for cached objectives and returned scheduling actions."""
 import unittest
 from pathlib import Path
 import tempfile
@@ -45,7 +44,6 @@ class TestAgentModelConsistency(unittest.TestCase):
             sample_path_proposal=FixedLengthProposal(1), generating_function=gf,
             solver_name=solver, grb_env=self.grb, subproblem_grb_envs=[self.grb],
         )
-        # A deterministic two-period scenario makes fresh/reused comparisons exact.
         agent.sample_paths = [SamplePath(np.zeros((1, self.env.num_types)),
                                         Terminal.TRUNCATED, [1., self.env.discount_factor], [1.])]
         self.agents.append(agent)

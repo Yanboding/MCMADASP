@@ -1,33 +1,3 @@
-"""Validate the true-LP reformulation of the training subproblem builder.
-
-`train_subproblem_builder_fn` now builds the scenario subproblem as a genuine
-LP (penalty coefficients as constants) and returns
-
-    (sub_model, None, objective_builder_fn, cut_gradient_fn)
-
-The Benders cut is recovered from the penalty feature vector phi(x*) instead of
-the linking-constraint duals `.Pi`. By the envelope theorem this gradient equals
-the dual of the old ``coefficients == action`` linking constraint, so the cut is
-mathematically identical to the previous bilinear-QP formulation -- but the LP
-can be warm-started by simplex.
-
-This script checks:
-
-  PART 1 (the exact case that crashed): build the LP for subproblem 3 and confirm
-    the cold solve at zero coefficients reproduces the captured QP oracle
-    objective (ObjVal ~= 1110174.6).
-
-  PART 2 (LP == QP equivalence, on the fastest scenario for speed): rebuild the
-    OLD bilinear-QP subproblem inline and compare, at several coefficient
-    vectors a:
-      * ObjVal(LP) == ObjVal(QP)                          (must match tightly)
-      * cut_gradient_fn(LP) == linking-constraint .Pi(QP) (subgradient match)
-    plus a finite-difference check that cut_gradient_fn is a true subgradient of
-    the LP value function Q(a).
-
-Run (after the usual module/venv setup):
-    python -u test/validate_subproblem_3_fix.py
-"""
 import os
 import sys
 import json
@@ -76,12 +46,6 @@ def _flatten_constrs(obj):
 
 
 def build_qp_subproblem(agent, grb_env, scenario_id, init_state):
-    """Faithful rebuild of the PREVIOUS bilinear-QP subproblem builder.
-
-    Coefficients are Gurobi variables pinned by ``coefficients == action``
-    linking constraints, so the penalty contributes ``coefficient_var *
-    decision_var`` quadratic terms. Returns (model, linking_constraints).
-    """
     sub_model = gp.Model(f"QP_Subproblem_{scenario_id}", env=grb_env)
     sub_model.setParam("Method", 2)
     sub_model.setParam("Crossover", 1)
@@ -104,7 +68,6 @@ def build_qp_subproblem(agent, grb_env, scenario_id, init_state):
     action_var = agent.get_action_var(model=sub_model, advance_scheduling_type=agent.future_decision_var_type)
     agent.add_action_space_constraints(model=sub_model, state_var=state_var, action_var=action_var)
 
-    # Bilinear QP: the coefficient VARIABLES times the path's penalty feature.
     cost, Phi, _, _ = agent.pathwise_terms(
         sub_model, gen, gen.form('training'), agent.sample_paths[scenario_id], state_var, action_var)
     sub_model.setObjective(cost + coefficient_vars @ Phi, GRB.MINIMIZE)
@@ -175,7 +138,6 @@ def main():
     agent, env, grb_env, resolved_init_state, sample_path_number = make_agent()
     results = []
 
-    # ---- PART 1: subproblem 3 reproduces the captured QP oracle ObjVal -------
     print(f"\n=== PART 1: subproblem {SCENARIO_ID} LP cold solve vs QP oracle ===")
     t0 = time.time()
     lp_model, link_rows, obj_builder, cut_grad = agent.train_subproblem_builder_fn(
@@ -184,7 +146,6 @@ def main():
     print(f"Built LP subproblem {SCENARIO_ID} in {time.time() - t0:.1f}s "
           f"(link_rows is None -> {link_rows is None})")
 
-    # The cold solve already optimized at zero coefficients.
     cold_status_ok = lp_model.Status == GRB.OPTIMAL
     cold_obj = lp_model.ObjVal if cold_status_ok else float("nan")
     obj_err = abs(cold_obj - ORACLE_OBJVAL) / abs(ORACLE_OBJVAL)
@@ -194,8 +155,6 @@ def main():
           f"(rel err {obj_err:.2e}) -> {'PASS' if check1 else 'FAIL'}")
     results.append(check1)
 
-    # Cut gradient at the cold (zero-coefficient) optimum (informative: may pick a
-    # different vertex than the QP barrier solve when the optimum is degenerate).
     ncoef_full = agent._require_generating_function().number_of_coefficients
     zero_a = np.zeros(ncoef_full)
     duals0 = np.asarray(cut_grad(lp_model, zero_a), dtype=float)
@@ -204,10 +163,6 @@ def main():
           f"nnz={(np.abs(duals0) > 1e-9).sum()}/{len(duals0)} "
           f"(oracle ~{ORACLE_DUALS_NNZ})")
 
-    # ---- PART 2: LP == QP on a small but NON-TRIVIAL scenario ----------------
-    # Pick the shortest sample path whose length is >= 10 so the dual / finite-
-    # difference checks are meaningful (a length-1 path is degenerate), while
-    # still building and solving quickly.
     lengths = sorted((agent.sample_paths[s].length, s) for s in range(sample_path_number))
     non_trivial = [s for (L, s) in lengths if L >= 10]
     fast_sid = non_trivial[0] if non_trivial else lengths[-1][1]
@@ -253,7 +208,6 @@ def main():
         # legitimately differ at degenerate optima (both are valid subgradients).
         results.append(obj_ok)
 
-    # ---- Finite-difference check that cut_gradient_fn is a true subgradient ---
     a_fd = rng.normal(scale=50.0, size=ncoef)
     base_obj, base_duals = solve_lp(lp2, obj_builder2, cut_grad2, a_fd)
     eps = 1e-2

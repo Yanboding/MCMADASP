@@ -148,7 +148,6 @@ class ALPRowGenerationAgent(InfiniteRTAgent):
         state_var = self.get_state_var(separation_model)
         action_var = self.get_action_var(separation_model, advance_scheduling_type=GRB.INTEGER)
         self.add_action_space_constraints(separation_model, state_var, action_var)
-        # --- Objective ---
         candidate_cost = self.env.cost_fn(state_var, action_var, is_var=True)
         approx_V = self.get_approx_value_fn(state=state_var,
                                             W_0=W_0,
@@ -196,8 +195,6 @@ class ALPRowGenerationAgent(InfiniteRTAgent):
             policy_model.setParam("OptimalityTol", 1e-9)
             policy_model.setParam("OutputFlag", 0)
             policy_model.setParam("LogToConsole", 0)
-            # m.setParam("MIPFocus", 1)
-            # ---------- 1. today’s increments ----------
             action_var = self.get_action_var(policy_model, advance_scheduling_type=GRB.INTEGER)
             self.add_action_space_constraints(policy_model, state, action_var)
             if action is not None:
@@ -215,7 +212,6 @@ class ALPRowGenerationAgent(InfiniteRTAgent):
             policy_model.setObjective(imm_cost + fut_cost, GRB.MINIMIZE)
             if not solve_and_handle_errors(policy_model, verbose=verbose):
                 raise RuntimeError("Master model optimal solution not found")
-            # ---------- 8. return ----------
             advance_scheduling_decision, _ = self.get_solution(action_var, is_final=True)
             # Regular-first repair: the trained value function prices a free
             # regular slot at ~ the discounted overtime cost (U_j ~
@@ -233,7 +229,3 @@ if "__main__" == __name__:
     agent = ALPRowGenerationAgent(env=env, discount_factor=env.discount_factor)
     print(agent.train(debug=False))
     print('env.discount_factor:', env.discount_factor)
-    #duals = [84.0, 0.0, 0.0, 0.0, 0.0, 1.0]
-    # [10000.0, 5919.593918987857, 5860.397979797979, 5801.794, 0.0, 4951.015202530357, 4901.505050505051, 4852.490000000002, 0.0, 10000.0, 10000.0]
-    #print(list(agent.separation_callback(duals)))
-    # (10874.249099999995, [7236.880199999996, 98.9999999999999, 99.0, 98.00999999999999, 0.0, 0.0, 0.0, 0.0, 0.0, 197.99999999999997, 293.0498999999999])

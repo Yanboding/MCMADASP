@@ -45,7 +45,6 @@ ZERO_LINE = re.compile(
     r'\+/- ([-+0-9.eE]+) \(95% CI, N=(\d+)\)'
 )
 
-# Validated 2-series categorical pair (CVD-safe; see dataviz palette).
 COLOR_UB = '#2a78d6'
 COLOR_MEAN = '#e8963a'
 INK = '#1a1a19'
@@ -53,14 +52,6 @@ INK_MUTED = '#52514e'
 
 
 def parse_log(log_path):
-    """Return one row per iteration: the CI line closes the iteration and is
-    paired with the most recent UB/LB line above it.
-
-    A ``Zero-penalty subproblem objective mean ...`` line (printed next to the
-    a=0 seed cuts, before iteration 1) becomes iteration 0; its upper bound is
-    the pre-training cap (the first iteration's UB) and its lower bound is the
-    zero-penalty mean itself (the a=0 bound the seed line reports).
-    """
     rows = []
     zero_row = None
     last_bounds = None
@@ -70,7 +61,7 @@ def parse_log(log_path):
             if zero_match:
                 zero_row = {
                     'iteration': 0,
-                    'upper_bound': None,  # filled from the first iteration's UB
+                    'upper_bound': None,
                     'lower_bound': float(zero_match.group(1)),
                     'subproblem_obj_mean': float(zero_match.group(1)),
                     'ci_half_width': float(zero_match.group(2)),
@@ -116,9 +107,6 @@ def _style_axis(ax):
 
 
 def _burn_in_cutoff(rows, scale_factor=5.0):
-    """First index from which UB and the mean stay within ``scale_factor`` times
-    the final magnitudes. The cut-less early master pushes coefficients to
-    astronomic values; everything before this index is off any readable scale."""
     final = rows[-1]
     limit = scale_factor * max(abs(final['upper_bound']),
                                abs(final['subproblem_obj_mean']), 1.0)
@@ -165,8 +153,6 @@ def plot_ci_band(rows, out_path, zoom_last=200):
 
     fig, (ax_width, ax_zoom) = plt.subplots(2, 1, figsize=(10, 8))
 
-    # Top: the CI half-width itself. Always positive, so an ordinary log axis
-    # shows the whole decay without any sign gymnastics.
     ax_width.plot(iterations, half, color=COLOR_MEAN, linewidth=2,
                   label='95% CI half-width')
     ax_width.axhline(final_scale, color=COLOR_UB, linewidth=1.5,
@@ -194,8 +180,6 @@ def plot_ci_band(rows, out_path, zoom_last=200):
                     bbox_to_anchor=(0.5, -0.28), ncol=3, columnspacing=1.2,
                     handletextpad=0.6)
 
-    # Bottom: linear zoom on the tail — the band around the mean stays wider
-    # than the mean itself.
     tail = rows[-zoom_last:]
     tail_iters = [r['iteration'] for r in tail]
     tail_mean = [r['subproblem_obj_mean'] for r in tail]
@@ -218,7 +202,6 @@ def plot_ci_band(rows, out_path, zoom_last=200):
 
 
 def _sci_label(value):
-    """Format 1.419e+09 as mathtext ``1.419 x 10^9``."""
     mantissa, exponent = f'{value:.3e}'.split('e')
     return f'${mantissa} \\times 10^{{{int(exponent)}}}$'
 

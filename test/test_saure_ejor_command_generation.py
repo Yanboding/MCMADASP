@@ -29,7 +29,6 @@ MIXTURE_SPEC = {
 
 
 def make_toy_envs():
-    """Single-variant toy env; no policies are resolved so no training runs."""
     spec = ExperimentSpec(
         name='saure_ejor_unit_test',
         config_type='toy',
@@ -159,9 +158,6 @@ SYNTHETIC_COEFFICIENTS = [1.5, -2.0, 3.25]
 
 
 def _loader_skipping_own_folders(*args, **kwargs):
-    """Force the recipe's own-results-folder lookups (``folder_path=None``) to
-    miss, so tests stay hermetic regardless of what currently sits in the real
-    ``experiments/results/case_study_ejor_*`` folders."""
     if kwargs.get('folder_path') is None:
         return None
     return real_load_trained_coefficients(*args, **kwargs)
@@ -202,8 +198,6 @@ class TestSaureEjorRecipe(unittest.TestCase):
             )
 
     def test_missing_coefficients_fail_fast(self):
-        # Neither the experiments' own folders nor the shared folder have
-        # coefficients -> the recipe must raise before any training.
         with mock.patch(
             'param_generation.cli.load_trained_coefficients_from_folder',
             return_value=None,
@@ -261,9 +255,6 @@ class TestSaureEjorRecipe(unittest.TestCase):
                 parsed_lines.append(json.loads(payload))
             parsed = [record for group in parsed_lines for record in group]
             self.assertEqual(len(parsed), 8)
-            # Segmented layout with continuous line indices: the first
-            # num_groups//2 lines hold experiment 1 only (bounds skipped), the
-            # remaining lines experiment 2 only (bounds kept).
             self.assertTrue(lines[0].startswith('1 '))
             self.assertTrue(lines[1].startswith('2 '))
             self.assertTrue(all(
@@ -279,18 +270,14 @@ class TestSaureEjorRecipe(unittest.TestCase):
 
             expected_weights = [0.99 ** t for t in range(5)]
             for rep, steady in zip(replication, steady_state):
-                # Shared warm-up prefix; independent tails.
                 self.assertEqual(rep['sample_path'][:6], steady['sample_path'][:6])
                 self.assertNotEqual(rep['sample_path'][6:], steady['sample_path'][6:])
-                # Replication: 6 warm-up + 4 tail arrivals; gamma**t weights.
                 self.assertEqual(len(rep['sample_path']), 6 + 4)
                 self.assertEqual(len(rep['period_weights']), 5)
                 for observed, expected in zip(rep['period_weights'], expected_weights):
                     self.assertAlmostEqual(observed, expected)
-                # Steady state: shared ALP warm-up policy.
                 self.assertNotIn('warm_up_policy_id', rep)
                 self.assertEqual(steady['warm_up_policy_id'], 'row_gen_alp')
-                # Both embed the trained coefficients and the same shared ALP.
                 for record in (rep, steady):
                     self.assertEqual(
                         record['generating_function_spec']['coefficients'],

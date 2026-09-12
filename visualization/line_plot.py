@@ -18,7 +18,6 @@ def opt_plot(df, xlable, plot_labels, save_file, text_labels=[], ylabel='Value F
             ax.text(x_vals[l], df[text_label][l], str(round(txt, 3)), ha='center', va='bottom', fontsize=20)
 
     set_fontsize(ax, 20)
-    # To handle multiple lines with the same label, we need to manually create a custom legend
     handles, labels = ax.get_legend_handles_labels()
     unique_labels = sorted(list(set(labels)))
     unique_handles = [handles[labels.index(label)] for label in unique_labels]
@@ -26,7 +25,6 @@ def opt_plot(df, xlable, plot_labels, save_file, text_labels=[], ylabel='Value F
     ax.set_xticklabels(x_vals, rotation=0, fontsize=20)
     ax.set_xlabel(xlable, fontsize=20)
     ax.set_ylabel(ylabel, fontsize=20)
-    # Create legend
     ax.legend(unique_handles, unique_labels, fontsize=20)
     fig.tight_layout()
     plt.savefig(save_file)
@@ -44,7 +42,6 @@ def approximate_value_plot(df, xlabel, ylabel, approx_labels, text_labels, plot_
         ax.fill_between(x_vals, df[approx_label+'_lower'], df[approx_label+'_upper'], alpha=0.2)
 
     set_fontsize(ax, 20)
-    # To handle multiple lines with the same label, we need to manually create a custom legend
     handles, labels = ax.get_legend_handles_labels()
     unique_labels = sorted(list(set(labels)))
     unique_handles = [handles[labels.index(label)] for label in unique_labels]
@@ -52,7 +49,6 @@ def approximate_value_plot(df, xlabel, ylabel, approx_labels, text_labels, plot_
     ax.set_xticklabels(x_vals, rotation=0, fontsize=20)
     ax.set_xlabel(xlabel, fontsize=20)
     ax.set_ylabel(ylabel, fontsize=20)
-    # Create legend
     ax.legend(unique_handles, unique_labels, fontsize=20)
     fig.tight_layout()
     plt.savefig(save_file)
@@ -78,10 +74,8 @@ def approximate_value_plot_from_running_stats_dict(running_stats_dict, x_vals, x
         ax.fill_between(x_vals, means-half_window, means+half_window, alpha=0.2)
         if is_show_text:
             for x, y, hw in zip(x_vals, means, half_window):
-                # offset = max(hw * 1.1, 0.02)  # Ensure a minimum offset
                 ax.text(x, y, f"{y:.0f}", ha='center', va='bottom', fontsize=20)
     set_fontsize(ax, 30)
-    # To handle multiple lines with the same label, we need to manually create a custom legend
     handles, labels = ax.get_legend_handles_labels()
     unique_labels = sorted(list(set(labels)))
     unique_handles = [handles[labels.index(label)] for label in unique_labels]
@@ -97,13 +91,6 @@ def approximate_value_plot_from_running_stats_dict(running_stats_dict, x_vals, x
     ax.set_title(title, fontsize=33)
     if title != None:
         ax.set_title(title, fontsize=30)
-    # --- MODIFIED LEGEND SECTION ---
-    # 1. bbox_to_anchor=(0.5, -0.15):
-    #    x=0.5 centers it horizontally.
-    #    y=-0.15 pushes it down below the axis.
-    #    (You may need to adjust -0.15 to -0.20 if your xlabel is very tall)
-    # 2. loc='upper center':
-    #    Aligns the TOP CENTER of the legend box to the anchor point defined above.
     ax.legend(
         unique_handles,
         unique_labels,
@@ -114,11 +101,9 @@ def approximate_value_plot_from_running_stats_dict(running_stats_dict, x_vals, x
         loc='upper center'
     )
     ax.grid(True)
-    # This targets the '1e6' text at the top of the axis
     ax.yaxis.get_offset_text().set_fontsize(20)
     fig.tight_layout()
     plt.savefig(save_file, bbox_inches='tight', format='svg')
-    # plt.show()
 
 
 def approximate_value_plot_from_running_stats(
@@ -129,19 +114,16 @@ def approximate_value_plot_from_running_stats(
     save_file,
     line_label=None,
 ):
-    # ----- Prepare data -----
     x_vals = sorted(running_stats_dict.keys())
     means = np.array([running_stats_dict[x].mean for x in x_vals]).reshape(-1)
     half_window = np.array([running_stats_dict[x].half_window(0.95) for x in x_vals]).reshape(-1)
 
-    # ----- Figure / axes -----
     fig, ax = plt.subplots(figsize=(12, 6), dpi=150)
     fig.patch.set_facecolor("white")
     ax.set_facecolor("#fafafa")
 
     line_color = "#2f6df6"
 
-    # ----- Main plot -----
     ax.plot(
         x_vals,
         means,
@@ -162,7 +144,6 @@ def approximate_value_plot_from_running_stats(
         zorder=2,
     )
 
-    # ----- Point annotations -----
     y_range = max(means.max() - means.min(), 1e-8)
     text_offset = 0.03 * y_range
 
@@ -184,33 +165,27 @@ def approximate_value_plot_from_running_stats(
             zorder=4,
         )
 
-    # ----- Labels / title -----
     ax.set_xlabel(xlabel, fontsize=20, labelpad=12)
     ax.set_ylabel(ylabel, fontsize=20, labelpad=12)
     ax.set_title(title, fontsize=24, weight="bold", pad=18)
 
-    # ----- Ticks -----
     ax.set_xticks(x_vals)
     ax.tick_params(axis="both", labelsize=18)
 
-    # ----- Grid / spines -----
     ax.grid(axis="y", linestyle="--", alpha=0.3)
     ax.grid(axis="x", visible=False)
 
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
 
-    # ----- Limits / margins -----
     lower = np.min(means - half_window)
     upper = np.max(means + half_window)
     pad = 0.08 * max(upper - lower, 1e-8)
     ax.set_ylim(lower - pad, upper + 2 * pad)
 
-    # ----- Legend -----
     if line_label is not None:
         ax.legend(frameon=False, fontsize=18)
 
-    # ----- Save / show -----
     fig.tight_layout()
     fig.savefig(save_file, bbox_inches="tight", dpi=300)
     plt.show()
@@ -226,7 +201,6 @@ def approximate_value_plot_from_multid_running_stats(running_stats_dict, x_vals,
         for l, txt in enumerate(means):
             ax.text(x_vals[l], means[l], str(round(txt, 3)), ha='center', va='bottom', fontsize=20)
     set_fontsize(ax, 20)
-    # To handle multiple lines with the same label, we need to manually create a custom legend
     handles, labels = ax.get_legend_handles_labels()
     unique_labels = sorted(list(set(labels)))
     unique_handles = [handles[labels.index(label)] for label in unique_labels]
@@ -235,7 +209,6 @@ def approximate_value_plot_from_multid_running_stats(running_stats_dict, x_vals,
     ax.set_xlabel(xlabel, fontsize=20)
     ax.set_ylabel(ylabel, fontsize=20)
     ax.set_title(title, fontsize=20)
-    # Create legend
     ax.legend(unique_handles, unique_labels, fontsize=20)
     fig.tight_layout()
     plt.savefig(save_file)

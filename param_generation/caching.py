@@ -1,5 +1,3 @@
-"""Read/write helpers for cached training results."""
-
 import glob
 import json
 import os
@@ -8,18 +6,12 @@ from utils import get_uid
 
 
 def training_uid(env_args, agent_args=None):
-    """Cache uid that includes agent_args (e.g. proposal spec) when present.
-
-    When agent_args is None or empty, falls back to the env-only uid for
-    backward compatibility with previously cached records.
-    """
     if not agent_args:
         return get_uid(env_args)
     return get_uid({'env_args': env_args, 'agent_args': agent_args})
 
 
 def load_cached_training_result(experiment_name, file_name, env_args, agent_args):
-    # useful parameters for coefficient training
     file_path = os.path.join('experiments', 'results', experiment_name, file_name)
     if not os.path.exists(file_path):
         return None
@@ -62,15 +54,6 @@ def load_trained_coefficient_record_from_folder(
     sample_path_number=None,
     folder_path=None,
 ):
-    """Load one trained-coefficient record from JSONL training outputs.
-
-    The expected record format is the output written by
-    ``run.py::train_lowerbound_for_init_state`` /
-    ``train_penalty_coefficients_for_env`` with keys like
-    ``tight_penalized_lower_bound`` and ``coefficients``. Returns the winning
-    record (a dict) with an extra ``'file'`` key naming the JSONL file it came
-    from, or ``None`` when nothing matches.
-    """
     search_dir = folder_path or os.path.join('experiments', 'results', experiment_name)
     if not os.path.isdir(search_dir):
         return None
@@ -120,8 +103,6 @@ def load_trained_coefficients_from_folder(
     sample_path_number=None,
     folder_path=None,
 ):
-    """Coefficient vector of :func:`load_trained_coefficient_record_from_folder`
-    (``None`` when no record matches)."""
     record = load_trained_coefficient_record_from_folder(
         experiment_name,
         mutate_val=mutate_val,

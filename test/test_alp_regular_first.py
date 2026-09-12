@@ -1,18 +1,3 @@
-"""The ALP policy must never book overtime while regular capacity remains.
-
-The trained value function prices a free regular slot at exactly the
-discounted overtime cost (U_j ~ overtime_cost * gamma**j, V_j ~ 0), so in the
-policy LP regular and overtime slots tie and Gurobi may return a vertex that
-books overtime with regular slots free. ``ALPRowGenerationAgent.solve`` must
-therefore repair the returned action to the canonical regular-first split
-(the same formula ``env.valid_actions`` uses):
-
-    overtime_decision = max(0, regular_bookings + new_booking_slots - regular_capacity)
-
-The test uses inflated U coefficients so the UNREPAIRED LP strictly prefers
-overtime, making the pre-fix failure deterministic rather than tie-luck.
-"""
-
 import os
 import sys
 import unittest
@@ -57,16 +42,12 @@ class AlpRegularFirstTest(unittest.TestCase):
             np.asarray(overtime_decision), expected_overtime,
             err_msg='overtime used while regular capacity remains',
         )
-        # The repaired action stays feasible.
         self.assertTrue(np.all(np.asarray(overtime_decision) + overtimes <= env.overtime_capacity))
         post_regular = regular_bookings + new_booking_slots - np.asarray(overtime_decision)
         self.assertTrue(np.all(post_regular >= 0))
         self.assertTrue(np.all(post_regular <= env.regular_capacity))
 
     def test_wasteful_overtime_action_is_repaired(self):
-        """Deterministic repair check: force an action that books all new
-        slots as overtime although regular capacity is free; ``solve`` must
-        return it with the canonical regular-first split instead."""
         env = get_config_by_type('toy').env
         planning_horizon = env.planning_horizon
         num_types = env.num_types
@@ -82,10 +63,8 @@ class AlpRegularFirstTest(unittest.TestCase):
             np.array([1, 0]),
         )
         forced_scheduling = np.zeros((env.booking_window_size, num_types), dtype=int)
-        forced_scheduling[1, 0] = 1  # book the type-0 patient on day 1
+        forced_scheduling[1, 0] = 1
         forced_slots = env.convert_action_to_booking_slots(forced_scheduling)
-        # All of the day's new slots pushed into overtime although day 1's
-        # regular capacity is completely free.
         wasteful_action = (forced_scheduling, forced_slots)
 
         _, (advance_scheduling_decision, overtime_decision), _ = agent.solve(
@@ -104,10 +83,6 @@ class AlpRegularFirstTest(unittest.TestCase):
 
 class HindsightRegularFirstTest(unittest.TestCase):
     def test_wasteful_overtime_action_is_repaired(self):
-        """Same deterministic repair check for the penalized hindsight policy:
-        its penalty terms can tie or favour overtime while regular capacity
-        remains, so ``ApproxQAgent.solve`` must also return the canonical
-        regular-first split."""
         env = get_config_by_type('toy').env
         planning_horizon = env.planning_horizon
         num_types = env.num_types

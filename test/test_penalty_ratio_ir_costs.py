@@ -1,7 +1,3 @@
-"""Information-relaxation bounds at several penalty ratios (toy env).
-
-Run from the repo root:  python -m test.test_penalty_ratio_ir_costs
-"""
 import numpy as np
 
 from experiments import get_config_by_type
@@ -25,12 +21,10 @@ def test_bounds_per_ratio_are_concave_in_t():
     assert sorted(bounds) == [0.0, 0.5, 1.0]
     # t -> V_t is a minimum of affine functions of t, hence concave.
     assert bounds[0.5] >= 0.5 * (bounds[0.0] + bounds[1.0]) - 1e-6, bounds
-    # t = 0 is the zero-penalty bound regardless of the coefficients.
     zero_spec = {'name': 'linear_penalty'}
     zero_only = run._build_lowerbound_instances(env, zero_spec, None, None, penalty_ratios=(1,))
     zero_bound = run._information_relaxation_bounds(zero_only, state, tail, None)[1.0]
     assert np.isclose(bounds[0.0], zero_bound, rtol=1e-9, atol=1e-6), (bounds[0.0], zero_bound)
-    # Legacy default grid.
     legacy = run._build_lowerbound_instances(env, spec, None, None)
     assert sorted(legacy) == [0.0, 1.0]
 

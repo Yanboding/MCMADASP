@@ -5,13 +5,8 @@ import scipy.stats as st
 
 
 class RunningStats:
-    """
-    Calculates running statistics for a data stream in a memory-efficient manner.
-    """
 
     def __init__(self, n=0, mean=0.0, m2=0.0):
-        # Sample count, running mean and sum of squared deviations (m2);
-        # ``record``/``__iadd__`` keep all three up to date.
         self.n = n
         self.mean = mean
         self.m2 = m2
@@ -27,7 +22,6 @@ class RunningStats:
         return sqrt(self.variance())
 
     def copy(self) -> 'RunningStats':
-        """Creates a copy of the RunningStats instance."""
         new_stat = RunningStats()
         new_stat.n = self.n
         new_stat.mean = self.mean
@@ -35,7 +29,6 @@ class RunningStats:
         return new_stat
 
     def record(self, value: float):
-        """Adds a new sample to the running calculation."""
         self.n += 1
         delta = value - self.mean
         self.mean += delta / self.n
@@ -43,22 +36,11 @@ class RunningStats:
         self.m2 += delta * delta2
 
     def record_batch(self, values, counts):
-        """
-        Update the running statistics with `counts[i]` copies of `values[i]`.
-
-        Parameters
-        ----------
-        values : 1‑D array‑like of constants            (e.g. waiting times 0,1,2,…)
-        counts : 1‑D array‑like of non‑negative integers (how many start after that wait)
-
-        The two arrays must have equal length.
-        """
         m = counts.sum()
         if m == 0:
             return
         batch_mean = (counts*values).sum()/m
         batch_var_sum = (counts * (values - batch_mean) ** 2).sum()
-        # treat the batch as another RunningStat and merge once
         self += RunningStats(n=m, mean=batch_mean, m2=batch_var_sum)
 
     def half_window(self, confidence):
@@ -68,7 +50,6 @@ class RunningStats:
             half = t_crit * self.std() / np.sqrt(self.n)
         return half
 
-    # ... (confidence_interval and __repr__ remain the same) ...
     def confidence_interval(self, confidence: float = 0.95) -> str:
         if self.n < 2: return f"{self.mean} \pm 0.0"
         half_window = self.half_window(confidence)
@@ -78,7 +59,6 @@ class RunningStats:
         return f"RunningStats(n={self.n}, mean={self.mean:.4f}, std={self.std():.4f}, 95% CI={self.mean:.4f} \pm {self.half_window(0.95):.4f})"
 
     def __iadd__(self, other):
-        """Handles in-place addition (+=)."""
         if isinstance(other, numbers.Number):
             self.record(float(other))
             return self
@@ -95,25 +75,19 @@ class RunningStats:
         self.n = new_n
         return self
 
-    # --- [MODIFIED] __add__ method ---
     def __add__(self, other):
-        """Handles addition (+). Returns a new instance."""
-        # Case 1: Add a number (returns a new instance with the number pushed)
         if isinstance(other, numbers.Number):
             new_stat = self.copy()
             new_stat.record(float(other))
             return new_stat
 
-        # Case 2: Add another RunningStats object
         if isinstance(other, RunningStats):
             new_stat = self.copy()
-            new_stat += other  # Use the efficient in-place add for merging
+            new_stat += other
             return new_stat
 
-        # If the type is unsupported
         return NotImplemented
 
-    # ... (__str__ and confidence_interval_diff remain the same) ...
     def __str__(self) -> str:
         if self.n == 0: return "RunningStats(empty)"
         lower, upper = self.confidence_interval()
@@ -128,21 +102,9 @@ class RunningStats:
         return meanDiff, halfWindow
     
     def __truediv__(self, other):
-        """
-        Division operator: returns a RunningStats that represents
-        the ratio of the means self/other, with variance estimated
-        via the delta method.
-
-        Notes
-        -----
-        This is an *approximation*: it does NOT reconstruct sample-wise
-        ratios, but treats the ratio as a derived statistic with
-        effective sample size = min(self.n, other.n).
-        """
         if isinstance(other, numbers.Number):
             if other == 0:
                 raise ZeroDivisionError("Cannot divide by zero.")
-            # scale mean, scale variance
             new_mean = self.mean / other
             new_var = self.variance() / (other**2)
             eff_n = self.n
@@ -159,7 +121,7 @@ class RunningStats:
             var_ratio = (self.variance() / self.n) / (other.mean**2) \
                       + (self.mean**2 / other.mean**4) * (other.variance() / other.n)
 
-            eff_n = min(self.n, other.n)  # conservative choice
+            eff_n = min(self.n, other.n)
             ratio_m2 = var_ratio * (eff_n - 1)
 
             return RunningStats(n=eff_n, mean=ratio_mean, m2=ratio_m2)
@@ -167,12 +129,10 @@ class RunningStats:
         return NotImplemented
 
 
-
 if __name__ == "__main__":
     print("--- Example 1: Basic Usage ---")
     x_1 = RunningStats(n=10, mean=10, m2=300)
     print(x_1)
     x_2 = 2
-    #x_2 = RunningStats(n=10, mean=20, m2=200)
     x_1 = x_1/x_2
     print(x_1)

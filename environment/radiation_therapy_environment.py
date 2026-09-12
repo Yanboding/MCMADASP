@@ -42,41 +42,33 @@ class RTEnv:
         self.planning_horizon = self.booking_window_size + self.num_sessions - 1
         self._reset_initial_state_sampler()
 
-        # Create the mapping matrix C of shape (H, N * K)
         self.booking_mapping_matrix = np.zeros((self.planning_horizon, self.booking_window_size * self.num_types))
         
         for m in range(self.planning_horizon):
             for i in range(self.booking_window_size):
                 j = m - i
-                # If the diagonal falls within the valid treatment pattern window
                 if 0 <= j < self.num_sessions:
                     for k in range(self.num_types):
-                        # Flattened index: i * K + k
                         self.booking_mapping_matrix[m, i * self.num_types + k] = self.treatment_pattern[j, k]
         
-        # 1. Precompute Waiting Cost Coefficients
         self.waiting_cost_coeffs = np.zeros((self.booking_window_size, self.num_types))
         for j in range(self.booking_window_size):
             for i in range(self.num_types):
-                # Calculate the cumulative holding cost for this slot and type
                 self.waiting_cost_coeffs[j, i] = sum(
                     self.discount_factor ** k * self.holding_cost(k, i) 
                     for k in range(j + 1)
                 )
                 
-        # 2. Precompute Overtime Cost Coefficients
         self.overtime_cost_coeffs = np.array([
             self.discount_factor ** j * self.overtime_cost(j) 
             for j in range(self.planning_horizon)
         ])
         
-        # 3. Precompute Postponing Cost Coefficients
         self.postponing_cost_coeffs = np.array([
             self.postponing_cost(i) 
             for i in range(self.num_types)
         ])
 
-        # Creates an H x H matrix that shifts everything left by 1 and adds a 0 at the end
         self.shift_matrix = np.eye(self.planning_horizon, k=1)
     
     def reset_random_seeds(self):
@@ -132,19 +124,6 @@ class RTEnv:
         waitlist[-1] = remaining_waitlist
         return waitlist
     
-    '''
-    def convert_action_to_booking_slots(self, advance_scheduling_decision):
-        appointment_slots = advance_scheduling_decision @ self.treatment_pattern.T
-        N, P = appointment_slots.shape
-        total_len = advance_scheduling_decision.shape[0] + self.num_sessions - 1
-        booked_slots = np.zeros(total_len, dtype=appointment_slots.dtype)
-
-        # 2.  Vectorised diagonal add:
-        #     element (i,j) in `appointment_slots` goes to position i+j in `booked_slots`.
-        idx = np.arange(P) + np.arange(N)[:, None]  # shape (N,P)
-        np.add.at(booked_slots, idx.ravel(), appointment_slots.ravel())
-        return booked_slots
-    '''
     
     def convert_action_to_booking_slots(self, advance_scheduling_decision):
         new_booking_slots = self.booking_mapping_matrix @ advance_scheduling_decision.reshape(-1)
@@ -176,41 +155,18 @@ class RTEnv:
             for action in self.valid_actions(state):
                 yield (state, action)
     
-    '''
-    def cost_fn(self, state, action, is_var=False):
-        regular_bookings, overtimes, waitlist = state
-        advance_scheduling_decision, overtime_decision = action
-        waiting_cost = gp.quicksum(
-            gp.quicksum(self.discount_factor ** k * self.holding_cost(k, i) for k in range(j+1)) * advance_scheduling_decision[j, i]
-            for j in range(len(advance_scheduling_decision))
-            for i in range(len(advance_scheduling_decision[0]))
-        )
-        overtime_cost = gp.quicksum(self.discount_factor ** j * self.overtime_cost(j) * overtime_decision[j] for j in range(len(overtime_decision)))
-        remaining_treatments = waitlist - advance_scheduling_decision.sum(axis=0)
-        postponing_cost = gp.quicksum(self.postponing_cost(i) * remaining_treatments[i] for i in range(self.num_types))
-        cost = waiting_cost + overtime_cost + postponing_cost
-        if not is_var:
-            cost = cost.getValue()
-        return cost
-    '''
     
     def cost_fn(self, state, action, is_var=False):
         regular_bookings, overtimes, waitlist = state
         advance_scheduling_decision, overtime_decision = action
         
-        # 1. Waiting Cost
-        # Flatten both the 2D coefficient matrix and 2D MVar into 1D vectors, 
-        # then use @ for a blazing fast dot product.
         waiting_cost = self.waiting_cost_coeffs.flatten() @ advance_scheduling_decision.reshape(-1)
         
-        # 2. Overtime Cost (1D array @ 1D array)
         overtime_cost = self.overtime_cost_coeffs @ overtime_decision
         
-        # 3. Postponing Cost
         remaining_treatments = waitlist - advance_scheduling_decision.sum(axis=0)
         postponing_cost = self.postponing_cost_coeffs @ remaining_treatments
         
-        # Gurobi natively adds MLinExpr objects together
         cost = waiting_cost + overtime_cost + postponing_cost
         return cost
 
@@ -223,24 +179,13 @@ class RTEnv:
         post_action_waitlist = waitlist - advance_scheduling_decision.sum(axis=0)
         return (post_action_regular_bookings, post_action_overtimes, post_action_waitlist)
     
-    '''
-    def post_action_state_to_new_state(self, post_action_state, new_arrival, is_var=True):
-        post_action_regular_bookings, post_action_overtimes, post_action_waitlist = self.get_state(post_action_state, is_var)
-        new_regular_bookings = numpy_shift(post_action_regular_bookings, num_places=-1)
-        new_overtimes = numpy_shift(post_action_overtimes, num_places=-1)
-        new_waitlist  = post_action_waitlist + new_arrival
-        return (new_regular_bookings, new_overtimes, new_waitlist)
-    '''
     
     def post_action_state_to_new_state(self, post_action_state, new_arrival, is_var=True):
         post_action_regular_bookings, post_action_overtimes, post_action_waitlist = self.get_state(post_action_state, is_var)
         
-        # Matrix multiplication handles the shift and zero-padding flawlessly 
-        # for both standard arrays and Gurobi MVars/MLinExprs.
         new_regular_bookings = self.shift_matrix @ post_action_regular_bookings
         new_overtimes = self.shift_matrix @ post_action_overtimes
         
-        # Element-wise addition is natively supported by both types
         new_waitlist = post_action_waitlist + new_arrival
         
         return (new_regular_bookings, new_overtimes, new_waitlist)
@@ -261,16 +206,13 @@ class RTEnv:
         res = []
         for prob, delta in self.arrival_generator.get_system_dynamic():
             next_state = self.get_next_state(state, action, delta)
-            # In infinite horizon, 'done' is False unless you have an absorbing state
             done = False
             res.append([prob, next_state, cost, done])
         return res
 
-    # simulation
     def reset(self, init_state=None, t=1, new_arrivals=None, percentage_occupied=0.99):
         self.t = t
         self.tau = 0
-        # how to handle the first arrivals
         if new_arrivals is None:
             self.new_arrivals = self.reset_arrivals()
         else:
@@ -283,7 +225,6 @@ class RTEnv:
         overtimes = np.array(overtimes)
         waitlist = np.array(waitlist)
         self.state = (bookings, overtimes, waitlist)
-        # measure of performance
         self.wait_time_by_type = {j: RunningStats() for j in range(self.num_types)}
         total_periods = self.decision_epoch + self.planning_horizon - 1
         self.overtime = np.array([0] * (total_periods - t + 1))
@@ -296,7 +237,6 @@ class RTEnv:
                                            'postponing_decision_number': self.postponing_decision_number}
 
     def reset_arrivals(self, stop_time=None):
-        # Generate a single random number from the geometric distribution
         if stop_time is None:
             stop_time = geom.rvs((1- self.discount_factor), random_state=self.stop_time_rng)
         return self.arrival_generator.rvs(stop_time)
@@ -310,7 +250,6 @@ class RTEnv:
         return self.arrival_generator.quasi_rvs(stop_time)
 
     def reset_initial_state(self, decay_factor, new_arrivals):
-        # find out the average appointment slot required in first period
         required_bookings = []
         for j in range(self.planning_horizon):
             mean = (self.regular_capacity + self.overtime_capacity) * decay_factor**(j+1)
@@ -355,8 +294,6 @@ class RTEnv:
         post_action_state = self.post_action_state(self.state, action)
         post_action_regular_bookings, post_action_overtimes, post_action_waitlist = post_action_state
         done = self.t + self.tau == self.decision_epoch
-        # record performance metric
-        # implement info: include the type-dependent waiting times and overtime use
         wait_times = np.arange(advance_scheduling_decision.shape[0])
         for i in range(advance_scheduling_decision.shape[1]):
             self.wait_time_by_type[i].record_batch(wait_times, advance_scheduling_decision[:, i])
@@ -367,7 +304,6 @@ class RTEnv:
             self.overtime[self.tau:] = post_action_overtimes
         self.postponing_decision_number[self.tau] = post_action_waitlist
         self.waiting_number[self.tau] = waitlist
-        # update state
         if self.t + self.tau >= self.decision_epoch:
             delta = np.zeros(self.num_types, dtype=int)
         else:

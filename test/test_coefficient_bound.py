@@ -1,7 +1,3 @@
-"""``--coefficient-bound``: CLI tagging and the box constraint in training.
-
-Run from the repo root:  python -m test.test_coefficient_bound
-"""
 import os
 import shutil
 from unittest import mock
@@ -61,8 +57,6 @@ def test_new_grid_points_are_registered():
 
 
 def test_runner_enforces_the_bound_and_records_it():
-    """Toy end-to-end: the emitted command trains with |theta| <= 5 and the
-    record carries the bound; an unbounded run of the same command exceeds it."""
     with mock.patch.object(cli, 'write_command_file'):
         bounded = cli.main(['train', 'base_toy_study', '--coefficient-bound', '5', '--dat', 'unused.dat'])
         unbounded = cli.main(['train', 'base_toy_study', '--dat', 'unused.dat'])
@@ -70,7 +64,6 @@ def test_runner_enforces_the_bound_and_records_it():
     for record in (bounded[0], unbounded[0]):
         record = dict(record)
         record['sample_path_number'] = 4
-        # Fresh result folders: never touch experiments/results/base_toy_study.
         record['experiment_name'] = record['experiment_name'] + '_unittest'
         folder = os.path.join('experiments', 'results', record['experiment_name'])
         assert not os.path.exists(folder), folder
@@ -84,7 +77,6 @@ def test_runner_enforces_the_bound_and_records_it():
     assert unbounded_out['coefficient_bound'] is None
     assert np.max(np.abs(bounded_out['coefficients'])) <= 5.0 + 1e-6, np.max(np.abs(bounded_out['coefficients']))
     assert np.max(np.abs(unbounded_out['coefficients'])) > 5.0
-    # A tighter feasible set cannot give a larger (maximised) lower bound.
     assert bounded_out['tight_penalized_lower_bound'] <= unbounded_out['tight_penalized_lower_bound'] + 1e-6
     assert 'training_time_seconds' in bounded_out
 
