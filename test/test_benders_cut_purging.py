@@ -148,8 +148,7 @@ def test_train_enables_purging_by_default():
     agent = ApproxQAgent(env,
                          discount_factor=env.discount_factor,
                          sample_path_number=2,
-                         generating_function=generating_function,
-                         solver_name='approx_Q')
+                         generating_function=generating_function)
     obj, coefficients, _ = agent.benders_decomposition_train(parallel=False)
     assert agent.coefficient_model._cut_purge_enabled, (
         "benders_decomposition_train should enable inactive-cut purging by default")

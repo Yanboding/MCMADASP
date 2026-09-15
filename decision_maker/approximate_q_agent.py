@@ -13,7 +13,7 @@ from gurobipy import GRB
 from decision_maker import InfiniteRTAgent
 from importance_sampling.proposals import ArrivalGeneratorSamplePathProposal
 from importance_sampling.sample_path import sample_path_from_record
-from metaheuristic_algorithm import SubproblemWorker, BendersDecompositionSolver
+from metaheuristic_algorithm import CutPool, SubproblemWorker, BendersDecompositionSolver
 from utils import solve_and_handle_errors, flatten, set_link_rhs, acquire_grb_env, encode, get_status_string, is_single_init_state
 
 class ApproxQAgent(InfiniteRTAgent):
@@ -25,11 +25,12 @@ class ApproxQAgent(InfiniteRTAgent):
                  penalty_ratio=1,
                  generating_function=None,
                  sample_path_proposal=None,
-                 solver_name='approx_Q',
+                 solver_name='approx_penalized_hindsight',
                  is_trained=False,
                  grb_env=None,
                  subproblem_grb_envs=None,
-                 verbose=False):
+                 verbose=False,
+                 reuse_cuts=True):
         super().__init__(env, discount_factor, V=V, Q=Q, grb_env=grb_env)
         self.current_decision_var_type = GRB.INTEGER if current_decision_var_type is None or current_decision_var_type == 'integer' else GRB.CONTINUOUS
         self.future_decision_var_type = GRB.INTEGER if future_decision_var_type is None or future_decision_var_type == 'integer' else GRB.CONTINUOUS
@@ -39,10 +40,11 @@ class ApproxQAgent(InfiniteRTAgent):
         self.sample_path_number = len(self.sample_paths)
         self.penalty_ratio = penalty_ratio
         self.generating_function = generating_function
-        self.decision_model, self.state_linking_constraints, self.action_t_var = None, None, None
         self.is_trained = is_trained
         self.coefficient_model, self.coefficients = None, None
         self.workers = None
+        self.reuse_cuts = reuse_cuts
+        self.cut_pool = CutPool()
         self._policy_model_signature = None
         self.solver_name = solver_name
         self.subproblem_grb_envs = subproblem_grb_envs
@@ -67,19 +69,11 @@ class ApproxQAgent(InfiniteRTAgent):
         )
         if signature == self._policy_model_signature:
             return
-        if self.decision_model is not None:
-            self.decision_model.dispose()
-            self.decision_model = None
         for worker in self.workers or []:
             worker.model.dispose()
         self.workers = None
+        self.cut_pool = CutPool()
         self._policy_model_signature = signature
-
-    def _get_policy_solution(self, action_vars):
-        values = tuple(np.asarray(var.X, dtype=float).copy() for var in action_vars)
-        if self.current_decision_var_type == GRB.INTEGER:
-            return tuple(np.rint(value).astype(int) for value in values)
-        return values
 
     def _get_subproblem_env(self, scenario_id, default_params, parallel):
         if self.subproblem_grb_envs is not None:
@@ -147,49 +141,6 @@ class ApproxQAgent(InfiniteRTAgent):
             linking_constraints.append(constraint)
         return linking_constraints
 
-    def decision_model_builder_fn(self):
-        model = gp.Model(f"Decision_Model", env=self.grb_env)
-        model.setParam("MultiObjPre", 0)
-        model.setParam("MIPGapAbs", 1e-9)
-        model.setParam("MIPGap", 1e-9)
-        model.setParam("FeasibilityTol", 1e-9)
-        model.setParam("OptimalityTol", 1e-9)
-        model.setParam("NonConvex", 2)
-        generating_function = self._require_generating_function()
-        state_var = self.get_state_var(model)
-        state_linking_constraints = self.build_state_linking_constraints(model, state_var)
-        action_var = self.get_action_var(model=model, advance_scheduling_type=self.current_decision_var_type)
-        self.add_action_space_constraints(model=model, state_var=state_var, action_var=action_var)
-        imm_cost = self.env.cost_fn(state_var, action_var, is_var=True)
-        future_cost = self.penalty_ratio * generating_function.calculate_expected_continuation_value(state_var, action_var,is_var=True)
-        model.setObjective(imm_cost + self.discount_factor * future_cost, GRB.MINIMIZE)
-        return model, state_linking_constraints, action_var, {}
-    
-    def approx_Q_solve(self, state, t, action=None, verbose=False):
-        self._ensure_policy_models_current()
-        if self.decision_model is None:
-            self.decision_model, self.state_linking_constraints, self.action_var, self.info = self.decision_model_builder_fn()
-        flatten_state = flatten(state)
-        set_link_rhs(self.state_linking_constraints, flatten_state)
-        original_bounds = None
-        if action is not None:
-            self.decision_model.update()
-            original_bounds = [(var.lb.copy(), var.ub.copy()) for var in self.action_var]
-        try:
-            if action is not None:
-                self.set_action(action_var=self.action_var, action=action)
-            self.decision_model.reset()
-            if not solve_and_handle_errors(self.decision_model, verbose=verbose):
-                raise RuntimeError("Direct model optimal solution not found")
-            solved_action = self._get_policy_solution(self.action_var)
-            return float(self.decision_model.ObjVal), solved_action, dict(self.info)
-        finally:
-            if original_bounds is not None:
-                for var, (lower, upper) in zip(self.action_var, original_bounds):
-                    var.lb = lower
-                    var.ub = upper
-                self.decision_model.update()
-    
     def pathwise_terms(self, model, generating_function, form, path, state_var, action_var,
                        include_first_cost=True):
         gamma = self.discount_factor
@@ -591,16 +542,17 @@ class ApproxQAgent(InfiniteRTAgent):
         model.setObjective(cost + self.penalty_ratio * (theta * Phi).sum(), GRB.MINIMIZE)
         return model, action_linking_constraints, state_linking_constraints
     
-    def hindsight_solve(self, state, t,
-                        action=None,
-                        tol=1e-9,
-                        max_iterations=1000,
-                        use_pareto_cuts=False,
-                        pareto_epsilon=1e-4,
-                        core_alpha=None,
-                        parallel=False,
-                        max_workers=None,
-                        verbose=False):
+    def solve(self, state, t,
+              action=None,
+              tol=1e-9,
+              max_iterations=1000,
+              use_pareto_cuts=False,
+              pareto_epsilon=1e-4,
+              parallel=True,
+              max_workers=None,
+              verbose=False):
+        if self.current_decision_var_type != GRB.INTEGER:
+            raise ValueError("the hindsight policy needs an integer first-stage master: lazy cuts are only added at MIP incumbents")
         self._ensure_policy_models_current()
         master_model, imm_cost, theta_vars, action_vars, state_linking_constraints = self.hindsight_master_builder_fn()
         flatten_state = flatten(state)
@@ -631,6 +583,10 @@ class ApproxQAgent(InfiniteRTAgent):
         for worker in self.workers:
             set_link_rhs(worker.state_linking_constraints, flatten_state)
 
+        pool = self.cut_pool if self.reuse_cuts else CutPool()
+        pool.begin(np.concatenate([np.asarray(component, dtype=float).reshape(-1) for component in state]))
+        reused = pool.add_to_master(master_model, theta_vars, flatten_action_vars)
+
         benders_solver = BendersDecompositionSolver(
             master_model=master_model,
             workers=self.workers,
@@ -643,13 +599,15 @@ class ApproxQAgent(InfiniteRTAgent):
         solver_options = dict(tol=tol, max_iter=max_iterations,
                               use_pareto_cuts=use_pareto_cuts, pareto_epsilon=pareto_epsilon,
                               max_workers=max_workers, parallel=parallel, verbose=verbose)
-        if self.current_decision_var_type == GRB.CONTINUOUS:
-            # LP masters have no MIPSOL callbacks; use the existing cut loop.
-            obj, info = benders_solver.solve(core_alpha=core_alpha, **solver_options)
-        else:
-            obj, info = benders_solver.solve_with_callback(**solver_options)
+        obj, info = benders_solver.solve_with_callback(cut_pool=pool, **solver_options)
+        if obj is None:
+            raise RuntimeError("Hindsight master optimal solution not found")
 
-        action_t = self._get_policy_solution(action_vars)
+        action_t = self.get_solution(action_vars, state, is_final=True)
+        pool.purge(reused)
+        info = dict(info)
+        info['reused_cuts'] = len(reused)
+        info['cut_pool_size'] = len(pool.entries)
         if 'debug' in info or 'debug_info' in info:
             debug_info = {
                 'state': encode(state),
@@ -658,46 +616,6 @@ class ApproxQAgent(InfiniteRTAgent):
             with open('bender_error_info.json', 'w') as f:
                 f.write(json.dumps(debug_info))
         return obj, action_t, info
-    
-    def solve(self, state, t,
-                    action=None,
-                    tol=1e-9,
-                    max_iterations=1000,
-                    use_pareto_cuts=False,
-                    pareto_epsilon=1e-4,
-                    core_alpha=None,
-                    parallel=True,
-                    max_workers=None,
-                    verbose=False):
-        if self.solver_name == 'approx_Q':
-            solve_action = self.approx_Q_solve
-            options = {'verbose': verbose}
-        elif self.solver_name == 'approx_penalized_hindsight':
-            solve_action = self.hindsight_solve
-            options = dict(tol=tol, max_iterations=max_iterations, use_pareto_cuts=use_pareto_cuts,
-                           pareto_epsilon=pareto_epsilon, core_alpha=core_alpha, parallel=parallel,
-                           max_workers=max_workers, verbose=verbose)
-        else:
-            raise ValueError(f"Unsupported solver_name: {self.solver_name}")
-        obj, solved_action, info = solve_action(state, t, action=action, **options)
-        if action is not None:
-            return obj, solved_action, info
-        advance_scheduling_decision, solved_overtime = solved_action
-        if self.current_decision_var_type == GRB.CONTINUOUS:
-            overtime_decision = np.maximum(
-                np.asarray(state[0]) + self.env.convert_action_to_booking_slots(advance_scheduling_decision)
-                - self.env.regular_capacity, 0.0)
-        else:
-            overtime_decision = self.regular_first_overtime(state, advance_scheduling_decision)
-        if np.array_equal(overtime_decision, solved_overtime):
-            return obj, solved_action, info
-        objective, executed_action, executed_info = solve_action(
-            state, t, action=(advance_scheduling_decision, overtime_decision), **options)
-        executed_info = dict(executed_info or {})
-        executed_info['raw_objective'] = float(obj)
-        executed_info['action_repaired'] = True
-        return objective, executed_action, executed_info
-    
 
 if __name__ == '__main__':
     from experiments import get_config_by_type

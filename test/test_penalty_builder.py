@@ -12,6 +12,7 @@ from generating_function import AbsorptionLinearPenaltyFunction, LegacyForm, Lin
 from importance_sampling import FixedLengthProposal, GeometricLengthProposal, SamplePath, Terminal
 from importance_sampling.proposals import MixtureGeometricStratifiedQMCProposal
 from metaheuristic_algorithm import BendersDecompositionSolver
+from test.test_penalty_forms import rollout_terms
 from test.record_legacy_golden import (
     GOLDEN_PATH, MIXTURE, SCENARIOS, fresh_env, make_agent, per_scenario_states, thetas,
 )
@@ -138,7 +139,7 @@ def test_golden_hindsight(grb_env):
         agent = make_agent(env, grb_env, block[label]['theta'], proposal=proposal, solver_name='approx_penalized_hindsight')
         for path, arrivals in zip(agent.sample_paths, block[label]['arrivals']):
             assert np.array_equal(path.arrivals, np.array(arrivals))
-        objective, action, _ = agent.hindsight_solve(state, t=1, parallel=False)
+        objective, action, _ = agent.solve(state, t=1, parallel=False)
         close(objective, block[label]['objective'], what=f'hindsight objective ({label})')
         for observed, expected in zip(action, block[label]['action']):
             assert np.array_equal(np.asarray(observed), np.asarray(expected)), f'hindsight action ({label})'
@@ -165,19 +166,16 @@ def test_golden_policy_accounting(grb_env):
                     return_warm_up_trajectory=return_warm_up_trajectory)
 
             def check(result, expected, what):
-                for key in ('penalized_cost', 'total_cost', 'total_penalty', 'costs', 'penalties'):
+                for key in ('penalized_cost', 'total_cost', 'total_penalty', 'costs'):
                     close(result[key], expected[key], what=f'{what} {key}')
                 assert same_states([result['warmup_state']], [expected['warmup_state']]), what
-                difference = np.asarray(result['expected_terms'][:len(result['penalties'])]) - np.asarray(result['realized_terms'])
-                recorded = np.isfinite(difference)
-                close(difference[recorded], np.asarray(result['penalties'])[recorded], what=f'{what} terms vs penalties')
+                assert len(result['expected_terms']) == len(result['realized_terms']) == len(result['costs']), what
 
             check(run_policy('myopic_w0', 0, entries['warm_up_0']['period_weights']), entries['warm_up_0'], 'warm_up_0')
             full = run_policy('myopic_w2', 2, entries['warm_up_2']['period_weights'], return_warm_up_trajectory=True)
             check(full, entries['warm_up_2'], 'warm_up_2')
             trajectory = full['warm_up_trajectory']
-            for key in ('costs', 'penalties'):
-                close(trajectory[key], entries['warm_up_trajectory'][key], what=f'trajectory {key}')
+            close(trajectory['costs'], entries['warm_up_trajectory']['costs'], what='trajectory costs')
             assert len(trajectory['expected_terms']) == 2 and len(trajectory['realized_terms']) == 2
             seeded = run_policy('myopic_seeded', 2, entries['seeded']['period_weights'], warm_up_trajectory=trajectory)
             check(seeded, entries['seeded'], 'seeded')
@@ -261,7 +259,7 @@ def test_hindsight_objective_is_path_weighted_ir_at_its_action(grb_env):
                          solver_name='approx_penalized_hindsight', grb_env=grb_env, subproblem_grb_envs=[grb_env])
     kappa = np.asarray(agent.sample_path_weights)
     assert not np.allclose(kappa, kappa[0])
-    objective, action, _ = agent.hindsight_solve(state, t=1, parallel=False)
+    objective, action, _ = agent.solve(state, t=1, parallel=False)
     bounds = [agent.calculate_information_relaxation_cost(
         state, path.arrivals, period_weights=path.survival_weights, terminal=path.terminal, first_action=action)
         for path in agent.sample_paths]
@@ -334,13 +332,16 @@ def test_accounting_total_penalty_is_theta_dot_phi(grb_env):
         finally:
             os.chdir(old_cwd)
     warm_up = len(prefix)
-    expected_terms = result['expected_terms'][warm_up:]
-    realized_terms = result['realized_terms'][warm_up:]
-    assert len(expected_terms) == tail.periods and len(realized_terms) == tail.length
+    assert len(result['expected_terms']) == len(result['realized_terms']) == len(result['costs']) == warm_up + tail.periods
+    assert result['realized_terms'][-1] == 0.0 and 'penalties' not in result
+    close(gf.form('evaluation').combine(tail, env.discount_factor, result['expected_terms'][warm_up:],
+                                        result['realized_terms'][warm_up:-1]),
+          result['total_penalty'], what='total_penalty = combine of recorded terms')
+    myopic = MyopicAgent(env, discount_factor=env.discount_factor, grb_env=grb_env)
+    warmup_state = numeric(result['warmup_state'])
+    expected_terms, realized_terms = rollout_terms(env, myopic, gf, theta, warmup_state, tail)
     recomputed = gf.form('evaluation').combine(tail, env.discount_factor, expected_terms, realized_terms)
-    close(result['total_penalty'], recomputed, what='accounting total_penalty')
-    close(np.asarray(result['expected_terms'][:len(result['penalties'])]) - np.asarray(result['realized_terms']),
-          result['penalties'], what='penalties = expected - realized')
+    close(result['total_penalty'], recomputed, what='accounting total_penalty vs independent rollout')
     close(result['total_cost'], float(np.dot(tail.survival_weights, result['costs'][warm_up:])), what='accounting total_cost')
     assert result['penalized_cost'] == result['total_cost'] + result['total_penalty']
 

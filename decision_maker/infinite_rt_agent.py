@@ -2,7 +2,7 @@ from collections import defaultdict
 from gurobipy import GRB
 import numpy as np
 
-from utils import get_solution_value, clean_value, acquire_grb_env
+from utils import clean_value, acquire_grb_env
 
 
 class InfiniteRTAgent:
@@ -32,15 +32,14 @@ class InfiniteRTAgent:
             0,
         )
 
-    def get_solution(self, action_var, is_final=False):
-        x_var, y_var = action_var
+    def get_solution(self, action_var, state, is_final=False):
+        x_var, _ = action_var
         if is_final:
             x = np.round(x_var.Xn).astype(int)
-            y = np.round(y_var.Xn).astype(int)
-        else:
-            x = get_solution_value(x_var).astype(float)
-            y = get_solution_value(y_var).astype(float)
-        return (x, y)
+            return (x, self.regular_first_overtime(state, x))
+        x = np.asarray(x_var.X, dtype=float)
+        new_booking_slots = self.env.convert_action_to_booking_slots(x)
+        return (x, np.maximum(np.asarray(state[0]) + new_booking_slots - self.env.regular_capacity, 0.0))
 
     def set_action(self, action_var, action):
         x_var, y_var = action_var
@@ -154,5 +153,5 @@ class InfiniteRTAgent:
         return model
 
     def policy(self, state, t):
-        action, obj_value, info = self.solve(state, t)
+        obj_value, action, info = self.solve(state, t)
         return action

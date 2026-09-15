@@ -253,18 +253,6 @@ def generate_test_paths_and_init_state(test_envs, test_sample_path_num, warm_up_
                     generating_function_spec=policy_generating_function_spec,
                 )
             )
-        if 'approx_Q' in policy_id_set:
-            approx_q_coefficients = direct_coefficients
-            approx_q_generating_function_spec = policy_generating_function_spec
-            policies.append(
-                _build_penalty_policy(
-                    base_agent_args=variant['agent_args'],
-                    policy_id='approx_Q',
-                    solver_name='approx_Q',
-                    penalty_coefficients=approx_q_coefficients,
-                    generating_function_spec=approx_q_generating_function_spec,
-                )
-            )
 
         max_length = 0
         # Path-generation seeds are offset from the training seeds so evaluation

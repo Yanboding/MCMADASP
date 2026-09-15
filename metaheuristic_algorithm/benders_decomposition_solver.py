@@ -61,6 +61,13 @@ def _dispatch_subproblem_solves(env_groups, active_workers, solve_one, executor,
     return [result_by_worker[id(w)] for w in active_workers]
 
 
+def incumbent_value(model, expression):
+    linear = expression.item() if hasattr(expression, 'item') else expression
+    variables = [linear.getVar(i) for i in range(linear.size())]
+    values = model.cbGetSolution(variables) if variables else []
+    return float(linear.getConstant() + sum(linear.getCoeff(i) * values[i] for i in range(linear.size())))
+
+
 def benders_callback(model, where):
     if where == GRB.Callback.MIPSOL:
         x_vars = model._action_vars
@@ -124,6 +131,7 @@ def benders_callback(model, where):
         feasibility_cuts_added = 0
         optimality_cuts_added = 0
         cost_to_go = 0.0
+        weights = model._scenario_weights
         action_delta = x_vars - x_vals
         for i, (is_feasible, obj_val, duals) in enumerate(results):
             expr = obj_val + duals @ action_delta
@@ -132,7 +140,7 @@ def benders_callback(model, where):
                 model.cbLazy(expr >= 0)
                 feasibility_cuts_added += 1
             else:
-                cost_to_go += obj_val
+                cost_to_go += weights[i] * obj_val
                 if model.ModelSense == GRB.MINIMIZE:
                     if theta_vals[i] < (obj_val - tol):
                         model.cbLazy(theta_vars[i] >= expr)
@@ -142,19 +150,62 @@ def benders_callback(model, where):
                         model.cbLazy(theta_vars[i] <= expr)
                         optimality_cuts_added += 1
 
-        worker_count = len(active_workers)
-        mean_theta = float(np.mean(theta_vals)) if worker_count else 0.0
-        mean_cost_to_go = cost_to_go / worker_count if worker_count else 0.0
+        pool = model._cut_pool
+        if pool is not None:
+            for worker, (is_feasible, obj_val, duals) in zip(active_workers, results):
+                if is_feasible:
+                    pool.record(worker.subproblem_id, obj_val, x_vals, worker.state_duals(), duals)
+
         incumbent_obj = model.cbGet(GRB.Callback.MIPSOL_OBJ)
-        first_stage_cost = incumbent_obj - mean_theta
-        evaluated_obj = first_stage_cost + mean_cost_to_go
+        first_stage_cost = incumbent_value(model, model._imm_cost)
+        evaluated_obj = first_stage_cost + cost_to_go
         print(
             f"Callback iter {k}: master {incumbent_obj:.4f} "
             f"MIP gap {abs(incumbent_obj - evaluated_obj):.4f} | added {optimality_cuts_added} opt / "
             f"{feasibility_cuts_added} feas cuts | first-stage {first_stage_cost:.4f}, "
-            f"cost-to-go {mean_cost_to_go:.4f}, evaluated obj {evaluated_obj:.4f} | "
+            f"cost-to-go {cost_to_go:.4f}, evaluated obj {evaluated_obj:.4f} | "
             f"subproblems {subproblem_time:.2f}s"
         )
+
+class CutEntry:
+    def __init__(self, scenario_id, value, state, action, state_duals, action_duals):
+        self.scenario_id = scenario_id
+        self.value = value
+        self.state = state
+        self.action = action
+        self.state_duals = state_duals
+        self.action_duals = action_duals
+
+
+class CutPool:
+    def __init__(self, slack_tol=1e-6):
+        self.slack_tol = slack_tol
+        self.entries = []
+        self.fresh = []
+        self.state = None
+
+    def begin(self, state):
+        self.state = np.asarray(state, dtype=float)
+
+    def record(self, scenario_id, value, action, state_duals, action_duals):
+        self.fresh.append(CutEntry(
+            scenario_id, float(value), self.state.copy(), np.asarray(action, dtype=float).copy(),
+            np.asarray(state_duals, dtype=float).copy(), np.asarray(action_duals, dtype=float).copy()))
+
+    def add_to_master(self, master, theta_vars, action_vars):
+        added = []
+        for entry in self.entries:
+            constant = entry.value + entry.state_duals @ (self.state - entry.state)
+            constr = master.addConstr(
+                theta_vars[entry.scenario_id] >= constant + entry.action_duals @ (action_vars - entry.action))
+            added.append((entry, constr))
+        return added
+
+    def purge(self, added):
+        kept = [entry for entry, constr in added if abs(constr.Slack) <= self.slack_tol]
+        self.entries = kept + self.fresh
+        self.fresh = []
+
 
 class SubproblemWorker:
 
@@ -188,6 +239,9 @@ class SubproblemWorker:
 
     def _set_output_flag(self, model, verbose: bool):
         model.Params.OutputFlag = 1 if verbose else 0
+
+    def state_duals(self):
+        return np.array([constr.Pi for constr in self.state_linking_constraints], dtype=float)
 
     def _get_link_rows_in_derived_model(self, derived_model):
         rows_in_model = derived_model.getConstrs()
@@ -524,7 +578,8 @@ class BendersDecompositionSolver:
                             pareto_epsilon=1e-4,
                             max_workers=None,
                             parallel=True,
-                            verbose=False):
+                            verbose=False,
+                            cut_pool=None):
         # 1. Mandatory Parameter for Lazy Constraints
         self.master_model.Params.MIPGap = 0.0
         self.master_model.Params.LazyConstraints = 1
@@ -552,6 +607,9 @@ class BendersDecompositionSolver:
         self.master_model._cb_iter = 0
         self.master_model._max_workers = max_workers
         self.master_model._verbose = verbose
+        self.master_model._cut_pool = cut_pool
+        self.master_model._imm_cost = self.imm_cost
+        self.master_model._scenario_weights = self._scenario_weights
 
         print("Starting Benders with Lazy Constraint Callback...")
         try:

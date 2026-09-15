@@ -48,7 +48,7 @@ def thetas(env):
     return {'a': (rng.normal(size=n) * 5.0).tolist(), 'b': (rng.normal(size=n) * 20.0).tolist()}
 
 
-def make_agent(env, grb_env, theta, proposal=None, solver_name='approx_Q', sample_path_number=SCENARIOS):
+def make_agent(env, grb_env, theta, proposal=None, solver_name='approx_penalized_hindsight', sample_path_number=SCENARIOS):
     return ApproxQAgent(env, discount_factor=env.discount_factor,
                         sample_path_number=sample_path_number,
                         current_decision_var_type='integer',
@@ -152,7 +152,7 @@ def record_hindsight(grb_env):
         state, _ = env.reset(**config.reset_params)
         theta = thetas(env)['a']
         agent = make_agent(env, grb_env, theta, proposal=proposal, solver_name='approx_penalized_hindsight')
-        objective, action, _ = agent.hindsight_solve(state, t=1, parallel=False)
+        objective, action, _ = agent.solve(state, t=1, parallel=False)
         out[label] = {'state': jsonable(state), 'theta': theta, 'objective': float(objective),
                       'action': jsonable(action),
                       'arrivals': [jsonable(path.arrivals) for path in agent.sample_paths],
@@ -180,7 +180,7 @@ def record_policy_accounting(grb_env):
                     warm_up_periods=warm_up_periods, generating_function=generating_function, grb_env=grb_env,
                     period_weights=weights, warm_up_trajectory=warm_up_trajectory,
                     return_warm_up_trajectory=return_warm_up_trajectory)
-                keep = {k: result[k] for k in ('penalized_cost', 'total_cost', 'total_penalty', 'costs', 'penalties', 'warmup_state')}
+                keep = {k: result[k] for k in ('penalized_cost', 'total_cost', 'total_penalty', 'costs', 'warmup_state')}
                 keep['period_weights'] = weights
                 return result, keep
 

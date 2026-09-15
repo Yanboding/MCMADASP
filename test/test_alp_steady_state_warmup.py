@@ -45,14 +45,12 @@ def _fake_calculate_policy_costs(calls_log, **kwargs):
         'total_penalty': 5.0,
         'warmup_state': ALP_WARMUP_STATE,
         'costs': [1.0],
-        'penalties': [1.0],
     }
     if kwargs.get('return_warm_up_trajectory'):
         result['warm_up_trajectory'] = {
             'states': [ALP_WARMUP_STATE] * kwargs['warm_up_periods'],
             'actions': [[[0, 0]]] * kwargs['warm_up_periods'],
             'costs': [1.0] * kwargs['warm_up_periods'],
-            'penalties': [1.0] * kwargs['warm_up_periods'],
             'end_state': ALP_WARMUP_STATE,
         }
     return result
@@ -275,7 +273,8 @@ class CalculatePolicyCostsSeedingTest(unittest.TestCase):
         )
         self.assertEqual(result['costs'], [10.0, 20.0, 30.0, 40.0, 50.0, 60.0])
         self.assertEqual(len(result['scheduled_patients']), 6)
-        self.assertEqual(len(result['penalties']), 5)
+        self.assertEqual(len(result['expected_terms']), 6)
+        self.assertEqual(len(result['realized_terms']), 6)
         self.assertEqual(result['total_cost'], 30.0 + 40.0 + 50.0 + 60.0)
         self.assertEqual(result['warmup_state'], trajectory['end_state'])
 

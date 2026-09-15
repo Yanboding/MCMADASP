@@ -1,2 +1,3 @@
 from .benders_decomposition_solver import SubproblemWorker, BendersDecompositionSolver
 from .row_generation_solver import RowGenerationSolver
+from .benders_decomposition_solver import CutPool

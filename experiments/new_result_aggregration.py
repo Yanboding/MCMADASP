@@ -1,6 +1,8 @@
+import csv
 import glob
 import json
 import os
+import re
 from pprint import pprint
 import pickle
 
@@ -1082,6 +1084,104 @@ def report_information_relaxation_lower_bounds(experiment_name, config_type='ejo
               f"  ({row['relative_improvement_pct']:.2f}% +/- {row['relative_improvement_half_window_pct']:.2f}% of zero-penalty LB)")
     return rows
 
+
+_LOWER_BOUND_CSV_COLUMNS = (
+    ('experiment_name', 'experiment_name'),
+    ('group_id', 'group_id'),
+    ('mutate_val', 'mutate_val'),
+    ('n', 'n'),
+    ('zero_information_relaxation_cost_mean', 'zero_mean'),
+    ('zero_information_relaxation_cost_half_window', 'zero_half_window'),
+    ('penalized_information_relaxation_cost_mean', 'penalized_mean'),
+    ('penalized_information_relaxation_cost_half_window', 'penalized_half_window'),
+    ('gap_mean', 'improvement_mean'),
+    ('gap_half_window', 'improvement_half_window'),
+    ('relative_gap_pct', 'relative_improvement_pct'),
+    ('relative_gap_half_window_pct', 'relative_improvement_half_window_pct'),
+)
+_TRAINING_LOG_CSV_COLUMNS = (
+    ('training_penalized_lb_mean', 'mean'),
+    ('training_penalized_lb_half_window_95', 'half_window'),
+)
+_TRAINING_LOG_UID_RE = re.compile(r'Training penalty coefficients for uid=([0-9a-f]+)')
+_TRAINING_LOG_OBJECTIVE_RE = re.compile(
+    r'Iteration (\d+), subproblem objective mean ([-\d.]+) \+/- ([-\d.]+) \(95% CI, N=(\d+)\)')
+_TRAINING_LOG_FINISHED_RE = re.compile(r'solver=benders, obj=')
+
+
+def training_lower_bounds_from_slurm_logs(output_dir):
+    candidates = defaultdict(list)
+    for file_path in sorted(glob.glob(os.path.join(output_dir, 'slurm-*.out'))):
+        with open(file_path, errors='replace') as handle:
+            text = handle.read()
+        uid_match = _TRAINING_LOG_UID_RE.search(text)
+        objective_matches = _TRAINING_LOG_OBJECTIVE_RE.findall(text)
+        if uid_match is None or not objective_matches:
+            continue
+        iteration, mean, half_window, n = objective_matches[-1]
+        candidates[uid_match.group(1)].append({
+            'finished': _TRAINING_LOG_FINISHED_RE.search(text) is not None,
+            'iteration': int(iteration), 'mean': float(mean), 'half_window': float(half_window),
+            'n': int(n), 'file': os.path.basename(file_path),
+        })
+    return {uid: max(rows, key=lambda row: (row['finished'], row['iteration'], row['file']))
+            for uid, rows in candidates.items()}
+
+
+def training_records_by_uid(experiment_names):
+    records = {}
+    for experiment_name in experiment_names:
+        pattern = os.path.join('experiments', 'results', f'{experiment_name}_train', '*.jsonl')
+        for file_path in sorted(glob.glob(pattern)):
+            with open(file_path) as handle:
+                for line in handle:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    record = json.loads(line)
+                    if (not isinstance(record.get('coefficients'), list)
+                            or record.get('tight_penalized_lower_bound') is None):
+                        continue
+                    records[record['uid']] = {
+                        'experiment_name': experiment_name,
+                        'training_time_seconds': record.get('training_time_seconds'),
+                    }
+    return records
+
+
+def write_information_relaxation_lower_bounds_csv(experiment_names, csv_path, config_type='ejor',
+                                                  confidence=0.95, is_reuse=False,
+                                                  slurm_output_dir=None):
+    training_logs = {} if slurm_output_dir is None else training_lower_bounds_from_slurm_logs(slurm_output_dir)
+    training_records = training_records_by_uid(experiment_names)
+    columns = list(_LOWER_BOUND_CSV_COLUMNS)
+    if slurm_output_dir is not None:
+        columns += [(column, f'training_{key}') for column, key in _TRAINING_LOG_CSV_COLUMNS]
+    columns.append(('training_time_seconds', 'training_time_seconds'))
+    rows = []
+    for experiment_name in experiment_names:
+        evaluation_rows = []
+        if os.path.isdir(os.path.join('experiments', 'results', experiment_name)):
+            evaluation_rows = report_information_relaxation_lower_bounds(
+                experiment_name, config_type=config_type, confidence=confidence, is_reuse=is_reuse)
+        if not evaluation_rows:
+            evaluation_rows = [{'group_id': uid} for uid, record in training_records.items()
+                               if record['experiment_name'] == experiment_name]
+        for row in evaluation_rows:
+            log = training_logs.get(row['group_id'], {})
+            record = training_records.get(row['group_id'], {})
+            rows.append({
+                'experiment_name': experiment_name, **row,
+                **{f'training_{key}': log.get(key) for _, key in _TRAINING_LOG_CSV_COLUMNS},
+                'training_time_seconds': record.get('training_time_seconds'),
+            })
+    with open(csv_path, 'w', newline='') as handle:
+        writer = csv.writer(handle)
+        writer.writerow([column for column, _ in columns])
+        for row in rows:
+            writer.writerow(['' if row.get(key) is None else row[key] for _, key in columns])
+    print(f"Saved {len(rows)} rows to {csv_path}")
+    return rows
 
 def penalty_shrinkage_rows(ser, key, zetas=(0.0, 0.05), confidence=0.95):
     by_uid = ser.ir_cost_by_ratio_by_uid.get(key, {})

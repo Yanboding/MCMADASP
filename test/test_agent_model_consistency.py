@@ -26,8 +26,6 @@ class TestAgentModelConsistency(unittest.TestCase):
 
     def tearDown(self):
         for agent in self.agents:
-            if agent.decision_model is not None:
-                agent.decision_model.dispose()
             for worker in agent.workers or []:
                 worker.model.dispose()
             if agent.coefficient_model is not None:
@@ -36,7 +34,7 @@ class TestAgentModelConsistency(unittest.TestCase):
                     worker.model.dispose()
         self.grb.dispose()
 
-    def make_agent(self, solver='approx_Q', coefficients=None, penalty_class=AbsorptionLinearPenaltyFunction):
+    def make_agent(self, solver='approx_penalized_hindsight', coefficients=None, penalty_class=AbsorptionLinearPenaltyFunction):
         gf = penalty_class(self.env)
         gf.set_coefficients(np.zeros(gf.number_of_coefficients) if coefficients is None else coefficients)
         agent = ApproxQAgent(
@@ -50,9 +48,7 @@ class TestAgentModelConsistency(unittest.TestCase):
         return agent
 
     def solve_raw(self, agent, action=None):
-        if agent.solver_name == 'approx_Q':
-            return agent.approx_Q_solve(self.state, 1, action=action)
-        return agent.hindsight_solve(self.state, 1, action=action, parallel=False)
+        return agent.solve(self.state, 1, action=action, parallel=False)
 
     def waitlist_coefficients(self):
         theta = np.zeros(AbsorptionLinearPenaltyFunction(self.env).number_of_coefficients)
@@ -60,7 +56,7 @@ class TestAgentModelConsistency(unittest.TestCase):
         return theta
 
     def test_policy_caches_follow_coefficient_changes(self):
-        for solver in ('approx_Q', 'approx_penalized_hindsight'):
+        for solver in ('approx_penalized_hindsight',):
             with self.subTest(solver=solver):
                 agent = self.make_agent(solver)
                 before = self.solve_raw(agent, self.zero_action)[0]
@@ -73,7 +69,7 @@ class TestAgentModelConsistency(unittest.TestCase):
 
     def test_policy_caches_follow_ratio_and_function_changes(self):
         theta = self.waitlist_coefficients()
-        for solver in ('approx_Q', 'approx_penalized_hindsight'):
+        for solver in ('approx_penalized_hindsight',):
             with self.subTest(solver=solver):
                 agent = self.make_agent(solver, theta)
                 self.solve_raw(agent, self.zero_action)
@@ -105,34 +101,32 @@ class TestAgentModelConsistency(unittest.TestCase):
         self.assertAlmostEqual(self.solve_raw(agent)[0],
                                self.solve_raw(self.make_agent())[0], places=6)
 
-    def test_public_solve_preserves_explicit_fixed_action(self):
+    def test_public_solve_keeps_fixed_scheduling_and_recomputes_overtime(self):
         fixed = tuple(part.copy() for part in self.zero_action)
         fixed[0][0, 0] = 1
         fixed = (fixed[0], self.env.convert_action_to_booking_slots(fixed[0]))
-        for solver in ('approx_Q', 'approx_penalized_hindsight'):
+        for solver in ('approx_penalized_hindsight',):
             with self.subTest(solver=solver):
                 agent = self.make_agent(solver)
                 objective, returned, _ = agent.solve(self.state, 1, action=fixed, parallel=False)
-                for actual, requested in zip(returned, fixed):
-                    np.testing.assert_array_equal(actual, requested)
+                np.testing.assert_array_equal(returned[0], fixed[0])
+                np.testing.assert_array_equal(returned[1], agent.regular_first_overtime(self.state, fixed[0]))
                 expected = self.solve_raw(self.make_agent(solver), fixed)[0]
                 self.assertAlmostEqual(objective, expected, places=6)
 
-    def test_repaired_action_is_reevaluated(self):
+    def test_solution_overtime_is_regular_first(self):
         theta = np.zeros(AbsorptionLinearPenaltyFunction(self.env).number_of_coefficients)
         theta[self.env.planning_horizon:2 * self.env.planning_horizon] = -1000.
-        for solver in ('approx_Q', 'approx_penalized_hindsight'):
+        for solver in ('approx_penalized_hindsight',):
             with self.subTest(solver=solver):
                 agent = self.make_agent(solver, theta)
                 raw_objective, raw_action, _ = self.solve_raw(agent)
-                canonical = agent.regular_first_overtime(self.state, raw_action[0])
-                self.assertFalse(np.array_equal(raw_action[1], canonical))
                 objective, returned, info = agent.solve(self.state, 1, parallel=False)
-                expected = self.solve_raw(self.make_agent(solver, theta), returned)[0]
-                self.assertAlmostEqual(objective, expected, places=6)
-                self.assertAlmostEqual(info['raw_objective'], raw_objective, places=6)
+                self.assertAlmostEqual(objective, raw_objective, places=6)
+                np.testing.assert_array_equal(returned[0], raw_action[0])
                 np.testing.assert_array_equal(returned[1],
                                               agent.regular_first_overtime(self.state, returned[0]))
+                self.assertNotIn('raw_objective', info)
 
     def test_retraining_uses_new_regularizer_bounds_and_initial_state(self):
         agent = self.make_agent()
@@ -151,39 +145,15 @@ class TestAgentModelConsistency(unittest.TestCase):
     def test_unchanged_penalty_reuses_policy_models(self):
         agent = self.make_agent()
         self.solve_raw(agent, self.zero_action)
-        model = agent.decision_model
-        self.solve_raw(agent, self.zero_action)
-        self.assertIs(agent.decision_model, model)
-        agent.solver_name = 'approx_penalized_hindsight'
-        self.solve_raw(agent, self.zero_action)
         worker = agent.workers[0]
         self.solve_raw(agent, self.zero_action)
         self.assertIs(agent.workers[0], worker)
 
-    def test_continuous_fixed_action_preserves_fractions_and_objective(self):
-        fixed = tuple(part.copy() for part in self.zero_action)
-        fixed[0][0, 0] = 0.4
-        for solver in ('approx_Q', 'approx_penalized_hindsight'):
-            with self.subTest(solver=solver):
-                agent = self.make_agent(solver)
-                agent.current_decision_var_type = gp.GRB.CONTINUOUS
-                objective, returned, _ = agent.solve(self.state, 1, action=fixed, parallel=False)
-                for actual, requested in zip(returned, fixed):
-                    np.testing.assert_allclose(actual, requested, atol=1e-9)
-                self.assertAlmostEqual(objective, self.env.cost_fn(self.state, fixed), places=6)
-
-    def test_continuous_regular_first_preserves_fractional_overtime(self):
-        self.state[0][:] = self.env.regular_capacity - 0.25
-        for solver in ('approx_Q', 'approx_penalized_hindsight'):
-            with self.subTest(solver=solver):
-                agent = self.make_agent(solver)
-                agent.current_decision_var_type = gp.GRB.CONTINUOUS
-                objective, action, _ = agent.solve(self.state, 1, parallel=False)
-                expected_overtime = np.maximum(
-                    self.state[0] + self.env.convert_action_to_booking_slots(action[0])
-                    - self.env.regular_capacity, 0.)
-                np.testing.assert_allclose(action[1], expected_overtime, atol=1e-8)
-                self.assertAlmostEqual(objective, self.solve_raw(agent, action)[0], places=6)
+    def test_continuous_first_stage_is_rejected(self):
+        agent = self.make_agent()
+        agent.current_decision_var_type = gp.GRB.CONTINUOUS
+        with self.assertRaises(ValueError):
+            agent.solve(self.state, 1, parallel=False)
 
     def test_training_checkpoint_resumes_only_the_same_models(self):
         options = dict(init_state=self.state, coefficient_bound=5., parallel=False,

@@ -1,4 +1,4 @@
-"""Benchmark hindsight_solve subproblem runtime (cold vs warm LP solves).
+"""Benchmark ApproxQAgent.solve subproblem runtime (cold vs warm LP solves).
 
 Reproduces exactly what ``./single_case.sh ./table.dat <line>`` does for the
 ``approx_penalized_hindsight`` policy, but only for the first few decision
@@ -6,7 +6,7 @@ epochs, and instruments ``SubproblemWorker.solve`` so cold/warm LP solve times
 are reported separately.
 
 Usage:
-    PYTHONPATH=. python test/benchmark_hindsight_solve.py \
+    PYTHONPATH=. python test/benchmark_ApproxQAgent.solve.py \
         [--table table.dat] [--line 1] [--command 0] \
         [--paths 64] [--epochs 2]
 """
@@ -51,7 +51,7 @@ def main():
     parser.add_argument('--paths', type=int, default=64,
                         help='override agent sample_path_number (0 = keep spec value)')
     parser.add_argument('--epochs', type=int, default=2,
-                        help='number of decision epochs (hindsight_solve calls) to run')
+                        help='number of decision epochs (ApproxQAgent.solve calls) to run')
     parser.add_argument('--label', default='run')
     args = parser.parse_args()
 

@@ -24,7 +24,7 @@ from generating_function import AbsorptionALPPenaltyFunction, AbsorptionLinearPe
 from importance_sampling.sample_path import sample_path_from_record
 
 
-POLICY_EVALUATION_CACHE_VERSION = 2
+POLICY_EVALUATION_CACHE_VERSION = 3
 
 
 def _normalize_generating_function_spec(spec):
@@ -269,24 +269,16 @@ def calculate_policy_costs_with_penalty(uid,
     states = []
     actions = []
     costs = []
-    penalties = []
     expected_terms = []
     realized_terms = []
     theta = local_generating_function.coefficient_vector()
     checkpoint = load_pickle_if_exists(checkpoint_file)
-    if checkpoint is not None and 'expected_terms' not in checkpoint and checkpoint['t'] - 1 > warm_up_periods:
-        # A checkpoint written before the per-period terms existed cannot be
-        # re-accounted once it is past the warm-up: start the rollout over.
-        print(f"Discarding checkpoint {checkpoint_file}: it predates the per-period penalty terms.")
-        os.remove(checkpoint_file)
-        checkpoint = None
     if checkpoint is not None:
         states = checkpoint['states']
         actions = checkpoint['actions']
         costs = checkpoint['costs']
-        penalties = checkpoint['penalties']
-        expected_terms = list(checkpoint.get('expected_terms', [float('nan')] * len(costs)))
-        realized_terms = list(checkpoint.get('realized_terms', [float('nan')] * len(penalties)))
+        expected_terms = checkpoint['expected_terms']
+        realized_terms = checkpoint['realized_terms']
         t = checkpoint['t']
         s = checkpoint['s']
         solving_time_per_state = checkpoint.get('solving_time_per_state', RunningStats())
@@ -295,11 +287,8 @@ def calculate_policy_costs_with_penalty(uid,
         states = [tuple(np.array(component) for component in state) for state in warm_up_trajectory['states']]
         actions = [tuple(np.array(component) for component in action) for action in warm_up_trajectory['actions']]
         costs = list(warm_up_trajectory['costs'])
-        penalties = list(warm_up_trajectory['penalties'])
-        # A prefix recorded before the per-period terms existed is padded with
-        # placeholders; the ``[warm_up_periods:]`` slice below discards them.
-        expected_terms = list(warm_up_trajectory.get('expected_terms', [float('nan')] * warm_up_periods))
-        realized_terms = list(warm_up_trajectory.get('realized_terms', [float('nan')] * warm_up_periods))
+        expected_terms = list(warm_up_trajectory['expected_terms'])
+        realized_terms = list(warm_up_trajectory['realized_terms'])
         t = warm_up_periods + 1
         end_state = tuple(np.array(component) for component in warm_up_trajectory['end_state'])
         s, _ = env.reset(init_state=end_state, t=t, new_arrivals=sample_path)
@@ -317,10 +306,11 @@ def calculate_policy_costs_with_penalty(uid,
         next_state, cost, done, _ = env.step(action)
 
         expected_terms.append(_to_float(local_generating_function.expected_value(theta, s, action)))
+        realized_term = 0.0
         if current_t <= len(sample_path):
             new_arrivals = sample_path[current_t - 1]
-            realized_terms.append(_to_float(local_generating_function.value(theta, s, action, new_arrivals)))
-            penalties.append(expected_terms[-1] - realized_terms[-1])
+            realized_term = _to_float(local_generating_function.value(theta, s, action, new_arrivals))
+        realized_terms.append(realized_term)
 
         states.append(s)
         actions.append(action)
@@ -336,7 +326,6 @@ def calculate_policy_costs_with_penalty(uid,
                     'states': states,
                     'actions': actions,
                     'costs': costs,
-                    'penalties': penalties,
                     'expected_terms': expected_terms,
                     'realized_terms': realized_terms,
                     'solving_time_per_state': solving_time_per_state,
@@ -353,7 +342,6 @@ def calculate_policy_costs_with_penalty(uid,
             'states': states,
             'actions': actions,
             'costs': costs,
-            'penalties': penalties,
             'expected_terms': expected_terms,
             'realized_terms': realized_terms,
             'solving_time_per_state': solving_time_per_state,
@@ -373,10 +361,8 @@ def calculate_policy_costs_with_penalty(uid,
     postponing_decisions = np.array(postponing_decisions).sum(axis=0) if postponing_decisions else np.zeros(env.num_types)
     tail_costs = costs[warm_up_periods:]
     total_cost = float(np.dot(cost_weights, tail_costs))
-    tail_expected_terms = expected_terms[warm_up_periods:]
-    tail_realized_terms = realized_terms[warm_up_periods:]
     total_penalty = evaluation_form.combine(
-        tail_path, env.discount_factor, tail_expected_terms, tail_realized_terms)
+        tail_path, env.discount_factor, expected_terms[warm_up_periods:], realized_terms[warm_up_periods:-1])
     penalized_cost = total_cost + total_penalty
     warmup_state = tuple(np.array(item).tolist() for item in states[warm_up_periods])
 
@@ -389,7 +375,6 @@ def calculate_policy_costs_with_penalty(uid,
         'total_penalty': total_penalty,
         "warmup_state": warmup_state,
         'costs': [float(v) for v in costs],
-        'penalties': [float(v) for v in penalties],
         'expected_terms': [float(v) for v in expected_terms],
         'realized_terms': [float(v) for v in realized_terms],
         'scheduled_patients': scheduled_patients,
@@ -403,7 +388,6 @@ def calculate_policy_costs_with_penalty(uid,
             'states': [_to_jsonable(state) for state in states[:warm_up_periods]],
             'actions': [_to_jsonable(action) for action in actions[:warm_up_periods]],
             'costs': [float(v) for v in costs[:warm_up_periods]],
-            'penalties': [float(v) for v in penalties[:warm_up_periods]],
             'expected_terms': [float(v) for v in expected_terms[:warm_up_periods]],
             'realized_terms': [float(v) for v in realized_terms[:warm_up_periods]],
             'end_state': warmup_state,
@@ -416,10 +400,11 @@ def calculate_policy_costs_with_penalty(uid,
 
     return result
 
-def _build_lowerbound_instances(env, generating_function_spec, grb_env, grb_sub_envs,
-                                penalty_ratios=(0, 1)):
-    return {
-        float(penalty_ratio): ApproxQAgent(
+def information_relaxation_bounds(env, generating_function_spec, penalty_ratios, state, sample_path_tail,
+                                  period_weights, terminal, grb_env, grb_sub_envs):
+    bounds = {}
+    for penalty_ratio in penalty_ratios:
+        agent = ApproxQAgent(
             env,
             discount_factor=env.discount_factor,
             current_decision_var_type='integer',
@@ -429,18 +414,12 @@ def _build_lowerbound_instances(env, generating_function_spec, grb_env, grb_sub_
             grb_env=grb_env,
             subproblem_grb_envs=grb_sub_envs,
         )
-        for penalty_ratio in penalty_ratios
-    }
-
-
-def _information_relaxation_bounds(instances, state, sample_path_tail, period_weights, terminal=None):
-    bounds = {}
-    for penalty_ratio, instance in instances.items():
         start = time.time()
-        bounds[penalty_ratio] = instance.calculate_information_relaxation_cost(
+        bound = agent.calculate_information_relaxation_cost(
             state, sample_path=sample_path_tail, period_weights=period_weights, terminal=terminal)
         print(f"Information relaxation cost at penalty ratio {penalty_ratio:g} computed in "
-              f"{time.time() - start:.1f} seconds: {bounds[penalty_ratio]}")
+              f"{time.time() - start:.1f} seconds: {bound}")
+        bounds[float(penalty_ratio)] = bound
     return bounds
 
 
@@ -450,6 +429,20 @@ def _append_jsonl_record(output_file, record):
         return
     with open(output_file, 'a') as f:
         f.write(json.dumps(record) + '\n')
+
+
+def information_relaxation_cost_fields(bounds):
+    if bounds is None:
+        return {'zero_information_relaxation_cost': None, 'penalized_information_relaxation_cost': None}
+    return {'zero_information_relaxation_cost': float(bounds[0.0]),
+            'penalized_information_relaxation_cost': float(bounds[1.0])}
+
+
+def policy_gap_fields(policy_result, bounds):
+    if bounds is None:
+        return {'gap_to_zero_information_relaxation': None, 'gap_to_penalized_information_relaxation': None}
+    return {'gap_to_zero_information_relaxation': float(policy_result['total_cost'] - bounds[0.0]),
+            'gap_to_penalized_information_relaxation': float(policy_result['penalized_cost'] - bounds[1.0])}
 
 
 def _order_policy_specs_for_warm_up(policy_specs, warm_up_policy_id):
@@ -496,28 +489,6 @@ def evaluate_policy_costs_with_information_relaxation(uid,
     generating_function_spec = _normalize_generating_function_spec(generating_function_spec)
     policy_costs_generating_function = _build_generating_function(env=env, spec=generating_function_spec)
     ratios = [0.0, 1.0] if penalty_ratios is None else sorted({0.0, 1.0, *map(float, penalty_ratios)})
-    lowerbound_instances = None
-    if not skip_information_relaxation:
-        lowerbound_instances = _build_lowerbound_instances(
-            env, generating_function_spec, grb_env, grb_sub_envs, penalty_ratios=ratios)
-
-    # With a shared warm-up state every policy evaluates the bounds at the same
-    # state, so memoize them instead of re-solving identical problems.
-    bounds_by_state = {}
-    def bounds_at(state):
-        if skip_information_relaxation:
-            return None
-        key = iter_to_tuple(state)
-        if key not in bounds_by_state:
-            bounds_by_state[key] = _information_relaxation_bounds(
-                lowerbound_instances, state, sample_path_tail, period_weights, terminal)
-        return bounds_by_state[key]
-
-    def legacy_pair(bounds):
-        if bounds is None:
-            return None, None
-        return bounds[0.0], bounds[1.0]
-
     base_record = {
         'uid': uid,
         'group_id': group_id,
@@ -527,18 +498,17 @@ def evaluate_policy_costs_with_information_relaxation(uid,
         'path_weight': path_weight,
         'path_stratum': path_stratum,
     }
-
     ordered_policy_specs = _order_policy_specs_for_warm_up(policy_specs, warm_up_policy_id)
 
     if not ordered_policy_specs:
-        bounds = bounds_at(init_state)
-        zero_cost, penalized_cost = legacy_pair(bounds)
+        bounds = None if skip_information_relaxation else information_relaxation_bounds(
+            env, generating_function_spec, ratios, init_state, sample_path_tail, period_weights, terminal,
+            grb_env, grb_sub_envs)
         record = {
             **base_record,
             'policy_id': 'information_relaxation_only',
             'agent_name': 'information_relaxation_only',
-            'zero_information_relaxation_cost': None if zero_cost is None else float(zero_cost),
-            'penalized_information_relaxation_cost': None if penalized_cost is None else float(penalized_cost),
+            **information_relaxation_cost_fields(bounds),
             'gap_to_zero_information_relaxation': 0.0,
             'gap_to_penalized_information_relaxation': 0.0,
             'warmup_state': tuple(np.array(item).tolist() for item in init_state),
@@ -553,6 +523,7 @@ def evaluate_policy_costs_with_information_relaxation(uid,
 
     summary_rows = []
     shared_warm_up_trajectory = None
+    bounds_by_state = {}
     for policy_spec in ordered_policy_specs:
         is_warm_up_policy = warm_up_policy_id is not None and policy_spec['policy_id'] == warm_up_policy_id
         policy_result = calculate_policy_costs_with_penalty(
@@ -577,13 +548,16 @@ def evaluate_policy_costs_with_information_relaxation(uid,
             shared_warm_up_trajectory = policy_result.pop('warm_up_trajectory')
 
         warmup_state = tuple(np.array(item) for item in policy_result.get('warmup_state', init_state))
-        zero_cost, penalized_cost = legacy_pair(bounds_at(warmup_state))
+        state_key = iter_to_tuple(warmup_state)
+        if not skip_information_relaxation and state_key not in bounds_by_state:
+            bounds_by_state[state_key] = information_relaxation_bounds(
+                env, generating_function_spec, ratios, warmup_state, sample_path_tail, period_weights, terminal,
+                grb_env, grb_sub_envs)
+        bounds = bounds_by_state.get(state_key)
         policy_result.update({
             **base_record,
-            'zero_information_relaxation_cost': None if zero_cost is None else float(zero_cost),
-            'penalized_information_relaxation_cost': None if penalized_cost is None else float(penalized_cost),
-            'gap_to_zero_information_relaxation': None if zero_cost is None else float(policy_result['total_cost'] - zero_cost),
-            'gap_to_penalized_information_relaxation': None if penalized_cost is None else float(policy_result['penalized_cost'] - penalized_cost),
+            **information_relaxation_cost_fields(bounds),
+            **policy_gap_fields(policy_result, bounds),
         })
         _append_jsonl_record(output_file, policy_result)
 

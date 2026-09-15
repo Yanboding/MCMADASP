@@ -30,7 +30,7 @@ class MyopicAgent(InfiniteRTAgent):
 
             if not solve_and_handle_errors(policy_model, verbose=verbose):
                 raise RuntimeError("Master model optimal solution not found")
-            action = self.get_solution(action_var, is_final=True)
+            action = self.get_solution(action_var, state, is_final=True)
             return policy_model.ObjVal, action, {}
 
 
