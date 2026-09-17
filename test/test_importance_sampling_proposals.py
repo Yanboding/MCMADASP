@@ -2,9 +2,13 @@ import unittest
 
 import numpy as np
 
+from scipy.stats import geom
+
 from importance_sampling.proposals import (
     GeometricLengthProposal,
     MixtureGeometricStratifiedQMCProposal,
+    StratifiedGeometricLengthProposal,
+    build_proposal,
 )
 
 
@@ -120,6 +124,67 @@ class TestMixtureGeometricProposal(unittest.TestCase):
         estimate = per_path_sums.mean()
         target = 1.0 / (1.0 - gamma)
         self.assertAlmostEqual(estimate, target, delta=0.05 * target)
+
+
+class TestStratifiedGeometricProposal(unittest.TestCase):
+
+    def test_every_interval_receives_its_share_of_lengths(self):
+        q, num_strata, size = 0.9, 16, 64
+        proposal = StratifiedGeometricLengthProposal(discount_factor_proposal=q, num_strata=num_strata)
+        lengths = proposal.sample_lengths(_RNGHolder(3), size)
+        strata = proposal.path_strata(size)
+        self.assertEqual(lengths.shape, (size,))
+        np.testing.assert_array_equal(np.bincount(strata), np.full(num_strata, size // num_strata))
+        for length, stratum in zip(lengths, strata):
+            lower, upper = stratum / num_strata, (stratum + 1) / num_strata
+            self.assertGreaterEqual(geom.cdf(length, 1 - q), lower)
+            self.assertLess(geom.cdf(length - 1, 1 - q), upper)
+
+    def test_remainder_paths_go_to_the_first_intervals(self):
+        proposal = StratifiedGeometricLengthProposal(discount_factor_proposal=0.9, num_strata=4)
+        np.testing.assert_array_equal(proposal.path_strata(10), [0, 0, 0, 1, 1, 1, 2, 2, 3, 3])
+        weights = proposal.path_weights(10)
+        np.testing.assert_allclose(weights, [1 / 12] * 6 + [1 / 8] * 4)
+        self.assertAlmostEqual(weights.sum(), 1.0)
+        self.assertEqual(len(proposal.sample_lengths(_RNGHolder(0), 10)), 10)
+
+    def test_mean_length_is_close_to_the_target_horizon(self):
+        proposal = StratifiedGeometricLengthProposal(discount_factor_proposal=0.99, num_strata=1024)
+        lengths = proposal.sample_lengths(_RNGHolder(7), 2048)
+        self.assertLess(abs(lengths.mean() - 100.0), 1.0)
+        iid = GeometricLengthProposal(discount_factor_proposal=0.99).sample_lengths(_RNGHolder(7), 2048)
+        self.assertLess(abs(lengths.mean() - 100.0), abs(iid.mean() - 100.0))
+
+    def test_marginal_law_and_period_weights_match_the_geometric_proposal(self):
+        stratified = StratifiedGeometricLengthProposal(discount_factor_proposal=0.98, num_strata=8)
+        geometric = GeometricLengthProposal(discount_factor_proposal=0.98)
+        periods = np.arange(1, 50)
+        np.testing.assert_allclose(stratified.survival_probability(periods), geometric.survival_probability(periods))
+        for a, b in zip(stratified.period_likelihood_ratios(0.99, [1, 7, 40]), geometric.period_likelihood_ratios(0.99, [1, 7, 40])):
+            np.testing.assert_allclose(a, b)
+        same = StratifiedGeometricLengthProposal(discount_factor_proposal=0.99, num_strata=8)
+        for ratios in same.period_likelihood_ratios(0.99, [3, 25]):
+            np.testing.assert_allclose(ratios, 1.0)
+
+    def test_reproducible_with_the_same_seed(self):
+        proposal = StratifiedGeometricLengthProposal(discount_factor_proposal=0.95, num_strata=8)
+        np.testing.assert_array_equal(proposal.sample_lengths(_RNGHolder(1), 32), proposal.sample_lengths(_RNGHolder(1), 32))
+        self.assertFalse(np.array_equal(proposal.sample_lengths(_RNGHolder(1), 32), proposal.sample_lengths(_RNGHolder(2), 32)))
+
+    def test_invalid_num_strata_raise(self):
+        with self.assertRaises(ValueError):
+            StratifiedGeometricLengthProposal(discount_factor_proposal=0.9, num_strata=0)
+        proposal = StratifiedGeometricLengthProposal(discount_factor_proposal=0.9, num_strata=8)
+        with self.assertRaises(ValueError):
+            proposal.sample_lengths(_RNGHolder(0), 4)
+        with self.assertRaises(ValueError):
+            proposal.path_weights(4)
+
+    def test_build_proposal_from_spec(self):
+        proposal = build_proposal({'type': 'stratified_geometric', 'discount_factor_proposal': 0.99, 'num_strata': 1024})
+        self.assertIsInstance(proposal, StratifiedGeometricLengthProposal)
+        self.assertEqual(proposal.num_strata, 1024)
+        self.assertEqual(proposal.discount_factor_proposal, 0.99)
 
 
 if __name__ == "__main__":

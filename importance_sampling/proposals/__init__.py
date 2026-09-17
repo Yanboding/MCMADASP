@@ -1,11 +1,12 @@
 from .base import SamplePathLengthProposal
-from .geometric import GeometricLengthProposal, TruncatedGeometricLengthProposal
+from .geometric import GeometricLengthProposal, StratifiedGeometricLengthProposal, TruncatedGeometricLengthProposal
 from .fixed import FixedLengthProposal
 from .arrival_generator_proposal import ArrivalGeneratorSamplePathProposal
 from .mixture import MixtureGeometricStratifiedQMCProposal
 
 _PROPOSAL_TYPES = {
     'geometric': GeometricLengthProposal,
+    'stratified_geometric': StratifiedGeometricLengthProposal,
     'truncated_geometric': TruncatedGeometricLengthProposal,
     'fixed': FixedLengthProposal,
     'arrival_generator': ArrivalGeneratorSamplePathProposal,
@@ -45,6 +46,7 @@ def build_proposal(spec):
 __all__ = [
     'SamplePathLengthProposal',
     'GeometricLengthProposal',
+    'StratifiedGeometricLengthProposal',
     'TruncatedGeometricLengthProposal',
     'FixedLengthProposal',
     'ArrivalGeneratorSamplePathProposal',

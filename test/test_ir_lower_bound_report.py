@@ -134,12 +134,12 @@ def test_penalty_shrinkage_no_overfitting_verdict():
 
 
 def test_cache_version_gate_rebuilds_old_caches():
-    from experiments.new_result_aggregration import SimulateEvaluationResult
+    from experiments.new_result_aggregration import AGGREGATION_VERSION, SimulateEvaluationResult
     ser = _load([_ir_record('u0', 1.0, 2.0, 1.0, 0)])
     stale = {key: getattr(ser, key) for key in SimulateEvaluationResult._CACHE_KEYS}
-    stale['aggregation_version'] = 3
+    stale['aggregation_version'] = AGGREGATION_VERSION - 1
     assert ser._has_valid_cache(stale) is False
-    stale['aggregation_version'] = 4
+    stale['aggregation_version'] = AGGREGATION_VERSION
     assert ser._has_valid_cache(stale) is True
 
 

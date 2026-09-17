@@ -17,6 +17,45 @@ from visualization.line_plot import approximate_value_plot_from_running_stats
 
 # --- 1. Top-level Factory Functions (Required for Pickling) ---
 
+AGGREGATION_VERSION = 5
+BOOKING_POLICY_ORDER = (
+    ('approx_penalized_hindsight', 'Penalized Hindsight', '#2a78d6'),
+    ('row_gen_alp', 'ALP', '#eb6834'),
+    ('myopic', 'Myopic', '#1baf7a'),
+)
+
+
+def booking_day_ranks(shares):
+    ranks = np.zeros(shares.shape, dtype=int)
+    for column in range(shares.shape[1]):
+        share = shares[:, column]
+        used = np.flatnonzero(share > 0)
+        order = used[np.argsort(-share[used], kind='stable')]
+        ranks[order, column] = np.arange(1, len(order) + 1)
+    return ranks
+
+
+def preference_runs(ranks, min_length=3):
+    runs = []
+    start = 0
+    while start < len(ranks):
+        if ranks[start] == 0:
+            start += 1
+            continue
+        end = start
+        step = 0
+        while end + 1 < len(ranks) and ranks[end + 1] != 0:
+            delta = int(ranks[end + 1]) - int(ranks[end])
+            if delta not in (1, -1) or (step and delta != step):
+                break
+            step = delta
+            end += 1
+        if end - start + 1 >= min_length:
+            runs.append((start, end) if step == 1 else (end, start))
+        start = end + 1 if end > start else start + 1
+    return runs
+
+
 def dd_int_factory():
     return defaultdict(int)
 
@@ -103,6 +142,7 @@ class SimulateEvaluationResult:
         'ir_stratum_by_uid',
         'ir_cost_by_ratio_by_uid',
         'ir_coefficients_source',
+        'booking_day_counts',
     )
 
     def __init__(self,directory_path, file_pattern, env, group_ids=None, is_reuse=False):
@@ -137,6 +177,7 @@ class SimulateEvaluationResult:
         self.ir_stratum_by_uid = defaultdict(dict)
         self.ir_cost_by_ratio_by_uid = defaultdict(dict)
         self.ir_coefficients_source = {}
+        self.booking_day_counts = {}
         self.waiting_time_target_ptc_by_type_day = defaultdict(dd_dd_rs_factory)
         self.waiting_time_target_ptc_by_day = defaultdict(dd_rs_factory)
         self.waiting_time_violation = defaultdict(RunningStats)
@@ -173,7 +214,7 @@ class SimulateEvaluationResult:
             return False
         # Version gate: stale equal-weight caches must rebuild instead of
         # silently serving pre-stratification numbers.
-        if data.get('aggregation_version') != 4:
+        if data.get('aggregation_version') != AGGREGATION_VERSION:
             return False
         return all(key in data for key in self._CACHE_KEYS)
 
@@ -191,7 +232,7 @@ class SimulateEvaluationResult:
 
     def _save_cache(self, pickle_file):
         res = {key: getattr(self, key) for key in self._CACHE_KEYS}
-        res['aggregation_version'] = 4
+        res['aggregation_version'] = AGGREGATION_VERSION
         with open(pickle_file, 'wb') as f:
             pickle.dump(res, f)
 
@@ -271,6 +312,8 @@ class SimulateEvaluationResult:
             self.after_warmup_cost_by_uid[(group_id, policy_id)][uid] = after_warmup_cost
         
         scheduled_patients = np.array(data["scheduled_patients"])[warm_up_periods:].sum(axis=0) if len(data["scheduled_patients"]) > warm_up_periods else np.array(data["scheduled_patients"]).sum(axis=0)
+        counts = self.booking_day_counts.get(policy_id)
+        self.booking_day_counts[policy_id] = scheduled_patients if counts is None else counts + scheduled_patients
         
         total_scheduled_patients = scheduled_patients.sum()
 
@@ -392,6 +435,74 @@ Type
 \\end{{table}}"""
         return table
     
+    def booking_day_preferences(self):
+        return {policy_id: counts / counts.sum(axis=0, keepdims=True) * 100
+                for policy_id, counts in self.booking_day_counts.items()}
+
+    def booking_day_preference_table(self, policy_order=BOOKING_POLICY_ORDER):
+        shares = self.booking_day_preferences()
+        policies = [(pid, label) for pid, label, _ in policy_order if pid in shares]
+        lines = [f"{'type':>4} | " + ' | '.join(f'{label}: booking days in order of preference' for _, label in policies)]
+        for i in range(next(iter(shares.values())).shape[1]):
+            cells = []
+            for pid, _ in policies:
+                ranks = booking_day_ranks(shares[pid][:, i:i + 1])[:, 0]
+                order = [int(day) for day in np.argsort(np.where(ranks > 0, ranks, np.inf), kind='stable')[:int((ranks > 0).sum())] + 1]
+                cells.append(' > '.join(map(str, order)))
+            lines.append(f'{i + 1:>4} | ' + ' | '.join(cells))
+        return '\n'.join(lines)
+
+    def plot_booking_day_preferences(self, save_file, policy_order=BOOKING_POLICY_ORDER, types=None):
+        import matplotlib
+        matplotlib.use('Agg')
+        import matplotlib.pyplot as plt
+        shares = self.booking_day_preferences()
+        policies = [(pid, label, color) for pid, label, color in policy_order if pid in shares]
+        days = next(iter(shares.values())).shape[0]
+        types = list(range(1, next(iter(shares.values())).shape[1] + 1)) if types is None else list(types)
+        n_paths = max(stats.n for stats in self.policy_costs.values())
+        stem, extension = os.path.splitext(save_file)
+        os.makedirs(os.path.dirname(save_file) or '.', exist_ok=True)
+        saved = []
+        for pid, label, color in policies:
+            fig, ax = plt.subplots(figsize=(0.7 * days + 1.6, 0.5 * len(types) + 1.6))
+            ranks = booking_day_ranks(shares[pid])
+            for row, type_id in enumerate(types):
+                share = shares[pid][:, type_id - 1]
+                rank = ranks[:, type_id - 1]
+                for day in range(days):
+                    if rank[day] == 0:
+                        ax.text(day + 1, row, '\u00b7', ha='center', va='center', fontsize=13, color='#b5b3aa')
+                        continue
+                    ax.add_patch(plt.Rectangle((day + 0.5, row - 0.5), 1, 1, color=color, alpha=0.55 * share[day] / share.max(), linewidth=0))
+                    circled = dict(boxstyle='circle,pad=0.2', facecolor='white', edgecolor='black', linewidth=1.2) if rank[day] == 1 else None
+                    ax.text(day + 1, row, str(rank[day]), ha='center', va='center', fontsize=13,
+                            fontweight='bold' if rank[day] == 1 else 'normal', bbox=circled)
+                for run_start, run_end in preference_runs(rank):
+                    ax.annotate('', xy=(run_end + 1, row - 0.4), xytext=(run_start + 1, row - 0.4),
+                                arrowprops=dict(arrowstyle='-|>', color='black', linewidth=1.1, shrinkA=0, shrinkB=0))
+                    ax.plot(run_start + 1, row - 0.4, 'o', color='black', markersize=3.5)
+            ax.set_xlim(0.5, days + 0.5)
+            ax.set_ylim(-0.7, len(types) - 0.4)
+            ax.set_xticks(range(1, days + 1))
+            ax.set_yticks(range(len(types)))
+            ax.set_yticklabels(types)
+            ax.tick_params(labelsize=13, length=0)
+            ax.set_xlabel('booking day (first appointment)', fontsize=15)
+            ax.set_ylabel('treatment type', fontsize=15)
+            ax.set_title(f'{label}: booking day preferences by treatment type ({n_paths:,} evaluation paths)', fontsize=16, loc='left', pad=14)
+            for side in ('top', 'right'):
+                ax.spines[side].set_visible(False)
+            fig.text(0.01, 0.005, 'Cell = rank of the day by scheduling frequency (1 = most frequent, circled; \u00b7 = never used); '
+                     'shading = frequency; arrows = runs of consecutive ranks.', fontsize=12, color='#555555')
+            fig.tight_layout(rect=(0, 0.03, 1, 1))
+            policy_file = f'{stem}_{pid}{extension}'
+            fig.savefig(policy_file, dpi=150, bbox_inches='tight')
+            fig.savefig(f'{stem}_{pid}.png', dpi=150, bbox_inches='tight')
+            plt.close(fig)
+            saved.append(policy_file)
+        return saved
+
     def performance_summary_table(self):
         policy_label = {
             'myopic': 'Myopic',
@@ -855,6 +966,133 @@ Policy
 \\end{{threeparttable}}
 \\end{{table}}"""
     return table
+
+
+def case_study_policy_table(
+    folder_name,
+    caption,
+    label,
+    base_results_dir=os.path.join('.', 'experiments', 'results'),
+    file_pattern='[0-9]*.jsonl',
+    is_reuse=False,
+    baseline_id='myopic',
+    confidence=0.95,
+    uid_aliases=None,
+):
+    from experiments import get_config_by_type
+    env = get_config_by_type('ejor').env
+    policy_order = [
+        ('approx_penalized_hindsight', 'Penalized Hindsight'),
+        ('row_gen_alp', 'ALP'),
+        ('myopic', 'Myopic'),
+    ]
+    ser = SimulateEvaluationResult(os.path.join(base_results_dir, folder_name), file_pattern, env, is_reuse=is_reuse)
+    if uid_aliases:
+        for by_uid in (ser.cost_by_uid, ser.weight_by_uid, ser.stratum_by_uid):
+            for key, values in by_uid.items():
+                by_uid[key] = {uid_aliases.get(uid, uid): value for uid, value in values.items()}
+    rows = []
+    n_paths = 0
+    for group_id in sorted({gid for gid, _ in ser.policy_costs.keys()}, key=str):
+        policies = [(pid, name) for pid, name in policy_order if (group_id, pid) in ser.policy_costs]
+        costs = {pid: ser.policy_costs[(group_id, pid)] for pid, _ in policies}
+        violations = {pid: ser.waiting_time_violation[(group_id, pid)] for pid, _ in policies}
+        overtimes = {pid: ser.overtime_utilization[(group_id, pid)] for pid, _ in policies}
+        zero_gaps = {pid: ser.zero_penalized_gap[(group_id, pid)] for pid, _ in policies}
+        zero_relative = {pid: ser.zero_penalized_improvement[(group_id, pid)] for pid, _ in policies}
+        penalized_gaps = {pid: ser.penalized_gap[(group_id, pid)] for pid, _ in policies}
+        penalized_relative = {pid: ser.penalized_improvement[(group_id, pid)] for pid, _ in policies}
+        improvements = {
+            pid: ser.improvement_over_baseline(group_id, pid, baseline_id, confidence, cost_by_uid=ser.cost_by_uid)
+            for pid, _ in policies if pid != baseline_id
+        }
+        n_paths = max(n_paths, max(stats.n for stats in costs.values()))
+        best = {
+            'cost': min(costs, key=lambda pid: costs[pid].mean),
+            'violation': min(violations, key=lambda pid: violations[pid].mean),
+            'overtime': min(overtimes, key=lambda pid: overtimes[pid].mean),
+            'zero': min(zero_gaps, key=lambda pid: zero_gaps[pid].mean),
+            'penalized': min(penalized_gaps, key=lambda pid: penalized_gaps[pid].mean),
+            'improvement': max(improvements, key=lambda pid: improvements[pid][0]) if improvements else None,
+        }
+        for pid, name in policies:
+            if pid == baseline_id:
+                improvement_cell = '---'
+            else:
+                improvement, half_width, _ = improvements[pid]
+                improvement_cell = _value_cell(improvement, half_width, mean_decimals=1, bold=pid == best['improvement'])
+            rows.append(
+                f'{name}'
+                f' & {_metric_cell(costs[pid], confidence, bold=pid == best["cost"])}'
+                f' & {improvement_cell}'
+                f' & {_metric_cell(violations[pid], confidence, bold=pid == best["violation"])}'
+                f' & {_metric_cell(overtimes[pid], confidence, bold=pid == best["overtime"])}'
+                f' & {_metric_cell(zero_gaps[pid], confidence, bold=pid == best["zero"])}'
+                f' & {_metric_cell(zero_relative[pid], confidence, mean_decimals=1, bold=pid == best["zero"])}'
+                f' & {_metric_cell(penalized_gaps[pid], confidence, bold=pid == best["penalized"])}'
+                f' & {_metric_cell(penalized_relative[pid], confidence, mean_decimals=1, bold=pid == best["penalized"])} \\\\'
+            )
+    body = '\n'.join(rows)
+    table = f"""\\begin{{table}}[!htbp]
+\\centering
+\\begin{{threeparttable}}
+\\caption{{{caption}}}
+\\label{{{label}}}
+
+\\small
+\\setlength{{\\tabcolsep}}{{4pt}}
+\\renewcommand{{\\arraystretch}}{{1.15}}
+
+\\resizebox{{\\textwidth}}{{!}}{{%
+\\begin{{tabular}}{{lcccccccc}}
+\\toprule
+Policy
+& \\makecell{{Discounted\\\\total cost}}
+& \\makecell{{Improvement over\\\\Myopic (\\%)}}
+& \\makecell{{Wait-time\\\\violations (\\%)}}
+& \\makecell{{Overtime\\\\utilization (\\%)}}
+& \\makecell{{Gap to\\\\zero-penalty LB}}
+& \\makecell{{Gap to zero-\\\\penalty LB (\\%)}}
+& \\makecell{{Gap to\\\\penalized LB}}
+& \\makecell{{Gap to\\\\penalized LB (\\%)}}\\\\
+\\midrule
+{body}
+\\bottomrule
+\\end{{tabular}}%
+}}
+
+\\begin{{tablenotes}}[flushleft]
+\\footnotesize
+\\item \\textit{{Note.}} Values are sample means \\(\\pm\\) {round(confidence * 100)}\\% confidence-interval half-widths over \\({_fmt_latex_number(n_paths)}\\) evaluation sample paths. Discounted total cost is the survival-weighted cost over the sampled absorption horizon. Improvement over Myopic is the paired relative reduction in discounted total cost on common sample paths, with a delta-method {round(confidence * 100)}\\% confidence interval. Wait-time violations and overtime utilization are percentages over the evaluation periods. The gap to the zero-penalty lower bound is the policy cost minus the zero-penalty perfect-information relaxation cost; the gap to the penalized lower bound is the penalized policy cost minus the penalized perfect-information relaxation cost. Relative gaps are expressed as a percentage of the corresponding lower bound. Bold entries are the best value in each metric.
+\\end{{tablenotes}}
+\\end{{threeparttable}}
+\\end{{table}}"""
+    return table, ser
+
+
+def uid_aliases_from_command_files(canonical_dat, aliased_dat):
+    def uids(path):
+        return [json.loads(line.split(" --params '", 1)[1].rsplit("'", 1)[0])[0]['uid'] for line in open(path)]
+    canonical, aliased = uids(canonical_dat), uids(aliased_dat)
+    if len(canonical) != len(aliased):
+        raise ValueError(f'{canonical_dat} has {len(canonical)} commands but {aliased_dat} has {len(aliased)}')
+    return dict(zip(aliased, canonical))
+
+
+def case_study_booking_preferences(
+    folder_name,
+    save_file,
+    base_results_dir=os.path.join('.', 'experiments', 'results'),
+    file_pattern='[0-9]*.jsonl',
+    is_reuse=False,
+):
+    from experiments import get_config_by_type
+    config = get_config_by_type('ejor')
+    ser = SimulateEvaluationResult(os.path.join(base_results_dir, folder_name), file_pattern, config.env, is_reuse=is_reuse)
+    ser.plot_booking_day_preferences(save_file)
+    table = ser.booking_day_preference_table()
+    print(table)
+    return table, ser
 
 
 def saure_ejor_replication_table(
