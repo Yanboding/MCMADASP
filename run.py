@@ -743,6 +743,8 @@ def train_penalty_coefficients_for_env(
     initial_coefficients = inner.pop('initial_coefficients', None)
     initial_coefficients_source = inner.pop('initial_coefficients_source', None)
     fixed_coefficients = inner.pop('fixed_coefficients', None)
+    center_noise = bool(inner.pop('center_noise', False))
+    coefficient_bound_overrides = inner.pop('coefficient_bound_overrides', None)
     if initial_coefficients is not None and len(initial_coefficients) != generating_function.number_of_coefficients:
         raise ValueError(
             f"initial_coefficients has {len(initial_coefficients)} entries but "
@@ -796,6 +798,8 @@ def train_penalty_coefficients_for_env(
         training_objective=training_objective,
         initial_coefficients=initial_coefficients,
         fixed_coefficients=fixed_coefficients,
+        center_noise=center_noise,
+        coefficient_bound_overrides=coefficient_bound_overrides,
     )
     elapsed = time.time() - start
     print(f"  solver={solver_choice}, obj={obj}, elapsed={elapsed:.1f}s")
@@ -817,11 +821,16 @@ def train_penalty_coefficients_for_env(
         'training_time_seconds': elapsed,
         'regularization': regularization,
         'coefficient_bound': None if coefficient_bound == GRB.INFINITY else coefficient_bound,
+        'coefficient_bound_overrides': coefficient_bound_overrides,
         'training_objective': training_objective,
         'initial_coefficients_source': initial_coefficients_source,
         'fixed_coefficients': fixed_coefficients,
         'initial_in_sample': info.get('initial_in_sample'),
         'in_sample': info['in_sample'],
+        'noise_centered': center_noise,
+        'noise_mean': np.asarray(agent.noise_mean, dtype=float).tolist() if center_noise else None,
+        'initial_in_sample_centered': info.get('initial_in_sample_centered'),
+        'in_sample_centered': info.get('in_sample_centered'),
     }
     if regularization is not None:
         # ``obj`` is the unregularized SAA value at theta*; keep the solver's

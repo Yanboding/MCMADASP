@@ -295,6 +295,17 @@ def build_parser():
         '--name', default=None,
         help='experiment name for the generated command (requires a single variant)')
     train.add_argument(
+        '--center-noise', action='store_true',
+        help='subtract the scenario-weighted sample mean of the zero-mean, '
+             'action-independent penalty terms (the intercept and the arrival terms, '
+             'i.e. the constants of the feature expressions) inside every training '
+             'subproblem, so the sample-average objective has no slope along those '
+             'directions; evaluation still uses the raw penalty')
+    train.add_argument(
+        '--intercept-bound', type=float, default=None, metavar='B',
+        help='box |W_0| <= B for the intercept coefficient instead of --coefficient-bound '
+             '(absorption_alp_penalty only); mutually exclusive with --fix-intercept')
+    train.add_argument(
         '--fix-intercept', action='store_true',
         help='pin coefficient 0 (the intercept of absorption_alp_penalty) at 0 during '
              'training; its penalty term is action-independent with zero mean, so it '
@@ -516,17 +527,44 @@ def _training_generating_function(variant):
     return build_generating_function(env, spec)
 
 
-def _apply_training_objective(test_envs, objective, initial_coefficients, source, fix_intercept=False):
-    if objective == 'mean' and initial_coefficients is None and not fix_intercept:
-        return test_envs
+def _intercept_index(generating_function, flag):
+    intercept_index = getattr(generating_function, 'intercept_index', None)
+    if intercept_index is None:
+        raise ValueError(f'{flag}: {generating_function.spec_name} has no intercept coefficient')
+    return intercept_index
+
+
+def _check_warm_start_inside_box(initial_coefficients, inner, intercept_index, intercept_bound):
+    bound = inner.get('coefficient_bound')
+    if bound is None and intercept_bound is None:
+        return
+    for index, value in enumerate(initial_coefficients):
+        limit = intercept_bound if (index == intercept_index and intercept_bound is not None) else bound
+        if limit is not None and abs(value) > limit:
+            raise ValueError(
+                f'--init-coefficients entry {index} = {value} lies outside the box +/-{limit}; '
+                'raise --coefficient-bound or use --intercept-bound')
+
+
+def _apply_training_objective(test_envs, objective, initial_coefficients, source, fix_intercept=False,
+                              center_noise=False, intercept_bound=None):
+    if fix_intercept and intercept_bound is not None:
+        raise ValueError('--fix-intercept and --intercept-bound are mutually exclusive')
+    if intercept_bound is not None and not intercept_bound > 0:
+        raise ValueError(f'--intercept-bound must be positive; got {intercept_bound}')
     updated = {}
     for (_, experiment_name, mutate_val), variant in test_envs.items():
         variant = copy.deepcopy(variant)
         inner = variant.setdefault('agent_args', {}).setdefault('agent_args', {})
         if objective != 'mean':
             inner['training_objective'] = objective
-        if initial_coefficients is not None or fix_intercept:
+        generating_function = None
+        if initial_coefficients is not None or fix_intercept or intercept_bound is not None:
             generating_function = _training_generating_function(variant)
+        intercept_index = None
+        if intercept_bound is not None:
+            intercept_index = _intercept_index(generating_function, '--intercept-bound')
+            inner['coefficient_bound_overrides'] = {str(intercept_index): float(intercept_bound)}
         if initial_coefficients is not None:
             if len(initial_coefficients) != generating_function.number_of_coefficients:
                 raise ValueError(
@@ -535,13 +573,16 @@ def _apply_training_objective(test_envs, objective, initial_coefficients, source
             if 'mutate_val' in source and source['mutate_val'] != mutate_val:
                 raise ValueError(
                     f"--init-coefficients record has mutate_val {source['mutate_val']} but the variant is {mutate_val}")
+            checked = list(initial_coefficients)
+            if fix_intercept:
+                checked[_intercept_index(generating_function, '--fix-intercept')] = 0.0
+            _check_warm_start_inside_box(checked, inner, intercept_index, intercept_bound)
             inner['initial_coefficients'] = initial_coefficients
             inner['initial_coefficients_source'] = source
         if fix_intercept:
-            intercept_index = getattr(generating_function, 'intercept_index', None)
-            if intercept_index is None:
-                raise ValueError(f'--fix-intercept: {generating_function.spec_name} has no intercept coefficient')
-            inner['fixed_coefficients'] = {str(intercept_index): 0.0}
+            inner['fixed_coefficients'] = {str(_intercept_index(generating_function, '--fix-intercept')): 0.0}
+        if center_noise:
+            inner['center_noise'] = True
         uid = get_uid({'env_args': variant['env_args'], 'agent_args': variant['agent_args']})
         updated[(uid, experiment_name, mutate_val)] = variant
     return updated
@@ -557,7 +598,8 @@ def _run_train(args):
         test_envs = _apply_regularization(test_envs, reg_type, lambdas, args.regularization_scale)
     initial_coefficients, initial_coefficients_source = _load_initial_coefficients(args.init_coefficients)
     test_envs = _apply_training_objective(
-        test_envs, args.objective, initial_coefficients, initial_coefficients_source, args.fix_intercept)
+        test_envs, args.objective, initial_coefficients, initial_coefficients_source, args.fix_intercept,
+        args.center_noise, args.intercept_bound)
     if args.name is not None:
         if len(test_envs) != 1:
             raise ValueError(f'--name needs exactly one variant; got {len(test_envs)}')

@@ -45,6 +45,10 @@ class ApproxQAgent(InfiniteRTAgent):
         self.arrival_generator = copy.deepcopy(self.env.arrival_generator)
         self.sample_path_proposal = sample_path_proposal or ArrivalGeneratorSamplePathProposal()
         (self.sample_paths, self.sample_path_weights, self.sample_path_strata) = self._initialize_sample_paths(sample_path_number)
+        self.center_noise = False
+        self.noise_mean = None
+        self.subproblem_feature_links = {}
+        self.subproblem_noise = {}
         self.sample_path_number = len(self.sample_paths)
         self.penalty_ratio = penalty_ratio
         self.generating_function = generating_function
@@ -172,7 +176,8 @@ class ApproxQAgent(InfiniteRTAgent):
         return cost, Phi, state_var, action_var
 
     def train_master_builder_fn(self, coefficient_bound=GRB.INFINITY, regularization=None,
-                                regularization_scale=None, objective='mean', fixed_coefficients=None):
+                                regularization_scale=None, objective='mean', fixed_coefficients=None,
+                                coefficient_bound_overrides=None):
         if objective not in TRAINING_OBJECTIVES:
             raise ValueError(f"training objective must be one of {TRAINING_OBJECTIVES}; got {objective!r}")
         master_model = gp.Model(f"SAA_train_Master", env=self.grb_env)
@@ -188,6 +193,9 @@ class ApproxQAgent(InfiniteRTAgent):
             master_model.addConstr(eta <= theta_vars, name="eta_le_theta")
             z = eta
         coefficient_vars = self.generating_function.get_coefficient_var(model=master_model, coefficient_bound=coefficient_bound)
+        for index, bound in normalize_fixed_coefficients(coefficient_bound_overrides).items():
+            coefficient_vars[index].lb = -bound
+            coefficient_vars[index].ub = bound
         for index, value in normalize_fixed_coefficients(fixed_coefficients).items():
             coefficient_vars[index].lb = value
             coefficient_vars[index].ub = value
@@ -247,8 +255,11 @@ class ApproxQAgent(InfiniteRTAgent):
 
         feature_var = sub_model.addMVar(
             number_of_coefficients, lb=-GRB.INFINITY, name="penalty_feature")
-        sub_model.addConstr(feature_var == feature_vec, name="penalty_feature_link")
+        feature_link = sub_model.addConstr(feature_var == feature_vec, name="penalty_feature_link")
         sub_model.update()
+        self.subproblem_feature_links[scenario_id] = feature_link
+        self.subproblem_noise[scenario_id] = np.array(
+            [feature_vec[i].item().getConstant() for i in range(number_of_coefficients)], dtype=float)
 
         def objective_builder_fn(model, action_values):
             feature_var.Obj = np.asarray(action_values, dtype=float).reshape(-1)
@@ -336,7 +347,23 @@ class ApproxQAgent(InfiniteRTAgent):
             for sids in groups.values():
                 workers.update(build_group(sids))
 
+        self.noise_mean = np.zeros(self._require_generating_function().number_of_coefficients)
+        if self.center_noise:
+            self._center_training_noise(workers)
         return [workers[sid] for sid in range(self.sample_path_number)]
+
+    def _center_training_noise(self, workers):
+        kappa = np.asarray(self.sample_path_weights, dtype=float)
+        self.noise_mean = kappa @ np.array([self.subproblem_noise[sid] for sid in range(self.sample_path_number)])
+        for sid, worker in workers.items():
+            link = self.subproblem_feature_links[sid]
+            link.RHS = np.array(link.RHS, dtype=float) - self.noise_mean
+            worker.model.update()
+            if sid in self.subproblem_initial_cuts:
+                value, gradient, seed = self.subproblem_initial_cuts[sid]
+                self.subproblem_initial_cuts[sid] = (
+                    value - float(np.asarray(seed, dtype=float) @ self.noise_mean), gradient - self.noise_mean, seed)
+                worker.initial_cut = self.subproblem_initial_cuts[sid]
 
     def _regularization_scale(self, mode):
         size = self._require_generating_function().number_of_coefficients
@@ -403,9 +430,12 @@ class ApproxQAgent(InfiniteRTAgent):
                                     regularization=None,
                                     training_objective='mean',
                                     initial_coefficients=None,
-                                    fixed_coefficients=None):
+                                    fixed_coefficients=None,
+                                    center_noise=False,
+                                    coefficient_bound_overrides=None):
         overall_start = time.time()
         fixed_coefficients = normalize_fixed_coefficients(fixed_coefficients)
+        self.center_noise = bool(center_noise)
         master_time = None
         workers_time = None
         coefficient_vars = None
@@ -419,6 +449,8 @@ class ApproxQAgent(InfiniteRTAgent):
             self.coefficient_model = None
         self.subproblem_initial_cuts.clear()
         self.subproblem_cold_solve_seconds.clear()
+        self.subproblem_feature_links.clear()
+        self.subproblem_noise.clear()
         init_solution = None
         if initial_coefficients is not None:
             init_solution = np.array(initial_coefficients, dtype=float)
@@ -438,7 +470,8 @@ class ApproxQAgent(InfiniteRTAgent):
         master_start = time.time()
         master_model, coefficient_vars, theta_vars = self.train_master_builder_fn(
             coefficient_bound, regularization=regularization, regularization_scale=regularization_scale,
-            objective=training_objective, fixed_coefficients=fixed_coefficients)
+            objective=training_objective, fixed_coefficients=fixed_coefficients,
+            coefficient_bound_overrides=coefficient_bound_overrides)
         master_time = time.time() - master_start
         if verbose:
             print(f"[TIMING] Master model building: {master_time:.2f}s")
@@ -453,7 +486,7 @@ class ApproxQAgent(InfiniteRTAgent):
         if init_solution is not None:
             if len(self.subproblem_initial_cuts) == self.sample_path_number:
                 initial_in_sample = self._aggregate_in_sample(
-                    [self.subproblem_initial_cuts[sid][0] for sid in range(self.sample_path_number)])
+                    [self.subproblem_initial_cuts[sid][0] for sid in range(self.sample_path_number)], init_solution)
             else:
                 initial_in_sample = self._in_sample_values(init_solution, parallel)
         solver_start = time.time()
@@ -468,7 +501,9 @@ class ApproxQAgent(InfiniteRTAgent):
         info = dict(info or {})
         info['importance_sampling'] = self._build_importance_sampling_info()
         if initial_in_sample is not None:
-            info['initial_in_sample'] = initial_in_sample
+            info['initial_in_sample'] = initial_in_sample['in_sample']
+            if self.center_noise:
+                info['initial_in_sample_centered'] = initial_in_sample['in_sample_centered']
         
         overall_time = time.time() - overall_start
         info['timing'] = {
@@ -486,11 +521,11 @@ class ApproxQAgent(InfiniteRTAgent):
         # reported objective is that action's subproblem-evaluated (in-sample
         # SAA) value, not the master objective, which overestimates it by the
         # stopping gap.
-        self.coefficients = np.asarray(coefficient_vars.X).tolist()
+        self.coefficients = np.asarray(info['action'] if info.get('action') is not None else coefficient_vars.X, dtype=float).tolist()
         self.is_trained = True
         generating_function = self._require_generating_function()
         generating_function.set_coefficients(self.coefficients)
-        info['in_sample'] = self._in_sample_values(self.coefficients, parallel)
+        info.update(self._in_sample_values(self.coefficients, parallel))
         objective = info['in_sample']['mean']
         if regularization is not None:
             scale_vector = getattr(self, '_regularization_scale_vector', None)
@@ -499,7 +534,7 @@ class ApproxQAgent(InfiniteRTAgent):
                 'lambda': float(regularization['lambda']),
                 'scale_mode': regularization.get('scale', 'feature_std'),
                 'scale': None if scale_vector is None else np.asarray(scale_vector, dtype=float).tolist(),
-                'regularized_objective': float(upper_bound),
+                'regularized_objective': float(upper_bound) + float(np.asarray(self.coefficients, dtype=float) @ self.noise_mean),
                 'saa_objective': objective,
             }
             print(f"Regularized master objective {upper_bound:.4f}; unregularized SAA value at theta*: {objective:.4f}")
@@ -507,11 +542,17 @@ class ApproxQAgent(InfiniteRTAgent):
 
     def _in_sample_values(self, coefficients, parallel):
         values, _ = self.coefficient_model.evaluate_action(np.asarray(coefficients, dtype=float), parallel=parallel)
-        return self._aggregate_in_sample(values)
+        return self._aggregate_in_sample(values, coefficients)
 
-    def _aggregate_in_sample(self, values):
+    def _aggregate_in_sample(self, values, coefficients):
         kappa = np.asarray(self.sample_path_weights, dtype=float)
-        return {objective: aggregate_scenario_values(values, kappa, objective) for objective in SCENARIO_OBJECTIVES}
+        shift = float(np.asarray(coefficients, dtype=float) @ self.noise_mean)
+        raw = {objective: aggregate_scenario_values(np.asarray(values, dtype=float) + shift, kappa, objective)
+               for objective in SCENARIO_OBJECTIVES}
+        if not self.center_noise:
+            return {'in_sample': raw}
+        centered = {objective: aggregate_scenario_values(values, kappa, objective) for objective in SCENARIO_OBJECTIVES}
+        return {'in_sample': raw, 'in_sample_centered': centered}
 
     def calculate_information_relaxation_cost(self, state, sample_path, verbose=False, period_weights=None,
                                               terminal=None, first_action=None):

@@ -486,6 +486,46 @@ def test_train_fix_intercept_and_bad_init_coefficients_are_rejected(tmp_path):
             raise AssertionError('a wrong-length warm start must be rejected at generation time')
 
 
+def test_train_center_noise_flag_changes_uid():
+    with mock.patch.object(cli, 'write_command_file'):
+        (plain,) = cli.main(['train', 'base_toy_study', '--dat', 'unused.dat'])
+        (centered,) = cli.main(['train', 'base_toy_study', '--center-noise', '--dat', 'unused.dat'])
+    assert 'center_noise' not in plain['agent_args']['agent_args']
+    assert centered['agent_args']['agent_args']['center_noise'] is True
+    assert plain['uid'] != centered['uid']
+
+
+def test_train_intercept_bound_flag_and_conflicts(tmp_path):
+    (variant,) = cli._apply_penalty_function(
+        cli.build_variation_test_env(cli.EXPERIMENT_SPECS['base_toy_study']), 'absorption_alp_penalty').values()
+    count = cli._training_generating_function(variant).number_of_coefficients
+    with mock.patch.object(cli, 'write_command_file'):
+        (record,) = cli.main(['train', 'base_toy_study', '--penalty-function', 'absorption_alp_penalty',
+                              '--coefficient-bound', '5', '--intercept-bound', '100', '--dat', 'unused.dat'])
+        assert record['agent_args']['agent_args']['coefficient_bound_overrides'] == {'0': 100.0}
+        assert record['agent_args']['agent_args']['coefficient_bound'] == 5.0
+        try:
+            cli.main(['train', 'base_toy_study', '--penalty-function', 'absorption_alp_penalty',
+                      '--intercept-bound', '100', '--fix-intercept', '--dat', 'unused.dat'])
+        except ValueError as exc:
+            assert 'mutually exclusive' in str(exc)
+        else:
+            raise AssertionError('--intercept-bound and --fix-intercept must be mutually exclusive')
+        wide = tmp_path / 'wide.jsonl'
+        wide.write_text(json.dumps({'uid': 'w', 'coefficients': [-50.0] + [1.0] * (count - 1)}) + '\n')
+        try:
+            cli.main(['train', 'base_toy_study', '--penalty-function', 'absorption_alp_penalty',
+                      '--coefficient-bound', '5', '--init-coefficients', str(wide), '--dat', 'unused.dat'])
+        except ValueError as exc:
+            assert 'outside' in str(exc)
+        else:
+            raise AssertionError('a warm start outside the box must be rejected at generation time')
+        (ok,) = cli.main(['train', 'base_toy_study', '--penalty-function', 'absorption_alp_penalty',
+                          '--coefficient-bound', '5', '--intercept-bound', '100', '--init-coefficients', str(wide),
+                          '--dat', 'unused.dat'])
+        assert ok['agent_args']['agent_args']['initial_coefficients'][0] == -50.0
+
+
 if __name__ == '__main__':
     test_parser_accepts_all_subcommands()
     test_train_resolves_per_variant_sample_path_number()
@@ -508,3 +548,5 @@ if __name__ == '__main__':
     test_train_objective_changes_uid_and_defaults_to_mean()
     test_train_fix_intercept_flag_pins_coefficient_zero()
     test_train_fix_intercept_and_bad_init_coefficients_are_rejected(__import__('pathlib').Path(tempfile.mkdtemp()))
+    test_train_center_noise_flag_changes_uid()
+    test_train_intercept_bound_flag_and_conflicts(__import__('pathlib').Path(tempfile.mkdtemp()))

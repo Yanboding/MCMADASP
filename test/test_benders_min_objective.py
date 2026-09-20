@@ -120,3 +120,57 @@ def test_seed_cuts_with_mixed_anchors_stay_valid():
         value, gradient = worker.initial_cut[0], worker.initial_cut[1]
         action = worker.initial_cut[2] if len(worker.initial_cut) > 2 else np.zeros(N_COEFF)
         assert values_at_theta[worker.subproblem_id] <= value + gradient @ (theta - action) + 1e-9
+
+
+def build_solver_with_flat_coefficient(min_norm):
+    master = gp.Model("toy_master_flat")
+    master.Params.OutputFlag = 0
+    theta = master.addMVar(len(SCENARIO_COSTS), lb=-GRB.INFINITY, ub=1e8, name="theta")
+    coeff = master.addMVar(N_COEFF + 1, lb=-5.0, ub=5.0, name="coeff")
+    master.setObjective(theta.sum() / theta.shape[0], GRB.MAXIMIZE)
+    master.update()
+    workers = []
+    for sid, cost in enumerate(SCENARIO_COSTS):
+        sub = gp.Model(f"toy_sub_flat_{sid}")
+        sub.Params.OutputFlag = 0
+        x = sub.addMVar(N_COEFF, lb=0.0, ub=1.0, name="x")
+        feature = sub.addMVar(N_COEFF + 1, lb=-GRB.INFINITY, name="feature")
+        sub.addConstr(x.sum() >= 2.0, name="cover")
+        sub.addConstr(feature[:N_COEFF] == x - 0.5, name="feature_link")
+        sub.addConstr(feature[N_COEFF] == 0.0, name="flat_feature")
+        sub.setObjective(cost @ x, GRB.MINIMIZE)
+        sub.optimize()
+        initial_cut = (float(sub.ObjVal), np.array(feature.X, dtype=float))
+
+        def objective_builder_fn(model, action_values, feature=feature):
+            feature.Obj = np.asarray(action_values, dtype=float)
+
+        def cut_gradient_fn(model, action_values, feature=feature):
+            return np.array(feature.X, dtype=float)
+
+        workers.append(SubproblemWorker(model=sub, link_rows=None, state_linking_constraints=None, subproblem_id=sid,
+                                        objective_builder_fn=objective_builder_fn, cut_gradient_fn=cut_gradient_fn,
+                                        verbose=False, initial_cut=initial_cut))
+    solver = BendersDecompositionSolver(master_model=master, workers=workers, imm_cost=None, theta_vars=theta, action_vars=coeff)
+    value, info = solver.solve(parallel=False, max_iter=200, min_norm_action=min_norm)
+    return solver, value, info
+
+
+def test_min_norm_zeroes_flat_coefficients_that_sit_on_the_box():
+    solver, value, info = build_solver_with_flat_coefficient(min_norm=True)
+    action = np.asarray(info['action'])
+    assert abs(action[N_COEFF]) < 1e-9
+    values, mean = solver.evaluate_action(action, parallel=False)
+    assert np.isclose(mean, value, atol=1e-6) and info['gap'] < 1e-6
+    _, _, info_free = build_solver_with_flat_coefficient(min_norm=False)
+    assert abs(np.asarray(info_free['action'])[N_COEFF]) == 5.0
+
+
+def test_action_at_bound_ignores_fixed_coefficients():
+    solver = build_solver('mean')
+    solver.action_vars[0].lb = 0.0
+    solver.action_vars[0].ub = 0.0
+    solver.master_model.update()
+    assert not solver._action_at_bound(np.array([0.0, 1.0, -1.0, 2.0]))
+    assert solver._action_at_bound(np.array([0.0, 5.0, -1.0, 2.0]))
+    assert solver._action_at_bound(np.array([0.0, 1.0, -5.0, 2.0]))

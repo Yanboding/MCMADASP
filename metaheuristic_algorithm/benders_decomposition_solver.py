@@ -367,6 +367,7 @@ def objective_confidence_interval(values, weights=None, strata=None):
 
 
 SCENARIO_OBJECTIVES = ('mean', 'min')
+MIN_NORM_MAX_SLACK = 1e-7
 
 
 def aggregate_scenario_values(values, weights, objective):
@@ -403,6 +404,13 @@ class BendersDecompositionSolver:
         self._cut_purge_enabled = False
         self._cut_registry = []
         self._latest_cut_by_scenario = {}
+
+    def _report_scenario_values(self, label, values, scenario_ids):
+        values = np.asarray(values, dtype=float)
+        mean, half_width = objective_confidence_interval(
+            values, weights=self._scenario_weights[scenario_ids], strata=self._scenario_strata[scenario_ids])
+        print(f"{label}: subproblem objective mean {mean:.4f} +/- {half_width:.4f} (95% CI, N={values.size}), "
+              f"min {values.min():.4f} (scenario {int(scenario_ids[int(values.argmin())])})")
 
     def scenario_objective(self, values, scenario_ids=None):
         values = np.asarray(values, dtype=float)
@@ -537,6 +545,7 @@ class BendersDecompositionSolver:
                     'evaluated_value': float(upper_bound if is_min else lower_bound),
                     'gap': gap,
                     'iterations': global_iteration,
+                    'action': np.array(action, dtype=float),
                 }
 
                 if init_solution is not None and iteration == 1 and is_hard_bound:
@@ -555,11 +564,7 @@ class BendersDecompositionSolver:
                       f"Master cost-to-go: {model_cost_to_go}, Subproblem cost-to-go: {cost_to_go_estimation}, "
                       f"max scenario gap: {float(np.max(scenario_gaps)):.6g}")
 
-                obj_mean, obj_half_width = objective_confidence_interval(
-                    [v for (is_feasible, v, _) in results if is_feasible],
-                    weights=self._scenario_weights, strata=self._scenario_strata)
-                print(f"Iteration {global_iteration}, subproblem objective mean {obj_mean:.4f} "
-                      f"+/- {obj_half_width:.4f} (95% CI, N={scenario_count})")
+                self._report_scenario_values(f"Iteration {global_iteration}", [v for (_, v, _) in results], scenario_ids)
 
                 cut_count = self._checkpoint_iteration(
                     checkpoint_path, global_iteration, lower_bound, upper_bound,
@@ -703,14 +708,26 @@ class BendersDecompositionSolver:
         if self._cut_purge_enabled:
             self._update_cut_activity(global_iteration, purge_slack_tol)
         master_obj = self.master_model.ObjVal
-        if min_norm_action and np.max(np.abs(action)) > 1e6:
-            # Degenerate vertex on an under-constrained optimal face:
-            # re-solve for the minimum-norm optimal action (bounds use the
-            # primary ObjVal captured above). Sane actions skip the re-solve
-            # so the endgame is untouched.
+        at_bound = self._at_bound_mask(action) if min_norm_action else None
+        if min_norm_action and (np.max(np.abs(action)) > 1e6 or at_bound.any()):
             action, theta_values = self._min_norm_master_action(
                 action, theta_values, verbose=verbose)
+            print(f"Iteration {global_iteration}, min-norm re-solve: coefficients at bound {int(at_bound.sum())} -> "
+                  f"{int(self._at_bound_mask(action).sum())}, max|a| {float(np.abs(action).max()):.6g}")
         return action, master_obj, theta_values
+
+    def _at_bound_mask(self, action, tol=1e-6):
+        action = np.asarray(action, dtype=float)
+        lower = np.array(self.action_vars.lb, dtype=float)
+        upper = np.array(self.action_vars.ub, dtype=float)
+        free = upper - lower > tol
+        scale = np.maximum(1.0, np.abs(np.where(np.isfinite(upper), upper, 0.0)) + np.abs(np.where(np.isfinite(lower), lower, 0.0)))
+        at_upper = np.isfinite(upper) & (action >= upper - tol * scale)
+        at_lower = np.isfinite(lower) & (action <= lower + tol * scale)
+        return free & (at_upper | at_lower)
+
+    def _action_at_bound(self, action, tol=1e-6):
+        return bool(np.any(self._at_bound_mask(action, tol)))
 
     def _solve_master_with_fixed_action(self, fixed_action, global_iteration,
                                         purge_slack_tol, verbose):
@@ -879,15 +896,7 @@ class BendersDecompositionSolver:
             model.addConstr(abs_vars >= self.action_vars, name="action_abs_pos")
             model.addConstr(abs_vars >= -self.action_vars, name="action_abs_neg")
             self._action_abs_vars = abs_vars
-        # Pin the primary objective at its optimum, with a RELATIVE slack.
-        # An exact pin is numerically infeasible in the early degenerate
-        # iterations (the optimum sits at the theta upper-bound cap, reached
-        # only along a near-unbounded direction), which silently falls back to
-        # the degenerate vertex. The slack cannot stall the Benders endgame
-        # because this re-solve only runs while max|a| > 1e6 (see solve());
-        # once the cuts pin the action to sane magnitudes the loop uses the
-        # untouched first-phase vertex.
-        slack = 1e-9 * max(1.0, abs(objective_value))
+        slack = min(1e-9 * max(1.0, abs(objective_value)), MIN_NORM_MAX_SLACK)
         if original_sense == GRB.MINIMIZE:
             guard = model.addConstr(
                 primary_objective <= objective_value + slack, name="min_norm_guard")
@@ -946,15 +955,14 @@ class BendersDecompositionSolver:
         # Weights sum to 1 over ALL active workers, so the weighted sum is the
         # weighted average exactly when every worker contributed a seed cut.
         bound_at_zero = self.scenario_objective(seeded_values, [w.subproblem_id for w in seeded_workers]) if all_seeded else None
-        print(f"Seeded master with {len(optimality_cuts)} build-time cuts ({len(groups)} anchor(s), max|a| = {float(np.abs(seed_action).max()):g})"
-              + (f"; bound at the seed coefficients = {bound_at_zero}" if bound_at_zero is not None else ""))
+        print(f"Seeded master with {len(optimality_cuts)} build-time cuts at {len(groups)} anchor(s)")
+        for anchor, workers, _ in groups.values():
+            print(f"Seed coefficients (scenarios {[w.subproblem_id for w in workers][:8]}{'...' if len(workers) > 8 else ''}): "
+                  f"{np.round(anchor, 6).tolist()}")
         seeded_ids = [worker.subproblem_id for worker in seeded_workers]
-        zero_mean, zero_half_width = objective_confidence_interval(
-            seeded_values,
-            weights=self._scenario_weights[seeded_ids],
-            strata=self._scenario_strata[seeded_ids])
-        print(f"Zero-penalty subproblem objective mean {zero_mean:.4f} +/- "
-              f"{zero_half_width:.4f} (95% CI, N={len(seeded_values)})")
+        self._report_scenario_values('Seed coefficients', seeded_values, seeded_ids)
+        if bound_at_zero is not None:
+            print(f"Master objective ({self.objective}) at the seed coefficients = {bound_at_zero}")
 
         if bound_at_zero is not None:
             # The optimum is at least as good as all-zero coefficients, so
