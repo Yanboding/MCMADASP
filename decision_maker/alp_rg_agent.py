@@ -6,18 +6,21 @@ from decision_maker import InfiniteRTAgent
 from metaheuristic_algorithm import RowGenerationSolver
 from utils import get_solution_value, solve_and_handle_errors, clean_value
 
+def alp_expected_initial_state(env, decay_factor=0.95):
+    total_capacity = env.regular_capacity + env.overtime_capacity
+    required_bookings = total_capacity * decay_factor ** np.arange(env.planning_horizon, dtype=float)
+    required_bookings[-1] = 0.0
+    regular = np.minimum(required_bookings, env.regular_capacity)
+    return regular, required_bookings - regular, np.asarray(env.arrival_generator.mean_by_type, dtype=float)
+
+
 class ALPRowGenerationAgent(InfiniteRTAgent):
 
     def __init__(self, env, discount_factor, V=None, Q=None, coefficients=None, pretrain=False, decay_factor=0.95, grb_env=None):
         super().__init__(env, discount_factor, V, Q, grb_env=grb_env)
         self.is_trained = False
         self.decay_factor = decay_factor
-        required_bookings = [(self.env.regular_capacity + self.env.overtime_capacity) * self.decay_factor**(j) for j in range(self.env.planning_horizon)]
-        required_bookings[-1] = 0
-        required_bookings = np.array(required_bookings)
-        self.E_u_alpha = np.minimum(required_bookings, self.env.regular_capacity)
-        self.E_v_alpha = required_bookings - self.E_u_alpha
-        self.E_w_alpha = self.env.arrival_generator.mean_by_type
+        self.E_u_alpha, self.E_v_alpha, self.E_w_alpha = alp_expected_initial_state(self.env, self.decay_factor)
         if coefficients is not None:
             self.is_trained = True
             self.W_0, self.U, self.V, self.W = self.get_coefficients(coefficients)

@@ -739,6 +739,14 @@ def train_penalty_coefficients_for_env(
     regularization = inner.pop('regularization', None)
     coefficient_bound = inner.pop('coefficient_bound', None)
     coefficient_bound = GRB.INFINITY if coefficient_bound is None else float(coefficient_bound)
+    training_objective = inner.pop('training_objective', 'mean')
+    initial_coefficients = inner.pop('initial_coefficients', None)
+    initial_coefficients_source = inner.pop('initial_coefficients_source', None)
+    fixed_coefficients = inner.pop('fixed_coefficients', None)
+    if initial_coefficients is not None and len(initial_coefficients) != generating_function.number_of_coefficients:
+        raise ValueError(
+            f"initial_coefficients has {len(initial_coefficients)} entries but "
+            f"{training_generating_function_spec['name']} has {generating_function.number_of_coefficients}")
 
     agent = ApproxQAgent(
         env=env,
@@ -785,6 +793,9 @@ def train_penalty_coefficients_for_env(
         checkpoint_path=checkpoint_path,
         resume_checkpoint_path=checkpoint_path,
         regularization=regularization,
+        training_objective=training_objective,
+        initial_coefficients=initial_coefficients,
+        fixed_coefficients=fixed_coefficients,
     )
     elapsed = time.time() - start
     print(f"  solver={solver_choice}, obj={obj}, elapsed={elapsed:.1f}s")
@@ -806,6 +817,11 @@ def train_penalty_coefficients_for_env(
         'training_time_seconds': elapsed,
         'regularization': regularization,
         'coefficient_bound': None if coefficient_bound == GRB.INFINITY else coefficient_bound,
+        'training_objective': training_objective,
+        'initial_coefficients_source': initial_coefficients_source,
+        'fixed_coefficients': fixed_coefficients,
+        'initial_in_sample': info.get('initial_in_sample'),
+        'in_sample': info['in_sample'],
     }
     if regularization is not None:
         # ``obj`` is the unregularized SAA value at theta*; keep the solver's

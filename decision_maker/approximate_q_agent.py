@@ -14,7 +14,15 @@ from decision_maker import InfiniteRTAgent
 from importance_sampling.proposals import ArrivalGeneratorSamplePathProposal
 from importance_sampling.sample_path import sample_path_from_record
 from metaheuristic_algorithm import CutPool, SubproblemWorker, BendersDecompositionSolver
+from metaheuristic_algorithm.benders_decomposition_solver import SCENARIO_OBJECTIVES, aggregate_scenario_values
 from utils import solve_and_handle_errors, flatten, set_link_rhs, acquire_grb_env, encode, get_status_string, is_single_init_state
+
+TRAINING_OBJECTIVES = SCENARIO_OBJECTIVES
+
+
+def normalize_fixed_coefficients(fixed_coefficients):
+    return {int(index): float(value) for index, value in (fixed_coefficients or {}).items()}
+
 
 class ApproxQAgent(InfiniteRTAgent):
 
@@ -164,7 +172,9 @@ class ApproxQAgent(InfiniteRTAgent):
         return cost, Phi, state_var, action_var
 
     def train_master_builder_fn(self, coefficient_bound=GRB.INFINITY, regularization=None,
-                                regularization_scale=None):
+                                regularization_scale=None, objective='mean', fixed_coefficients=None):
+        if objective not in TRAINING_OBJECTIVES:
+            raise ValueError(f"training objective must be one of {TRAINING_OBJECTIVES}; got {objective!r}")
         master_model = gp.Model(f"SAA_train_Master", env=self.grb_env)
         # FORCES DUAL SIMPLEX (Crucial for Benders warm-starting)
         master_model.setParam("Method", 1)
@@ -173,8 +183,15 @@ class ApproxQAgent(InfiniteRTAgent):
         master_model.setParam("OptimalityTol", 1e-9)
         theta_vars = master_model.addMVar(shape=self.sample_path_number, vtype=GRB.CONTINUOUS, lb=-GRB.INFINITY, ub=1e8, name="theta")
         z = theta_vars @ self.sample_path_weights
+        if objective == 'min':
+            eta = master_model.addVar(lb=-GRB.INFINITY, name="eta")
+            master_model.addConstr(eta <= theta_vars, name="eta_le_theta")
+            z = eta
         coefficient_vars = self.generating_function.get_coefficient_var(model=master_model, coefficient_bound=coefficient_bound)
-        objective = z
+        for index, value in normalize_fixed_coefficients(fixed_coefficients).items():
+            coefficient_vars[index].lb = value
+            coefficient_vars[index].ub = value
+        master_objective = z
         if regularization is not None:
             kind = str(regularization.get('type', '')).lower()
             lam = float(regularization.get('lambda', 0.0))
@@ -197,13 +214,13 @@ class ApproxQAgent(InfiniteRTAgent):
                 master_model.addConstr(abs_vars >= scaled, name="l1_abs_pos")
                 master_model.addConstr(abs_vars >= -scaled, name="l1_abs_neg")
                 penalty = abs_vars.sum()
-            objective = z - lam * penalty
-        master_model.setObjective(objective, GRB.MAXIMIZE)
+            master_objective = z - lam * penalty
+        master_model.setObjective(master_objective, GRB.MAXIMIZE)
         # Gurobi finalizes objective sense on update; do this before Benders reads ModelSense.
         master_model.update()
         return master_model, coefficient_vars, theta_vars
 
-    def train_subproblem_builder_fn(self, env, scenario_id, init_state = None):
+    def train_subproblem_builder_fn(self, env, scenario_id, init_state=None, initial_coefficients=None):
         sub_model = gp.Model(f"Subproblem_SA_Advance_{scenario_id}", env=env)
         sub_model.setParam("Method", 2)       # barrier for the one cold solve
         sub_model.setParam("Crossover", 1)    # crossover -> usable simplex basis
@@ -240,6 +257,9 @@ class ApproxQAgent(InfiniteRTAgent):
             return np.asarray(feature_var.X, dtype=float)
 
         sub_model.setObjective(cost_part, GRB.MINIMIZE)
+        seed_coefficients = (np.zeros(number_of_coefficients) if initial_coefficients is None
+                             else np.asarray(initial_coefficients, dtype=float))
+        objective_builder_fn(sub_model, seed_coefficients)
 
         sub_model.Params.OutputFlag = 0
         cold_solve_start = time.time()
@@ -250,7 +270,8 @@ class ApproxQAgent(InfiniteRTAgent):
         if sub_model.Status == GRB.OPTIMAL:
             self.subproblem_initial_cuts[scenario_id] = (
                 float(sub_model.ObjVal),
-                cut_gradient_fn(sub_model, np.zeros(number_of_coefficients)),
+                cut_gradient_fn(sub_model, seed_coefficients),
+                seed_coefficients,
             )
 
         # Switch to primal simplex for all subsequent Benders re-solves. Each
@@ -281,7 +302,7 @@ class ApproxQAgent(InfiniteRTAgent):
             )
         return lambda sid: init_state[sid]
 
-    def _build_training_workers(self, init_state=None, parallel=True, verbose=False):
+    def _build_training_workers(self, init_state=None, parallel=True, verbose=False, initial_coefficients=None):
         envs = {sid: self._get_subproblem_env(sid, {"Threads": 1}, parallel)
                 for sid in range(self.sample_path_number)}
         init_state_for = self._resolve_init_state_per_scenario(init_state)
@@ -293,7 +314,7 @@ class ApproxQAgent(InfiniteRTAgent):
         def build_one(sid):
             start = time.time()
             model, link_rows, objective_builder_fn, cut_gradient_fn = self.train_subproblem_builder_fn(
-                env=envs[sid], scenario_id=sid, init_state=init_state_for(sid))
+                env=envs[sid], scenario_id=sid, init_state=init_state_for(sid), initial_coefficients=initial_coefficients)
             worker = SubproblemWorker(
                 model=model, link_rows=link_rows, state_linking_constraints=None,
                 subproblem_id=sid, objective_builder_fn=objective_builder_fn,
@@ -379,8 +400,12 @@ class ApproxQAgent(InfiniteRTAgent):
                                     checkpoint_path=None,
                                     resume_checkpoint_path=None,
                                     purge_after=30,
-                                    regularization=None):
+                                    regularization=None,
+                                    training_objective='mean',
+                                    initial_coefficients=None,
+                                    fixed_coefficients=None):
         overall_start = time.time()
+        fixed_coefficients = normalize_fixed_coefficients(fixed_coefficients)
         master_time = None
         workers_time = None
         coefficient_vars = None
@@ -394,8 +419,14 @@ class ApproxQAgent(InfiniteRTAgent):
             self.coefficient_model = None
         self.subproblem_initial_cuts.clear()
         self.subproblem_cold_solve_seconds.clear()
+        init_solution = None
+        if initial_coefficients is not None:
+            init_solution = np.array(initial_coefficients, dtype=float)
+            for index, value in fixed_coefficients.items():
+                init_solution[index] = value
         workers_start = time.time()
-        workers = self._build_training_workers(init_state=init_state, parallel=parallel, verbose=verbose)
+        workers = self._build_training_workers(
+            init_state=init_state, parallel=parallel, verbose=verbose, initial_coefficients=init_solution)
         workers_time = time.time() - workers_start
         if verbose:
             print(f"[TIMING] Workers building (parallel={parallel}): {workers_time:.2f}s")
@@ -406,7 +437,8 @@ class ApproxQAgent(InfiniteRTAgent):
         self._regularization_scale_vector = regularization_scale
         master_start = time.time()
         master_model, coefficient_vars, theta_vars = self.train_master_builder_fn(
-            coefficient_bound, regularization=regularization, regularization_scale=regularization_scale)
+            coefficient_bound, regularization=regularization, regularization_scale=regularization_scale,
+            objective=training_objective, fixed_coefficients=fixed_coefficients)
         master_time = time.time() - master_start
         if verbose:
             print(f"[TIMING] Master model building: {master_time:.2f}s")
@@ -414,9 +446,16 @@ class ApproxQAgent(InfiniteRTAgent):
         self.coefficient_model = BendersDecompositionSolver(
             master_model=master_model, workers=workers, imm_cost=None,
             theta_vars=theta_vars, action_vars=coefficient_vars,
-            scenario_weights=self.sample_path_weights, scenario_strata=self.sample_path_strata)
+            scenario_weights=self.sample_path_weights, scenario_strata=self.sample_path_strata,
+            objective=training_objective)
         self._prepare_training_checkpoint(checkpoint_path, resume_checkpoint_path)
-        init_solution = None
+        initial_in_sample = None
+        if init_solution is not None:
+            if len(self.subproblem_initial_cuts) == self.sample_path_number:
+                initial_in_sample = self._aggregate_in_sample(
+                    [self.subproblem_initial_cuts[sid][0] for sid in range(self.sample_path_number)])
+            else:
+                initial_in_sample = self._in_sample_values(init_solution, parallel)
         solver_start = time.time()
         # A regularizer already makes the optimum bounded/unique, so the
         # min-norm tie-break is unnecessary (and its objective guard would turn
@@ -428,6 +467,8 @@ class ApproxQAgent(InfiniteRTAgent):
         
         info = dict(info or {})
         info['importance_sampling'] = self._build_importance_sampling_info()
+        if initial_in_sample is not None:
+            info['initial_in_sample'] = initial_in_sample
         
         overall_time = time.time() - overall_start
         info['timing'] = {
@@ -449,12 +490,9 @@ class ApproxQAgent(InfiniteRTAgent):
         self.is_trained = True
         generating_function = self._require_generating_function()
         generating_function.set_coefficients(self.coefficients)
-        objective = float(info.get('evaluated_value', upper_bound))
+        info['in_sample'] = self._in_sample_values(self.coefficients, parallel)
+        objective = info['in_sample']['mean']
         if regularization is not None:
-            # The solver objective carries -lambda R(theta); the in-sample lower
-            # bound is the unregularized weighted SAA value at theta*.
-            _, saa_objective = self.coefficient_model.evaluate_action(
-                np.asarray(self.coefficients, dtype=float), parallel=parallel)
             scale_vector = getattr(self, '_regularization_scale_vector', None)
             info['regularization'] = {
                 'type': regularization['type'],
@@ -462,11 +500,18 @@ class ApproxQAgent(InfiniteRTAgent):
                 'scale_mode': regularization.get('scale', 'feature_std'),
                 'scale': None if scale_vector is None else np.asarray(scale_vector, dtype=float).tolist(),
                 'regularized_objective': float(upper_bound),
-                'saa_objective': float(saa_objective),
+                'saa_objective': objective,
             }
-            objective = float(saa_objective)
-            print(f"Regularized master objective {upper_bound:.4f}; unregularized SAA value at theta*: {saa_objective:.4f}")
+            print(f"Regularized master objective {upper_bound:.4f}; unregularized SAA value at theta*: {objective:.4f}")
         return objective, self.coefficients, info
+
+    def _in_sample_values(self, coefficients, parallel):
+        values, _ = self.coefficient_model.evaluate_action(np.asarray(coefficients, dtype=float), parallel=parallel)
+        return self._aggregate_in_sample(values)
+
+    def _aggregate_in_sample(self, values):
+        kappa = np.asarray(self.sample_path_weights, dtype=float)
+        return {objective: aggregate_scenario_values(values, kappa, objective) for objective in SCENARIO_OBJECTIVES}
 
     def calculate_information_relaxation_cost(self, state, sample_path, verbose=False, period_weights=None,
                                               terminal=None, first_action=None):

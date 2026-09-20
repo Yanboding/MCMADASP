@@ -411,6 +411,81 @@ def test_absorption_records_need_a_length_proposal():
     assert all(record['terminal'] is None and record['period_weights'] is None for record in legacy)
 
 
+def test_train_expected_init_state_objective_and_warm_start(tmp_path):
+    import json
+    coefficients_file = tmp_path / 'alp_penalty.jsonl'
+    (variant,) = cli._apply_penalty_function(
+        cli.build_variation_test_env(cli.EXPERIMENT_SPECS['base_toy_study']), 'absorption_alp_penalty').values()
+    count = cli._training_generating_function(variant).number_of_coefficients
+    coefficients = [float(i) for i in range(1, count + 1)]
+    coefficients_file.write_text(json.dumps({'uid': 'abc', 'coefficients': coefficients}) + '\n')
+    captured = []
+
+    def fake_generate(test_envs, **kwargs):
+        ((key, variant),) = test_envs.items()
+        captured.append((key, kwargs['init_state'], variant))
+        return [{'stub': True}]
+
+    with mock.patch.object(cli, 'generate_penalty_coefficient_training_env', side_effect=fake_generate), \
+         mock.patch.object(cli, 'write_command_file'):
+        cli.main(['train', 'base_toy_study', '--expected-init-state', '--objective', 'min',
+                  '--penalty-function', 'absorption_alp_penalty', '--init-coefficients', str(coefficients_file),
+                  '--name', 'toy_minmax', '--dat', 'unused.dat'])
+    ((key, init_state, variant),) = captured
+    assert key[1] == 'toy_minmax'
+    regular, overtime, waitlist = init_state
+    assert regular[-1] == 0 and overtime[-1] == 0
+    assert any(value % 1 != 0 for value in [*regular, *overtime, *waitlist])
+    inner = variant['agent_args']['agent_args']
+    assert inner['training_objective'] == 'min'
+    assert inner['initial_coefficients'] == coefficients
+    assert inner['initial_coefficients_source'] == {'file': str(coefficients_file), 'uid': 'abc'}
+    for flags in (['--expected-init-state', '--reset-init-state'], ['--expected-init-state', '--num-init-states', '2']):
+        try:
+            cli.main(['train', 'base_toy_study', *flags, '--dat', 'unused.dat'])
+        except ValueError as exc:
+            assert 'mutually exclusive' in str(exc)
+        else:
+            raise AssertionError('conflicting init-state flags must be rejected')
+
+
+def test_train_objective_changes_uid_and_defaults_to_mean():
+    with mock.patch.object(cli, 'write_command_file'):
+        (mean_record,) = cli.main(['train', 'base_toy_study', '--dat', 'unused.dat'])
+        (min_record,) = cli.main(['train', 'base_toy_study', '--objective', 'min', '--dat', 'unused.dat'])
+    assert 'training_objective' not in mean_record['agent_args']['agent_args']
+    assert min_record['agent_args']['agent_args']['training_objective'] == 'min'
+    assert mean_record['uid'] != min_record['uid']
+    assert mean_record['init_state_mode'] == 'generate'
+
+
+def test_train_fix_intercept_flag_pins_coefficient_zero():
+    with mock.patch.object(cli, 'write_command_file'):
+        (free_record,) = cli.main(['train', 'base_toy_study', '--dat', 'unused.dat'])
+        (fixed_record,) = cli.main(['train', 'base_toy_study', '--penalty-function', 'absorption_alp_penalty', '--fix-intercept', '--dat', 'unused.dat'])
+    assert 'fixed_coefficients' not in free_record['agent_args']['agent_args']
+    assert fixed_record['agent_args']['agent_args']['fixed_coefficients'] == {'0': 0.0}
+    assert free_record['uid'] != fixed_record['uid']
+
+
+def test_train_fix_intercept_and_bad_init_coefficients_are_rejected(tmp_path):
+    with mock.patch.object(cli, 'write_command_file'):
+        try:
+            cli.main(['train', 'base_toy_study', '--penalty-function', 'linear_penalty', '--fix-intercept', '--dat', 'unused.dat'])
+        except ValueError as exc:
+            assert 'no intercept' in str(exc)
+        else:
+            raise AssertionError('--fix-intercept must be rejected for a penalty without intercept')
+        short = tmp_path / 'short.jsonl'
+        short.write_text(json.dumps({'uid': 'x', 'coefficients': [1.0, 2.0]}) + '\n')
+        try:
+            cli.main(['train', 'base_toy_study', '--init-coefficients', str(short), '--dat', 'unused.dat'])
+        except ValueError as exc:
+            assert 'entries' in str(exc)
+        else:
+            raise AssertionError('a wrong-length warm start must be rejected at generation time')
+
+
 if __name__ == '__main__':
     test_parser_accepts_all_subcommands()
     test_train_resolves_per_variant_sample_path_number()
@@ -429,3 +504,7 @@ if __name__ == '__main__':
     test_train_penalty_function_flag_composes_with_regularization()
     test_absorption_records_need_a_length_proposal()
     print('All generate_params CLI tests passed.')
+    test_train_expected_init_state_objective_and_warm_start(__import__('pathlib').Path(tempfile.mkdtemp()))
+    test_train_objective_changes_uid_and_defaults_to_mean()
+    test_train_fix_intercept_flag_pins_coefficient_zero()
+    test_train_fix_intercept_and_bad_init_coefficients_are_rejected(__import__('pathlib').Path(tempfile.mkdtemp()))

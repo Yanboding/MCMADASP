@@ -366,10 +366,23 @@ def objective_confidence_interval(values, weights=None, strata=None):
     return mean, 1.96 * float(np.sqrt(variance))
 
 
+SCENARIO_OBJECTIVES = ('mean', 'min')
+
+
+def aggregate_scenario_values(values, weights, objective):
+    values = np.asarray(values, dtype=float)
+    if objective == 'min':
+        return float(values.min())
+    return float(np.asarray(weights, dtype=float) @ values)
+
+
 class BendersDecompositionSolver:
 
     def __init__(self, master_model, workers, imm_cost, theta_vars, action_vars,
-                 scenario_weights=None, scenario_strata=None):
+                 scenario_weights=None, scenario_strata=None, objective='mean'):
+        if objective not in SCENARIO_OBJECTIVES:
+            raise ValueError(f"objective must be one of {SCENARIO_OBJECTIVES}; got {objective!r}")
+        self.objective = objective
         self.master_model = master_model
         self.workers = workers
         self.imm_cost = imm_cost
@@ -390,6 +403,11 @@ class BendersDecompositionSolver:
         self._cut_purge_enabled = False
         self._cut_registry = []
         self._latest_cut_by_scenario = {}
+
+    def scenario_objective(self, values, scenario_ids=None):
+        values = np.asarray(values, dtype=float)
+        weights = self._scenario_weights[:values.size] if scenario_ids is None else self._scenario_weights[scenario_ids]
+        return aggregate_scenario_values(values, weights, self.objective)
 
     def solve(self, 
               init_solution=None,
@@ -507,8 +525,9 @@ class BendersDecompositionSolver:
                 # solution.
                 scenario_gaps = self._scenario_gaps(results, active_workers, theta_values)
                 scenario_ids = [worker.subproblem_id for worker in active_workers]
-                gap = float(self._scenario_weights[scenario_ids] @ scenario_gaps)
-                model_cost_to_go = float(self._scenario_weights @ theta_values)
+                model_cost_to_go = self.scenario_objective(theta_values[scenario_ids], scenario_ids)
+                cost_to_go_estimation = self.scenario_objective([v for (_, v, _) in results], scenario_ids)
+                gap = model_cost_to_go - cost_to_go_estimation
                 if is_min:
                     upper_bound = master_obj + gap
                 else:
@@ -546,6 +565,9 @@ class BendersDecompositionSolver:
                     checkpoint_path, global_iteration, lower_bound, upper_bound,
                     core_point, cut_count, new_cut_records, purge_after)
 
+                if init_solution is not None and iteration == 1:
+                    print('-' * 20)
+                    continue
                 if abs(gap) < tol:
                     info = {}
                     break
@@ -889,20 +911,29 @@ class BendersDecompositionSolver:
     def _seed_initial_cuts(self, active_workers, iteration, lower_bound, upper_bound,
                            cut_count, checkpoint_path, core_point):
         is_min = self.master_model.ModelSense == GRB.MINIMIZE
-        seeded_workers, seeded_results = [], []
+        zero_action = np.zeros(self.action_vars.shape[0], dtype=float)
+        groups = {}
+        seeded_workers, seeded_values = [], []
         for worker in active_workers:
             initial_cut = getattr(worker, "initial_cut", None)
             if initial_cut is None:
                 continue
-            v0, g0 = initial_cut
+            v0, g0 = initial_cut[0], initial_cut[1]
+            anchor = np.asarray(initial_cut[2], dtype=float) if len(initial_cut) > 2 else zero_action
+            group = groups.setdefault(anchor.tobytes(), (anchor, [], []))
+            group[1].append(worker)
+            group[2].append((True, float(v0), np.asarray(g0, dtype=float)))
             seeded_workers.append(worker)
-            seeded_results.append((True, float(v0), np.asarray(g0, dtype=float)))
+            seeded_values.append(float(v0))
         if not seeded_workers:
             return lower_bound, upper_bound, cut_count
 
-        zero_action = np.zeros(self.action_vars.shape[0], dtype=float)
-        _, _, optimality_cuts, cut_records, cost_to_go = self._build_cuts(
-            seeded_results, seeded_workers, zero_action)
+        optimality_cuts, cut_records = [], []
+        seed_action = zero_action
+        for seed_action, workers, results in groups.values():
+            _, _, group_cuts, group_records, _ = self._build_cuts(results, workers, seed_action)
+            optimality_cuts.extend(group_cuts)
+            cut_records.extend(group_records)
         seed_constrs = self.master_model.addConstrs(
             (optimality_cuts[i] for i in range(len(optimality_cuts))),
             name="benders_seed_cut_",
@@ -914,16 +945,16 @@ class BendersDecompositionSolver:
         all_seeded = len(seeded_workers) == len(active_workers)
         # Weights sum to 1 over ALL active workers, so the weighted sum is the
         # weighted average exactly when every worker contributed a seed cut.
-        bound_at_zero = cost_to_go if all_seeded else None
-        print(f"Seeded master with {len(optimality_cuts)} build-time (a=0) cuts"
-              + (f"; bound at zero coefficients = {bound_at_zero}" if bound_at_zero is not None else ""))
+        bound_at_zero = self.scenario_objective(seeded_values, [w.subproblem_id for w in seeded_workers]) if all_seeded else None
+        print(f"Seeded master with {len(optimality_cuts)} build-time cuts ({len(groups)} anchor(s), max|a| = {float(np.abs(seed_action).max()):g})"
+              + (f"; bound at the seed coefficients = {bound_at_zero}" if bound_at_zero is not None else ""))
         seeded_ids = [worker.subproblem_id for worker in seeded_workers]
         zero_mean, zero_half_width = objective_confidence_interval(
-            [v for _, v, _ in seeded_results],
+            seeded_values,
             weights=self._scenario_weights[seeded_ids],
             strata=self._scenario_strata[seeded_ids])
         print(f"Zero-penalty subproblem objective mean {zero_mean:.4f} +/- "
-              f"{zero_half_width:.4f} (95% CI, N={len(seeded_results)})")
+              f"{zero_half_width:.4f} (95% CI, N={len(seeded_values)})")
 
         if bound_at_zero is not None:
             # The optimum is at least as good as all-zero coefficients, so

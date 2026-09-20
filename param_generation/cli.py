@@ -18,10 +18,12 @@ from param_generation.datasets import (
     offset_sample_generation_seeds,
 )
 from param_generation.experiment_specs import build_variation_test_env
-from param_generation.generating_functions import GENERATING_FUNCTION_CLASSES, normalize_generating_function_spec
+from param_generation.generating_functions import GENERATING_FUNCTION_CLASSES, build_generating_function, normalize_generating_function_spec
 from param_generation.mutators import mutate_initial_state_congestion
 from param_generation.registry import EXPERIMENT_SPECS
 from param_generation.training import train_alp_coefficients
+from decision_maker.alp_rg_agent import alp_expected_initial_state
+from decision_maker.approximate_q_agent import TRAINING_OBJECTIVES
 from utils import get_uid
 
 
@@ -276,6 +278,27 @@ def build_parser():
         '--regularization-scale', choices=['feature_std', 'none'], default='feature_std',
         help='per-coefficient scale inside the penalty: feature_std (default) = '
              'scenario-weighted std of the build-time penalty features; none = raw')
+    train.add_argument(
+        '--expected-init-state', action='store_true',
+        help='train from the ALP relevance-weighted expected initial state '
+             '(E_u_alpha, E_v_alpha, E_w_alpha) shared by all scenarios; mutually '
+             'exclusive with --reset-init-state and --num-init-states')
+    train.add_argument(
+        '--objective', choices=TRAINING_OBJECTIVES, default='mean',
+        help='training criterion over the scenarios: mean (kappa-weighted sample '
+             'average, default) or min (minimum pathwise value)')
+    train.add_argument(
+        '--init-coefficients', default=None, metavar='JSONL',
+        help='warm-start the Benders master at the coefficients of the first record '
+             'with a coefficients list in this jsonl file (e.g. the ALP coefficients)')
+    train.add_argument(
+        '--name', default=None,
+        help='experiment name for the generated command (requires a single variant)')
+    train.add_argument(
+        '--fix-intercept', action='store_true',
+        help='pin coefficient 0 (the intercept of absorption_alp_penalty) at 0 during '
+             'training; its penalty term is action-independent with zero mean, so it '
+             'only adds variance and drives the mean objective to the coefficient bound')
 
     def add_eval_arguments(sub_parser):
         sub_parser.add_argument('experiment', choices=sorted(EXPERIMENT_SPECS))
@@ -471,6 +494,59 @@ def _apply_coefficient_bound(test_envs, bound):
     return updated
 
 
+def _load_initial_coefficients(path):
+    if path is None:
+        return None, None
+    path = os.path.normpath(path)
+    with open(path, encoding='utf-8') as handle:
+        for line in handle:
+            record = json.loads(line) if line.strip() else {}
+            if isinstance(record.get('coefficients'), list):
+                source = {'file': path, 'uid': record.get('uid')}
+                if 'mutate_val' in record:
+                    source['mutate_val'] = record['mutate_val']
+                return [float(value) for value in record['coefficients']], source
+    raise ValueError(f'{path} holds no record with a coefficients list')
+
+
+def _training_generating_function(variant):
+    spec = normalize_generating_function_spec(
+        variant.get('agent_args', {}).get('agent_args', {}).get('training_generating_function_spec'))
+    env = get_config_by_type('infinite_custom', args=variant['env_args']).env
+    return build_generating_function(env, spec)
+
+
+def _apply_training_objective(test_envs, objective, initial_coefficients, source, fix_intercept=False):
+    if objective == 'mean' and initial_coefficients is None and not fix_intercept:
+        return test_envs
+    updated = {}
+    for (_, experiment_name, mutate_val), variant in test_envs.items():
+        variant = copy.deepcopy(variant)
+        inner = variant.setdefault('agent_args', {}).setdefault('agent_args', {})
+        if objective != 'mean':
+            inner['training_objective'] = objective
+        if initial_coefficients is not None or fix_intercept:
+            generating_function = _training_generating_function(variant)
+        if initial_coefficients is not None:
+            if len(initial_coefficients) != generating_function.number_of_coefficients:
+                raise ValueError(
+                    f"--init-coefficients has {len(initial_coefficients)} entries but "
+                    f"{generating_function.spec_name} has {generating_function.number_of_coefficients}")
+            if 'mutate_val' in source and source['mutate_val'] != mutate_val:
+                raise ValueError(
+                    f"--init-coefficients record has mutate_val {source['mutate_val']} but the variant is {mutate_val}")
+            inner['initial_coefficients'] = initial_coefficients
+            inner['initial_coefficients_source'] = source
+        if fix_intercept:
+            intercept_index = getattr(generating_function, 'intercept_index', None)
+            if intercept_index is None:
+                raise ValueError(f'--fix-intercept: {generating_function.spec_name} has no intercept coefficient')
+            inner['fixed_coefficients'] = {str(intercept_index): 0.0}
+        uid = get_uid({'env_args': variant['env_args'], 'agent_args': variant['agent_args']})
+        updated[(uid, experiment_name, mutate_val)] = variant
+    return updated
+
+
 def _run_train(args):
     test_envs = _select_variants(
         build_variation_test_env(EXPERIMENT_SPECS[args.experiment]), args.variants)
@@ -479,9 +555,18 @@ def _run_train(args):
     reg_type, lambdas = _parse_regularization(args)
     if reg_type is not None:
         test_envs = _apply_regularization(test_envs, reg_type, lambdas, args.regularization_scale)
+    initial_coefficients, initial_coefficients_source = _load_initial_coefficients(args.init_coefficients)
+    test_envs = _apply_training_objective(
+        test_envs, args.objective, initial_coefficients, initial_coefficients_source, args.fix_intercept)
+    if args.name is not None:
+        if len(test_envs) != 1:
+            raise ValueError(f'--name needs exactly one variant; got {len(test_envs)}')
+        test_envs = {(key[0], args.name, key[2]): variant for key, variant in test_envs.items()}
     path_seeds = [args.sample_paths_seed + offset for offset in range(args.num_path_seeds)]
     if args.reset_init_state and args.num_init_states > 0:
         raise ValueError('--reset-init-state and --num-init-states are mutually exclusive')
+    if args.expected_init_state and (args.reset_init_state or args.num_init_states > 0):
+        raise ValueError('--expected-init-state is mutually exclusive with --reset-init-state and --num-init-states')
     records = []
     for key, variant in test_envs.items():
         # The record-level scenario count overrides the agent's at run time
@@ -500,6 +585,9 @@ def _run_train(args):
                     f"--reset-init-state: variant {key} has no "
                     "env_args['reset_params']['init_state']")
             init_states = [tuple(np.array(component) for component in reset_state)]
+        elif args.expected_init_state:
+            env = get_config_by_type('infinite_custom', args=variant['env_args']).env
+            init_states = [alp_expected_initial_state(env)]
         for init_state in init_states:
             for path_seed in path_seeds:
                 records.extend(generate_penalty_coefficient_training_env(

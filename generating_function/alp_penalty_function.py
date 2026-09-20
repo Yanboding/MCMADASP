@@ -9,6 +9,7 @@ from .penalty_forms import absorption_forms
 
 class AbsorptionALPPenaltyFunction(GeneratingFunction):
     spec_name = 'absorption_alp_penalty'
+    intercept_index = 0
     forms = absorption_forms()
 
     def __init__(self, env, coefficients=None):
