@@ -428,7 +428,7 @@ def test_train_expected_init_state_objective_and_warm_start(tmp_path):
 
     with mock.patch.object(cli, 'generate_penalty_coefficient_training_env', side_effect=fake_generate), \
          mock.patch.object(cli, 'write_command_file'):
-        cli.main(['train', 'base_toy_study', '--expected-init-state', '--objective', 'min',
+        cli.main(['train', 'base_toy_study', '--expected-init-state', '--objective', 'worst_case',
                   '--penalty-function', 'absorption_alp_penalty', '--init-coefficients', str(coefficients_file),
                   '--name', 'toy_minmax', '--dat', 'unused.dat'])
     ((key, init_state, variant),) = captured
@@ -437,7 +437,7 @@ def test_train_expected_init_state_objective_and_warm_start(tmp_path):
     assert regular[-1] == 0 and overtime[-1] == 0
     assert any(value % 1 != 0 for value in [*regular, *overtime, *waitlist])
     inner = variant['agent_args']['agent_args']
-    assert inner['training_objective'] == 'min'
+    assert inner['training_objective'] == 'worst_case'
     assert inner['initial_coefficients'] == coefficients
     assert inner['initial_coefficients_source'] == {'file': str(coefficients_file), 'uid': 'abc'}
     for flags in (['--expected-init-state', '--reset-init-state'], ['--expected-init-state', '--num-init-states', '2']):
@@ -452,9 +452,9 @@ def test_train_expected_init_state_objective_and_warm_start(tmp_path):
 def test_train_objective_changes_uid_and_defaults_to_mean():
     with mock.patch.object(cli, 'write_command_file'):
         (mean_record,) = cli.main(['train', 'base_toy_study', '--dat', 'unused.dat'])
-        (min_record,) = cli.main(['train', 'base_toy_study', '--objective', 'min', '--dat', 'unused.dat'])
+        (min_record,) = cli.main(['train', 'base_toy_study', '--objective', 'worst_case', '--dat', 'unused.dat'])
     assert 'training_objective' not in mean_record['agent_args']['agent_args']
-    assert min_record['agent_args']['agent_args']['training_objective'] == 'min'
+    assert min_record['agent_args']['agent_args']['training_objective'] == 'worst_case'
     assert mean_record['uid'] != min_record['uid']
     assert mean_record['init_state_mode'] == 'generate'
 
@@ -550,3 +550,53 @@ if __name__ == '__main__':
     test_train_fix_intercept_and_bad_init_coefficients_are_rejected(__import__('pathlib').Path(tempfile.mkdtemp()))
     test_train_center_noise_flag_changes_uid()
     test_train_intercept_bound_flag_and_conflicts(__import__('pathlib').Path(tempfile.mkdtemp()))
+
+
+def test_train_worst_case_objective_is_accepted():
+    with mock.patch.object(cli, 'write_command_file'):
+        (record,) = cli.main(['train', 'base_toy_study', '--penalty-function', 'absorption_alp_penalty',
+                              '--objective', 'worst_case', '--dat', 'unused.dat'])
+    assert record['agent_args']['agent_args']['training_objective'] == 'worst_case'
+    assert record['init_state_mode'] == 'generate'
+
+
+def test_train_paths_per_state_flag_and_conflicts():
+    with mock.patch.object(cli, 'write_command_file'):
+        (record,) = cli.main(['train', 'base_toy_study', '--objective', 'worst_case', '--paths-per-state', '2', '--dat', 'unused.dat'])
+    assert record['agent_args']['agent_args']['paths_per_state'] == 2
+    assert record['init_state_mode'] == 'generate' and record['sample_path_number'] % 2 == 0
+    for flags in (['--paths-per-state', '3'], ['--paths-per-state', '1'],
+                  ['--paths-per-state', '2', '--expected-init-state'], ['--paths-per-state', '2', '--num-init-states', '2']):
+        try:
+            with mock.patch.object(cli, 'write_command_file'):
+                cli.main(['train', 'base_toy_study', *flags, '--dat', 'unused.dat'])
+        except (ValueError, SystemExit):
+            pass
+        else:
+            raise AssertionError(f'{flags} must be rejected')
+
+
+def test_train_worst_case_scope_flag():
+    with mock.patch.object(cli, 'write_command_file'):
+        (per_state,) = cli.main(['train', 'base_toy_study', '--objective', 'worst_case', '--paths-per-state', '2', '--dat', 'unused.dat'])
+        (joint,) = cli.main(['train', 'base_toy_study', '--objective', 'worst_case', '--worst-case-scope', 'joint', '--dat', 'unused.dat'])
+    assert per_state['agent_args']['agent_args'].get('worst_case_scope') is None
+    assert joint['agent_args']['agent_args']['worst_case_scope'] == 'joint'
+    assert per_state['uid'] != joint['uid']
+    try:
+        with mock.patch.object(cli, 'write_command_file'):
+            cli.main(['train', 'base_toy_study', '--worst-case-scope', 'joint', '--dat', 'unused.dat'])
+    except ValueError:
+        pass
+    else:
+        raise AssertionError('--worst-case-scope needs --objective worst_case')
+
+
+def test_toy_stratified_spec_carries_the_geometric_099_proposal():
+    with mock.patch.object(cli, 'write_command_file'):
+        (record,) = cli.main(['train', 'toy_stratified_099_scenario_1024', '--variants', '0.5', '--dat', 'unused.dat'])
+    inner = record['agent_args']['agent_args']
+    assert inner['sample_path_number'] == 1024 and record['sample_path_number'] == 1024
+    assert inner['sample_path_length_proposal'] == {
+        'type': 'stratified_geometric', 'discount_factor_proposal': 0.99, 'num_strata': 512}
+    assert record['init_state_mode'] == 'generate'

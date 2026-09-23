@@ -14,14 +14,20 @@ from decision_maker import InfiniteRTAgent
 from importance_sampling.proposals import ArrivalGeneratorSamplePathProposal
 from importance_sampling.sample_path import sample_path_from_record
 from metaheuristic_algorithm import CutPool, SubproblemWorker, BendersDecompositionSolver
-from metaheuristic_algorithm.benders_decomposition_solver import SCENARIO_OBJECTIVES, aggregate_scenario_values
+from metaheuristic_algorithm.benders_decomposition_solver import objective_confidence_interval
 from utils import solve_and_handle_errors, flatten, set_link_rhs, acquire_grb_env, encode, get_status_string, is_single_init_state
 
-TRAINING_OBJECTIVES = SCENARIO_OBJECTIVES
+TRAINING_OBJECTIVES = ('mean', 'worst_case')
+WORST_CASE_SCOPES = ('per_state', 'joint')
 
 
-def normalize_fixed_coefficients(fixed_coefficients):
-    return {int(index): float(value) for index, value in (fixed_coefficients or {}).items()}
+def state_key(state):
+    return tuple(np.concatenate([np.asarray(component, dtype=float).reshape(-1) for component in state]).tolist())
+
+
+def block_membership(xi_blocks):
+    blocks = np.asarray(xi_blocks, dtype=int).reshape(-1)
+    return np.eye(blocks.max() + 1)[blocks]
 
 
 class ApproxQAgent(InfiniteRTAgent):
@@ -177,7 +183,7 @@ class ApproxQAgent(InfiniteRTAgent):
 
     def train_master_builder_fn(self, coefficient_bound=GRB.INFINITY, regularization=None,
                                 regularization_scale=None, objective='mean', fixed_coefficients=None,
-                                coefficient_bound_overrides=None):
+                                coefficient_bound_overrides=None, xi_blocks=None, relevance_state=None):
         if objective not in TRAINING_OBJECTIVES:
             raise ValueError(f"training objective must be one of {TRAINING_OBJECTIVES}; got {objective!r}")
         master_model = gp.Model(f"SAA_train_Master", env=self.grb_env)
@@ -188,15 +194,17 @@ class ApproxQAgent(InfiniteRTAgent):
         master_model.setParam("OptimalityTol", 1e-9)
         theta_vars = master_model.addMVar(shape=self.sample_path_number, vtype=GRB.CONTINUOUS, lb=-GRB.INFINITY, ub=1e8, name="theta")
         z = theta_vars @ self.sample_path_weights
-        if objective == 'min':
-            eta = master_model.addVar(lb=-GRB.INFINITY, name="eta")
-            master_model.addConstr(eta <= theta_vars, name="eta_le_theta")
-            z = eta
         coefficient_vars = self.generating_function.get_coefficient_var(model=master_model, coefficient_bound=coefficient_bound)
-        for index, bound in normalize_fixed_coefficients(coefficient_bound_overrides).items():
+        if objective == 'worst_case':
+            membership = block_membership(xi_blocks)
+            xi = master_model.addMVar(membership.shape[1], lb=-GRB.INFINITY, name="xi")
+            master_model.addConstr(membership @ xi <= theta_vars, name="xi_le_theta")
+            block_weights = membership.T @ np.asarray(self.sample_path_weights, dtype=float)
+            z = self.generating_function.approximate_value(relevance_state, coefficient_vars) + block_weights @ xi
+        for index, bound in (coefficient_bound_overrides or {}).items():
             coefficient_vars[index].lb = -bound
             coefficient_vars[index].ub = bound
-        for index, value in normalize_fixed_coefficients(fixed_coefficients).items():
+        for index, value in (fixed_coefficients or {}).items():
             coefficient_vars[index].lb = value
             coefficient_vars[index].ub = value
         master_objective = z
@@ -228,7 +236,8 @@ class ApproxQAgent(InfiniteRTAgent):
         master_model.update()
         return master_model, coefficient_vars, theta_vars
 
-    def train_subproblem_builder_fn(self, env, scenario_id, init_state=None, initial_coefficients=None):
+    def train_subproblem_builder_fn(self, env, scenario_id, init_state=None, initial_coefficients=None,
+                                    subtract_initial_state_value=False):
         sub_model = gp.Model(f"Subproblem_SA_Advance_{scenario_id}", env=env)
         sub_model.setParam("Method", 2)       # barrier for the one cold solve
         sub_model.setParam("Crossover", 1)    # crossover -> usable simplex basis
@@ -255,7 +264,11 @@ class ApproxQAgent(InfiniteRTAgent):
 
         feature_var = sub_model.addMVar(
             number_of_coefficients, lb=-GRB.INFINITY, name="penalty_feature")
-        feature_link = sub_model.addConstr(feature_var == feature_vec, name="penalty_feature_link")
+        if subtract_initial_state_value:
+            feature_vec_linked = feature_vec - generating_function.state_features(state)
+        else:
+            feature_vec_linked = feature_vec
+        feature_link = sub_model.addConstr(feature_var == feature_vec_linked, name="penalty_feature_link")
         sub_model.update()
         self.subproblem_feature_links[scenario_id] = feature_link
         self.subproblem_noise[scenario_id] = np.array(
@@ -313,7 +326,8 @@ class ApproxQAgent(InfiniteRTAgent):
             )
         return lambda sid: init_state[sid]
 
-    def _build_training_workers(self, init_state=None, parallel=True, verbose=False, initial_coefficients=None):
+    def _build_training_workers(self, init_state=None, parallel=True, verbose=False, initial_coefficients=None,
+                                subtract_initial_state_value=False):
         envs = {sid: self._get_subproblem_env(sid, {"Threads": 1}, parallel)
                 for sid in range(self.sample_path_number)}
         init_state_for = self._resolve_init_state_per_scenario(init_state)
@@ -325,7 +339,8 @@ class ApproxQAgent(InfiniteRTAgent):
         def build_one(sid):
             start = time.time()
             model, link_rows, objective_builder_fn, cut_gradient_fn = self.train_subproblem_builder_fn(
-                env=envs[sid], scenario_id=sid, init_state=init_state_for(sid), initial_coefficients=initial_coefficients)
+                env=envs[sid], scenario_id=sid, init_state=init_state_for(sid), initial_coefficients=initial_coefficients,
+                subtract_initial_state_value=subtract_initial_state_value)
             worker = SubproblemWorker(
                 model=model, link_rows=link_rows, state_linking_constraints=None,
                 subproblem_id=sid, objective_builder_fn=objective_builder_fn,
@@ -432,9 +447,10 @@ class ApproxQAgent(InfiniteRTAgent):
                                     initial_coefficients=None,
                                     fixed_coefficients=None,
                                     center_noise=False,
-                                    coefficient_bound_overrides=None):
+                                    coefficient_bound_overrides=None,
+                                    worst_case_scope='per_state'):
         overall_start = time.time()
-        fixed_coefficients = normalize_fixed_coefficients(fixed_coefficients)
+        fixed_coefficients = dict(fixed_coefficients or {})
         self.center_noise = bool(center_noise)
         master_time = None
         workers_time = None
@@ -451,6 +467,10 @@ class ApproxQAgent(InfiniteRTAgent):
         self.subproblem_cold_solve_seconds.clear()
         self.subproblem_feature_links.clear()
         self.subproblem_noise.clear()
+        xi_blocks = relevance_state = None
+        if training_objective == 'worst_case':
+            xi_blocks = self._xi_blocks(init_state, worst_case_scope)
+            relevance_state = self._state_relevance_state(init_state)
         init_solution = None
         if initial_coefficients is not None:
             init_solution = np.array(initial_coefficients, dtype=float)
@@ -458,7 +478,8 @@ class ApproxQAgent(InfiniteRTAgent):
                 init_solution[index] = value
         workers_start = time.time()
         workers = self._build_training_workers(
-            init_state=init_state, parallel=parallel, verbose=verbose, initial_coefficients=init_solution)
+            init_state=init_state, parallel=parallel, verbose=verbose, initial_coefficients=init_solution,
+            subtract_initial_state_value=training_objective == 'worst_case')
         workers_time = time.time() - workers_start
         if verbose:
             print(f"[TIMING] Workers building (parallel={parallel}): {workers_time:.2f}s")
@@ -471,7 +492,8 @@ class ApproxQAgent(InfiniteRTAgent):
         master_model, coefficient_vars, theta_vars = self.train_master_builder_fn(
             coefficient_bound, regularization=regularization, regularization_scale=regularization_scale,
             objective=training_objective, fixed_coefficients=fixed_coefficients,
-            coefficient_bound_overrides=coefficient_bound_overrides)
+            coefficient_bound_overrides=coefficient_bound_overrides, xi_blocks=xi_blocks,
+            relevance_state=relevance_state)
         master_time = time.time() - master_start
         if verbose:
             print(f"[TIMING] Master model building: {master_time:.2f}s")
@@ -479,16 +501,21 @@ class ApproxQAgent(InfiniteRTAgent):
         self.coefficient_model = BendersDecompositionSolver(
             master_model=master_model, workers=workers, imm_cost=None,
             theta_vars=theta_vars, action_vars=coefficient_vars,
-            scenario_weights=self.sample_path_weights, scenario_strata=self.sample_path_strata,
-            objective=training_objective)
+            objective_fn=self.training_objective_fn(training_objective, xi_blocks, relevance_state),
+            report_fn=self.training_report_fn())
         self._prepare_training_checkpoint(checkpoint_path, resume_checkpoint_path)
+        in_sample_objectives = {'mean': self.training_objective_fn('mean', relevance_state=relevance_state)}
+        if xi_blocks is not None:
+            in_sample_objectives['worst_case'] = self.training_objective_fn('worst_case', xi_blocks, relevance_state)
+        scenario_states = None if relevance_state is None else self._scenario_initial_states(init_state)
         initial_in_sample = None
         if init_solution is not None:
             if len(self.subproblem_initial_cuts) == self.sample_path_number:
                 initial_in_sample = self._aggregate_in_sample(
-                    [self.subproblem_initial_cuts[sid][0] for sid in range(self.sample_path_number)], init_solution)
+                    [self.subproblem_initial_cuts[sid][0] for sid in range(self.sample_path_number)], init_solution,
+                    in_sample_objectives, scenario_states)
             else:
-                initial_in_sample = self._in_sample_values(init_solution, parallel)
+                initial_in_sample = self._in_sample_values(init_solution, parallel, in_sample_objectives, scenario_states)
         solver_start = time.time()
         # A regularizer already makes the optimum bounded/unique, so the
         # min-norm tie-break is unnecessary (and its objective guard would turn
@@ -502,8 +529,6 @@ class ApproxQAgent(InfiniteRTAgent):
         info['importance_sampling'] = self._build_importance_sampling_info()
         if initial_in_sample is not None:
             info['initial_in_sample'] = initial_in_sample['in_sample']
-            if self.center_noise:
-                info['initial_in_sample_centered'] = initial_in_sample['in_sample_centered']
         
         overall_time = time.time() - overall_start
         info['timing'] = {
@@ -525,7 +550,7 @@ class ApproxQAgent(InfiniteRTAgent):
         self.is_trained = True
         generating_function = self._require_generating_function()
         generating_function.set_coefficients(self.coefficients)
-        info.update(self._in_sample_values(self.coefficients, parallel))
+        info.update(self._in_sample_values(self.coefficients, parallel, in_sample_objectives, scenario_states))
         objective = info['in_sample']['mean']
         if regularization is not None:
             scale_vector = getattr(self, '_regularization_scale_vector', None)
@@ -540,19 +565,104 @@ class ApproxQAgent(InfiniteRTAgent):
             print(f"Regularized master objective {upper_bound:.4f}; unregularized SAA value at theta*: {objective:.4f}")
         return objective, self.coefficients, info
 
-    def _in_sample_values(self, coefficients, parallel):
-        values, _ = self.coefficient_model.evaluate_action(np.asarray(coefficients, dtype=float), parallel=parallel)
-        return self._aggregate_in_sample(values, coefficients)
+    def weighted_objective_fn(self, weights):
+        weights = np.asarray(weights, dtype=float)
 
-    def _aggregate_in_sample(self, values, coefficients):
+        def objective_fn(action, values, scenario_ids):
+            return float(weights[np.asarray(scenario_ids, dtype=int)] @ np.asarray(values, dtype=float))
+
+        return objective_fn
+
+    def training_objective_fn(self, training_objective, xi_blocks=None, relevance_state=None):
+        if training_objective not in TRAINING_OBJECTIVES:
+            raise ValueError(f"training objective must be one of {TRAINING_OBJECTIVES}; got {training_objective!r}")
         kappa = np.asarray(self.sample_path_weights, dtype=float)
-        shift = float(np.asarray(coefficients, dtype=float) @ self.noise_mean)
-        raw = {objective: aggregate_scenario_values(np.asarray(values, dtype=float) + shift, kappa, objective)
-               for objective in SCENARIO_OBJECTIVES}
-        if not self.center_noise:
-            return {'in_sample': raw}
-        centered = {objective: aggregate_scenario_values(values, kappa, objective) for objective in SCENARIO_OBJECTIVES}
-        return {'in_sample': raw, 'in_sample_centered': centered}
+        generating_function = self.generating_function
+        if training_objective == 'worst_case':
+            blocks = np.asarray(xi_blocks, dtype=int).reshape(-1)
+            block_weights = np.bincount(blocks, weights=kappa)
+
+        def objective_fn(action, values, scenario_ids):
+            ids = np.asarray(scenario_ids, dtype=int)
+            values = np.asarray(values, dtype=float)
+            if training_objective == 'worst_case':
+                minima = np.full(block_weights.size, np.inf)
+                np.minimum.at(minima, blocks[ids], values)
+                present = np.isfinite(minima)
+                aggregate = block_weights[present] @ minima[present]
+            else:
+                aggregate = kappa[ids] @ values
+            if relevance_state is None:
+                return float(aggregate)
+            return float(generating_function.approximate_value(relevance_state, np.asarray(action, dtype=float)) + aggregate)
+
+        return objective_fn
+
+    def training_report_fn(self):
+        kappa = np.asarray(self.sample_path_weights, dtype=float)
+        strata = np.asarray(self.sample_path_strata)
+
+        def report_fn(label, values, scenario_ids):
+            ids = np.asarray(scenario_ids, dtype=int)
+            values = np.asarray(values, dtype=float)
+            mean, half_width = objective_confidence_interval(values, weights=kappa[ids], strata=strata[ids])
+            print(f"{label}: subproblem objective mean {mean:.4f} +/- {half_width:.4f} (95% CI, N={values.size}), "
+                  f"min {values.min():.4f} (scenario {int(ids[int(values.argmin())])})")
+
+        return report_fn
+
+    def _scenario_initial_states(self, init_state):
+        if init_state is None:
+            raise ValueError("the worst_case objective needs init_state: one shared state or one state per scenario")
+        init_state_for = self._resolve_init_state_per_scenario(init_state)
+        return [init_state_for(sid) for sid in range(self.sample_path_number)]
+
+    def _xi_blocks(self, init_state, scope):
+        if scope not in WORST_CASE_SCOPES:
+            raise ValueError(f"worst_case scope must be one of {WORST_CASE_SCOPES}; got {scope!r}")
+        states = self._scenario_initial_states(init_state)
+        if scope == 'joint':
+            return np.zeros(self.sample_path_number, dtype=int)
+        labels = {}
+        blocks = np.array([labels.setdefault(state_key(state), len(labels)) for state in states])
+        if len(labels) == self.sample_path_number:
+            raise ValueError("the per_state worst_case scope needs several sample paths per initial state")
+        return blocks
+
+    def _state_relevance_state(self, init_state):
+        states = self._scenario_initial_states(init_state)
+        kappa = np.asarray(self.sample_path_weights, dtype=float)
+        kappa = kappa / kappa.sum()
+        return tuple(kappa @ np.array([np.asarray(state[component], dtype=float).reshape(-1) for state in states])
+                     for component in range(len(states[0])))
+
+    def _in_sample_values(self, coefficients, parallel, objectives, scenario_states=None):
+        values, _ = self.coefficient_model.evaluate_action(np.asarray(coefficients, dtype=float), parallel=parallel)
+        return self._aggregate_in_sample(values, coefficients, objectives, scenario_states)
+
+    def _aggregate_in_sample(self, values, coefficients, objectives, scenario_states=None):
+        coefficients = np.asarray(coefficients, dtype=float)
+        shift = float(coefficients @ self.noise_mean)
+        scenario_ids = np.arange(self.sample_path_number)
+
+        def aggregate(scenario_values):
+            return {name: objective_fn(coefficients, scenario_values, scenario_ids)
+                    for name, objective_fn in objectives.items()}
+
+        raw_values = np.asarray(values, dtype=float) + shift
+        in_sample = aggregate(raw_values)
+        in_sample.update(self._pathwise_cost_statistics(raw_values, coefficients, scenario_states))
+        return {'in_sample': in_sample}
+
+    def _pathwise_cost_statistics(self, raw_values, coefficients, scenario_states):
+        costs = raw_values
+        if scenario_states is not None:
+            generating_function = self._require_generating_function()
+            costs = costs + np.array([generating_function.approximate_value(state, coefficients)
+                                      for state in scenario_states])
+        kappa = np.asarray(self.sample_path_weights, dtype=float)
+        mean = float(kappa @ costs)
+        return {'mean': mean, 'std': float(np.sqrt(max(kappa @ (costs - mean) ** 2, 0.0)))}
 
     def calculate_information_relaxation_cost(self, state, sample_path, verbose=False, period_weights=None,
                                               terminal=None, first_action=None):
@@ -679,8 +789,7 @@ class ApproxQAgent(InfiniteRTAgent):
             imm_cost=imm_cost,
             theta_vars=theta_vars,
             action_vars=flatten_action_vars,
-            scenario_weights=self.hindsight_scenario_weights(self.generating_function.form('hindsight')),
-            scenario_strata=self.sample_path_strata,
+            objective_fn=self.weighted_objective_fn(self.hindsight_scenario_weights(self.generating_function.form('hindsight'))),
         )
         solver_options = dict(tol=tol, max_iter=max_iterations,
                               use_pareto_cuts=use_pareto_cuts, pareto_epsilon=pareto_epsilon,

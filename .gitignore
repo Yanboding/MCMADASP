@@ -198,3 +198,5 @@ decision_maker/col_generation_debug.py
 */results
 */results_backup
 docs/
+# Golden values of the legacy penalty code (test/record_legacy_golden.py)
+!test/golden/legacy_penalty.json

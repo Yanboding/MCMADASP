@@ -679,15 +679,42 @@ def train_lowerbound_for_init_state(
         f.write(json.dumps(record) + '\n')
     return record
 
-def _draw_per_scenario_init_states(env_args, init_state_seed, sample_path_number):
+def _draw_per_scenario_init_states(env_args, init_state_seed, sample_path_number, paths_per_state=None, strata=None):
+    state_number = sample_path_number
+    if paths_per_state is not None:
+        if paths_per_state < 1 or sample_path_number % paths_per_state:
+            raise ValueError(f"paths_per_state must divide sample_path_number ({sample_path_number}); got {paths_per_state}")
+        state_number = sample_path_number // paths_per_state
+        if strata is None:
+            raise ValueError('paths_per_state needs the sample-path strata to balance the states')
+        strata = np.asarray(strata).reshape(-1)
+        labels, counts = np.unique(strata, return_counts=True)
+        unbalanced = {str(label): int(count) for label, count in zip(labels, counts) if count % state_number}
+        if unbalanced:
+            raise ValueError(
+                f"every stratum must split evenly over the {state_number} initial states so that each of them "
+                f"draws the same mix of sample paths; stratum sizes {unbalanced} do not")
     sampler_env_args = copy.deepcopy(env_args)
     sampler_env_args['env_random_seed'] = init_state_seed
     sampler_env = get_config_by_type('infinite_custom', args=sampler_env_args).env
     sampler_env.reset_random_seeds()
-    return [
+    states = [
         tuple(np.array(component) for component in sampler_env.generate_initial_state())
-        for _ in range(sample_path_number)
+        for _ in range(state_number)
     ]
+    if paths_per_state is None:
+        return states
+    drawn = {}
+    assignment = []
+    for stratum in strata:
+        position = drawn.get(stratum, 0)
+        assignment.append(states[position % state_number])
+        drawn[stratum] = position + 1
+    return assignment
+
+def _by_coefficient_index(json_mapping):
+    return {int(index): float(value) for index, value in (json_mapping or {}).items()}
+
 
 def train_penalty_coefficients_for_env(
     uid,
@@ -745,6 +772,11 @@ def train_penalty_coefficients_for_env(
     fixed_coefficients = inner.pop('fixed_coefficients', None)
     center_noise = bool(inner.pop('center_noise', False))
     coefficient_bound_overrides = inner.pop('coefficient_bound_overrides', None)
+    paths_per_state = inner.pop('paths_per_state', None)
+    paths_per_state = None if paths_per_state is None else int(paths_per_state)
+    worst_case_scope = inner.pop('worst_case_scope', None)
+    if paths_per_state is not None and init_state_mode != 'generate':
+        raise ValueError(f"paths_per_state applies to init_state_mode 'generate' only; got {init_state_mode!r}")
     if initial_coefficients is not None and len(initial_coefficients) != generating_function.number_of_coefficients:
         raise ValueError(
             f"initial_coefficients has {len(initial_coefficients)} entries but "
@@ -763,6 +795,8 @@ def train_penalty_coefficients_for_env(
             env_args=env_args,
             init_state_seed=init_state_seed,
             sample_path_number=sample_path_number,
+            paths_per_state=paths_per_state,
+            strata=None if paths_per_state is None else agent.sample_path_strata,
         )
     elif init_state_mode == 'per_scenario':
         resolved_init_state = [
@@ -797,9 +831,10 @@ def train_penalty_coefficients_for_env(
         regularization=regularization,
         training_objective=training_objective,
         initial_coefficients=initial_coefficients,
-        fixed_coefficients=fixed_coefficients,
+        fixed_coefficients=_by_coefficient_index(fixed_coefficients),
         center_noise=center_noise,
-        coefficient_bound_overrides=coefficient_bound_overrides,
+        coefficient_bound_overrides=_by_coefficient_index(coefficient_bound_overrides),
+        worst_case_scope=worst_case_scope or 'per_state',
     )
     elapsed = time.time() - start
     print(f"  solver={solver_choice}, obj={obj}, elapsed={elapsed:.1f}s")
@@ -823,14 +858,12 @@ def train_penalty_coefficients_for_env(
         'coefficient_bound': None if coefficient_bound == GRB.INFINITY else coefficient_bound,
         'coefficient_bound_overrides': coefficient_bound_overrides,
         'training_objective': training_objective,
+        'paths_per_state': paths_per_state,
+        'worst_case_scope': worst_case_scope,
         'initial_coefficients_source': initial_coefficients_source,
         'fixed_coefficients': fixed_coefficients,
         'initial_in_sample': info.get('initial_in_sample'),
         'in_sample': info['in_sample'],
-        'noise_centered': center_noise,
-        'noise_mean': np.asarray(agent.noise_mean, dtype=float).tolist() if center_noise else None,
-        'initial_in_sample_centered': info.get('initial_in_sample_centered'),
-        'in_sample_centered': info.get('in_sample_centered'),
     }
     if regularization is not None:
         # ``obj`` is the unregularized SAA value at theta*; keep the solver's

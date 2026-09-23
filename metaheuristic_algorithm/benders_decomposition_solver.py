@@ -130,8 +130,7 @@ def benders_callback(model, where):
 
         feasibility_cuts_added = 0
         optimality_cuts_added = 0
-        cost_to_go = 0.0
-        weights = model._scenario_weights
+        feasible_ids, feasible_values = [], []
         action_delta = x_vars - x_vals
         for i, (is_feasible, obj_val, duals) in enumerate(results):
             expr = obj_val + duals @ action_delta
@@ -140,7 +139,8 @@ def benders_callback(model, where):
                 model.cbLazy(expr >= 0)
                 feasibility_cuts_added += 1
             else:
-                cost_to_go += weights[i] * obj_val
+                feasible_ids.append(active_workers[i].subproblem_id)
+                feasible_values.append(obj_val)
                 if model.ModelSense == GRB.MINIMIZE:
                     if theta_vals[i] < (obj_val - tol):
                         model.cbLazy(theta_vars[i] >= expr)
@@ -156,6 +156,7 @@ def benders_callback(model, where):
                 if is_feasible:
                     pool.record(worker.subproblem_id, obj_val, x_vals, worker.state_duals(), duals)
 
+        cost_to_go = model._objective_fn(x_vals, np.asarray(feasible_values, dtype=float), np.asarray(feasible_ids, dtype=int)) if feasible_ids else 0.0
         incumbent_obj = model.cbGet(GRB.Callback.MIPSOL_OBJ)
         first_stage_cost = incumbent_value(model, model._imm_cost)
         evaluated_obj = first_stage_cost + cost_to_go
@@ -366,38 +367,24 @@ def objective_confidence_interval(values, weights=None, strata=None):
     return mean, 1.96 * float(np.sqrt(variance))
 
 
-SCENARIO_OBJECTIVES = ('mean', 'min')
 MIN_NORM_MAX_SLACK = 1e-7
 
 
-def aggregate_scenario_values(values, weights, objective):
-    values = np.asarray(values, dtype=float)
-    if objective == 'min':
-        return float(values.min())
-    return float(np.asarray(weights, dtype=float) @ values)
+def uniform_mean_objective(action, values, scenario_ids):
+    return float(np.mean(np.asarray(values, dtype=float)))
 
 
 class BendersDecompositionSolver:
 
     def __init__(self, master_model, workers, imm_cost, theta_vars, action_vars,
-                 scenario_weights=None, scenario_strata=None, objective='mean'):
-        if objective not in SCENARIO_OBJECTIVES:
-            raise ValueError(f"objective must be one of {SCENARIO_OBJECTIVES}; got {objective!r}")
-        self.objective = objective
+                 objective_fn=None, report_fn=None):
         self.master_model = master_model
         self.workers = workers
         self.imm_cost = imm_cost
         self.theta_vars = theta_vars
         self.action_vars = action_vars
-        scenario_count = theta_vars.shape[0]
-        if scenario_weights is None:
-            self._scenario_weights = np.full(scenario_count, 1.0 / scenario_count)
-        else:
-            self._scenario_weights = np.asarray(scenario_weights, dtype=float)
-        if scenario_strata is None:
-            self._scenario_strata = np.zeros(scenario_count, dtype=int)
-        else:
-            self._scenario_strata = np.asarray(scenario_strata)
+        self.objective_fn = uniform_mean_objective if objective_fn is None else objective_fn
+        self.report_fn = self._default_report if report_fn is None else report_fn
         self._action_abs_vars = None
         # Purge bookkeeping; solve() re-initializes these per call. Set here
         # so _register_cut is safe to reach before/outside solve().
@@ -405,17 +392,16 @@ class BendersDecompositionSolver:
         self._cut_registry = []
         self._latest_cut_by_scenario = {}
 
-    def _report_scenario_values(self, label, values, scenario_ids):
+    @staticmethod
+    def _default_report(label, values, scenario_ids):
         values = np.asarray(values, dtype=float)
-        mean, half_width = objective_confidence_interval(
-            values, weights=self._scenario_weights[scenario_ids], strata=self._scenario_strata[scenario_ids])
-        print(f"{label}: subproblem objective mean {mean:.4f} +/- {half_width:.4f} (95% CI, N={values.size}), "
+        print(f"{label}: subproblem objective mean {values.mean():.4f} (N={values.size}), "
               f"min {values.min():.4f} (scenario {int(scenario_ids[int(values.argmin())])})")
 
-    def scenario_objective(self, values, scenario_ids=None):
+    def objective_value(self, action, values, scenario_ids=None):
         values = np.asarray(values, dtype=float)
-        weights = self._scenario_weights[:values.size] if scenario_ids is None else self._scenario_weights[scenario_ids]
-        return aggregate_scenario_values(values, weights, self.objective)
+        ids = np.arange(values.size) if scenario_ids is None else np.asarray(scenario_ids, dtype=int)
+        return float(self.objective_fn(np.asarray(action, dtype=float), values, ids))
 
     def solve(self, 
               init_solution=None,
@@ -475,14 +461,22 @@ class BendersDecompositionSolver:
         # skip seeding on fresh runs and let the cut-less master push the
         # coefficients to absurd magnitudes (numerically breaking the
         # subproblems).
+        pin_first_iteration = init_solution is not None
         if not checkpoint_state.get('cut_count'):
             lower_bound, upper_bound, cut_count = self._seed_initial_cuts(
                 active_workers, iteration_offset, lower_bound, upper_bound,
                 cut_count, checkpoint_path, core_point)
+            # The build-time cold solve already evaluated every subproblem at
+            # init_solution, so pinning the first master action there would
+            # only re-solve the same LPs and add duplicate cuts.
+            if self._seeded_at(active_workers, init_solution):
+                pin_first_iteration = False
+                if is_hard_bound:
+                    self._add_hard_bound(lower_bound, upper_bound, is_min)
         try:
             for iteration in range(1, max_iter + 1):
                 global_iteration = iteration_offset + iteration
-                if init_solution is not None and iteration == 1:
+                if pin_first_iteration and iteration == 1:
                     action, master_obj, theta_values = self._solve_master_with_fixed_action(
                         init_solution, global_iteration, purge_slack_tol, verbose)
                     print(f"Iteration {global_iteration}, action pinned at init_solution")
@@ -510,7 +504,7 @@ class BendersDecompositionSolver:
                 print(f"Iteration {global_iteration}, subproblems solved in {time.time() - start_sub:.2f}s")
                 self._report_memory_usage(global_iteration, active_workers)
 
-                all_feasible, feasibility_cuts, optimality_cuts, new_cut_records, cost_to_go_estimation = \
+                all_feasible, feasibility_cuts, optimality_cuts, new_cut_records = \
                     self._build_cuts(results, active_workers, action)
 
                 if not all_feasible:
@@ -533,8 +527,8 @@ class BendersDecompositionSolver:
                 # solution.
                 scenario_gaps = self._scenario_gaps(results, active_workers, theta_values)
                 scenario_ids = [worker.subproblem_id for worker in active_workers]
-                model_cost_to_go = self.scenario_objective(theta_values[scenario_ids], scenario_ids)
-                cost_to_go_estimation = self.scenario_objective([v for (_, v, _) in results], scenario_ids)
+                model_cost_to_go = self.objective_value(action, theta_values[scenario_ids], scenario_ids)
+                cost_to_go_estimation = self.objective_value(action, [v for (_, v, _) in results], scenario_ids)
                 gap = model_cost_to_go - cost_to_go_estimation
                 if is_min:
                     upper_bound = master_obj + gap
@@ -548,14 +542,8 @@ class BendersDecompositionSolver:
                     'action': np.array(action, dtype=float),
                 }
 
-                if init_solution is not None and iteration == 1 and is_hard_bound:
-                    master_obj_expr = self.master_model.getObjective()
-                    if is_min:
-                        self.master_model.addConstr(master_obj_expr <= upper_bound, name="init_solution_upper_bound")
-                        print(f"Added hard master upper bound from init_solution: {upper_bound}")
-                    else:
-                        self.master_model.addConstr(master_obj_expr >= lower_bound, name="init_solution_lower_bound")
-                        print(f"Added hard master lower bound from init_solution: {lower_bound}")
+                if pin_first_iteration and iteration == 1 and is_hard_bound:
+                    self._add_hard_bound(lower_bound, upper_bound, is_min)
 
                 # Update core point AFTER we have a valid x_k from the master.
                 core_point = self.update_core_point(core_point, action, iteration, alpha=core_alpha)
@@ -564,13 +552,13 @@ class BendersDecompositionSolver:
                       f"Master cost-to-go: {model_cost_to_go}, Subproblem cost-to-go: {cost_to_go_estimation}, "
                       f"max scenario gap: {float(np.max(scenario_gaps)):.6g}")
 
-                self._report_scenario_values(f"Iteration {global_iteration}", [v for (_, v, _) in results], scenario_ids)
+                self.report_fn(f"Iteration {global_iteration}", np.array([v for (_, v, _) in results], dtype=float), np.asarray(scenario_ids))
 
                 cut_count = self._checkpoint_iteration(
                     checkpoint_path, global_iteration, lower_bound, upper_bound,
                     core_point, cut_count, new_cut_records, purge_after)
 
-                if init_solution is not None and iteration == 1:
+                if pin_first_iteration and iteration == 1:
                     print('-' * 20)
                     continue
                 if abs(gap) < tol:
@@ -636,7 +624,7 @@ class BendersDecompositionSolver:
         self.master_model._verbose = verbose
         self.master_model._cut_pool = cut_pool
         self.master_model._imm_cost = self.imm_cost
-        self.master_model._scenario_weights = self._scenario_weights
+        self.master_model._objective_fn = self.objective_fn
 
         print("Starting Benders with Lazy Constraint Callback...")
         try:
@@ -667,7 +655,7 @@ class BendersDecompositionSolver:
         if infeasible:
             raise RuntimeError(f"evaluate_action: scenarios {infeasible[:5]} infeasible at the given action")
         values = np.array([v for (_, v, _) in results], dtype=float)
-        return values, float(self._scenario_weights @ values)
+        return values, self.objective_value(action, values, [w.subproblem_id for w in active_workers])
 
     def _solve_master_step(self, global_iteration, purge_slack_tol, min_norm_action, verbose):
         start = time.time()
@@ -917,6 +905,27 @@ class BendersDecompositionSolver:
             model.setObjective(primary_objective, original_sense)
             model.update()
 
+    def _seeded_at(self, active_workers, action):
+        if action is None:
+            return False
+        action = np.asarray(action, dtype=float)
+        for worker in active_workers:
+            initial_cut = getattr(worker, "initial_cut", None)
+            if initial_cut is None or len(initial_cut) < 3:
+                return False
+            if not np.allclose(np.asarray(initial_cut[2], dtype=float), action):
+                return False
+        return True
+
+    def _add_hard_bound(self, lower_bound, upper_bound, is_min):
+        master_obj_expr = self.master_model.getObjective()
+        if is_min:
+            self.master_model.addConstr(master_obj_expr <= upper_bound, name="init_solution_upper_bound")
+            print(f"Added hard master upper bound from init_solution: {upper_bound}")
+        else:
+            self.master_model.addConstr(master_obj_expr >= lower_bound, name="init_solution_lower_bound")
+            print(f"Added hard master lower bound from init_solution: {lower_bound}")
+
     def _seed_initial_cuts(self, active_workers, iteration, lower_bound, upper_bound,
                            cut_count, checkpoint_path, core_point):
         is_min = self.master_model.ModelSense == GRB.MINIMIZE
@@ -940,7 +949,7 @@ class BendersDecompositionSolver:
         optimality_cuts, cut_records = [], []
         seed_action = zero_action
         for seed_action, workers, results in groups.values():
-            _, _, group_cuts, group_records, _ = self._build_cuts(results, workers, seed_action)
+            _, _, group_cuts, group_records = self._build_cuts(results, workers, seed_action)
             optimality_cuts.extend(group_cuts)
             cut_records.extend(group_records)
         seed_constrs = self.master_model.addConstrs(
@@ -954,15 +963,15 @@ class BendersDecompositionSolver:
         all_seeded = len(seeded_workers) == len(active_workers)
         # Weights sum to 1 over ALL active workers, so the weighted sum is the
         # weighted average exactly when every worker contributed a seed cut.
-        bound_at_zero = self.scenario_objective(seeded_values, [w.subproblem_id for w in seeded_workers]) if all_seeded else None
+        bound_at_zero = self.objective_value(seed_action, seeded_values, [w.subproblem_id for w in seeded_workers]) if all_seeded else None
         print(f"Seeded master with {len(optimality_cuts)} build-time cuts at {len(groups)} anchor(s)")
         for anchor, workers, _ in groups.values():
             print(f"Seed coefficients (scenarios {[w.subproblem_id for w in workers][:8]}{'...' if len(workers) > 8 else ''}): "
                   f"{np.round(anchor, 6).tolist()}")
         seeded_ids = [worker.subproblem_id for worker in seeded_workers]
-        self._report_scenario_values('Seed coefficients', seeded_values, seeded_ids)
+        self.report_fn('Seed coefficients', np.asarray(seeded_values, dtype=float), np.asarray(seeded_ids))
         if bound_at_zero is not None:
-            print(f"Master objective ({self.objective}) at the seed coefficients = {bound_at_zero}")
+            print(f"Objective at the seed coefficients = {bound_at_zero}")
 
         if bound_at_zero is not None:
             # The optimum is at least as good as all-zero coefficients, so
@@ -990,7 +999,6 @@ class BendersDecompositionSolver:
         is_min = self.master_model.ModelSense == GRB.MINIMIZE
         action_values = np.asarray(action, dtype=float)
         feasibility_cuts, optimality_cuts, cut_records = [], [], []
-        cost_to_go = 0.0
         all_feasible = True
         for worker, (is_feasible, v, duals) in zip(active_workers, results):
             scenario_id = worker.subproblem_id
@@ -1003,7 +1011,6 @@ class BendersDecompositionSolver:
                     self._cut_to_record('feasibility', scenario_id, duals, v, action_values, 'ge')
                 )
             else:
-                cost_to_go += self._scenario_weights[scenario_id] * v
                 if is_min:
                     optimality_cuts.append(self.theta_vars[scenario_id] >= cut_expr)
                     cut_records.append(
@@ -1014,7 +1021,7 @@ class BendersDecompositionSolver:
                     cut_records.append(
                         self._cut_to_record('optimality', scenario_id, duals, v, action_values, 'le')
                     )
-        return all_feasible, feasibility_cuts, optimality_cuts, cut_records, cost_to_go
+        return all_feasible, feasibility_cuts, optimality_cuts, cut_records
 
     def _add_cuts_to_master(self, cuts, records, iteration, kind):
         print(f"Iteration {iteration}, adding {len(cuts)} {kind} cuts")

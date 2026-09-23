@@ -23,7 +23,7 @@ from param_generation.mutators import mutate_initial_state_congestion
 from param_generation.registry import EXPERIMENT_SPECS
 from param_generation.training import train_alp_coefficients
 from decision_maker.alp_rg_agent import alp_expected_initial_state
-from decision_maker.approximate_q_agent import TRAINING_OBJECTIVES
+from decision_maker.approximate_q_agent import TRAINING_OBJECTIVES, WORST_CASE_SCOPES
 from utils import get_uid
 
 
@@ -286,7 +286,19 @@ def build_parser():
     train.add_argument(
         '--objective', choices=TRAINING_OBJECTIVES, default='mean',
         help='training criterion over the scenarios: mean (kappa-weighted sample '
-             'average, default) or min (minimum pathwise value)')
+             'average, default) or worst_case (kappa-weighted average over the initial '
+             'states of the minimum pathwise value over that state\'s sample paths)')
+    train.add_argument(
+        '--worst-case-scope', choices=WORST_CASE_SCOPES, default='per_state',
+        help='where the worst_case objective takes its minimum: per_state (default) = '
+             'one minimum per initial state, averaged with the state-relevance weights; '
+             'joint = one minimum across every state and path, over the pathwise value '
+             'minus the value-function approximation at that scenario\'s initial state')
+    train.add_argument(
+        '--paths-per-state', type=int, default=None, metavar='K',
+        help='generate mode only: draw sample_path_number / K initial states and give '
+             'each of them K sample paths (the worst_case objective takes the minimum '
+             'over those K paths); mutually exclusive with the shared-state options')
     train.add_argument(
         '--init-coefficients', default=None, metavar='JSONL',
         help='warm-start the Benders master at the coefficients of the first record '
@@ -547,9 +559,14 @@ def _check_warm_start_inside_box(initial_coefficients, inner, intercept_index, i
 
 
 def _apply_training_objective(test_envs, objective, initial_coefficients, source, fix_intercept=False,
-                              center_noise=False, intercept_bound=None):
+                              center_noise=False, intercept_bound=None, paths_per_state=None,
+                              worst_case_scope='per_state'):
     if fix_intercept and intercept_bound is not None:
         raise ValueError('--fix-intercept and --intercept-bound are mutually exclusive')
+    if paths_per_state is not None and paths_per_state < 2:
+        raise ValueError(f'--paths-per-state must be at least 2; got {paths_per_state}')
+    if worst_case_scope != 'per_state' and objective != 'worst_case':
+        raise ValueError('--worst-case-scope needs --objective worst_case')
     if intercept_bound is not None and not intercept_bound > 0:
         raise ValueError(f'--intercept-bound must be positive; got {intercept_bound}')
     updated = {}
@@ -558,6 +575,14 @@ def _apply_training_objective(test_envs, objective, initial_coefficients, source
         inner = variant.setdefault('agent_args', {}).setdefault('agent_args', {})
         if objective != 'mean':
             inner['training_objective'] = objective
+        if worst_case_scope != 'per_state':
+            inner['worst_case_scope'] = worst_case_scope
+        if paths_per_state is not None:
+            sample_path_number = inner.get('sample_path_number', 256)
+            if sample_path_number % paths_per_state:
+                raise ValueError(
+                    f'--paths-per-state {paths_per_state} does not divide sample_path_number {sample_path_number}')
+            inner['paths_per_state'] = paths_per_state
         generating_function = None
         if initial_coefficients is not None or fix_intercept or intercept_bound is not None:
             generating_function = _training_generating_function(variant)
@@ -599,7 +624,7 @@ def _run_train(args):
     initial_coefficients, initial_coefficients_source = _load_initial_coefficients(args.init_coefficients)
     test_envs = _apply_training_objective(
         test_envs, args.objective, initial_coefficients, initial_coefficients_source, args.fix_intercept,
-        args.center_noise, args.intercept_bound)
+        args.center_noise, args.intercept_bound, args.paths_per_state, args.worst_case_scope)
     if args.name is not None:
         if len(test_envs) != 1:
             raise ValueError(f'--name needs exactly one variant; got {len(test_envs)}')
@@ -609,6 +634,8 @@ def _run_train(args):
         raise ValueError('--reset-init-state and --num-init-states are mutually exclusive')
     if args.expected_init_state and (args.reset_init_state or args.num_init_states > 0):
         raise ValueError('--expected-init-state is mutually exclusive with --reset-init-state and --num-init-states')
+    if args.paths_per_state is not None and (args.expected_init_state or args.reset_init_state or args.num_init_states > 0):
+        raise ValueError('--paths-per-state needs generate mode; drop --expected-init-state, --reset-init-state and --num-init-states')
     records = []
     for key, variant in test_envs.items():
         # The record-level scenario count overrides the agent's at run time

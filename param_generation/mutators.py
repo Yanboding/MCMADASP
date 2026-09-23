@@ -70,6 +70,21 @@ def mutate_sample_path_number_mixture_geometric_l01(agent_args, sample_path_numb
     agent_args['agent_args']['sample_path_number'] = sample_path_number
 
 
+def mutate_stratified_geometric_scenario(agent_args, val, num_strata, sample_path_number):
+    agent_args.update({
+        'policy_id': f'approx_penalized_hindsight_stratified_geometric_{num_strata}_scenario_{sample_path_number}',
+        'agent_name': 'approx_penalized_hindsight',
+    })
+    agent_args['agent_args'].update({
+        'sample_path_number': sample_path_number,
+        'sample_path_length_proposal': {
+            'type': 'stratified_geometric',
+            'discount_factor_proposal': MIXTURE_TARGET_DISCOUNT_FACTOR,
+            'num_strata': num_strata,
+        },
+    })
+
+
 def mutate_mixture_geometric_proposal_lambda_0(agent_args, lambda_0):
     lambda_0_str = str(lambda_0).replace('.', '_')
     agent_args.update({

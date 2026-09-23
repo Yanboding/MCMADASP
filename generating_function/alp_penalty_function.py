@@ -29,6 +29,10 @@ class AbsorptionALPPenaltyFunction(GeneratingFunction):
         T, K = self.env.planning_horizon, self.env.num_types
         return [0, 1, 1 + T, 1 + 2 * T, 1 + 2 * T + K]
 
+    def state_features(self, state):
+        regular, overtime, waitlist = (np.asarray(component, dtype=float).reshape(-1) for component in state)
+        return np.concatenate(([1.0], regular, overtime, waitlist))
+
     def get_coefficients(self, solution):
         if not isinstance(solution, gp.MVar):
             solution = np.asarray(solution, dtype=float)

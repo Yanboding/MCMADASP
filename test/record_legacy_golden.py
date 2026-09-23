@@ -121,8 +121,8 @@ def record_benders_training(grb_env):
         master, coefficient_vars, theta_vars = agent_.train_master_builder_fn(GRB.INFINITY)
         return BendersDecompositionSolver(master_model=master, workers=workers, imm_cost=None,
                                           theta_vars=theta_vars, action_vars=coefficient_vars,
-                                          scenario_weights=agent_.sample_path_weights,
-                                          scenario_strata=agent_.sample_path_strata)
+                                          objective_fn=agent_.training_objective_fn('mean'),
+                                          report_fn=agent_.training_report_fn())
 
     def checkpoint_meta(checkpoint):
         with open(checkpoint + '.meta.json') as handle:

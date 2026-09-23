@@ -11,6 +11,7 @@ from param_generation.mutators import (
     mutate_mixture_target_discount_factor_overtime_5,
     mutate_mixture_target_discount_factor_overtime_50,
     mutate_sample_path_number_mixture_geometric_l01,
+    mutate_stratified_geometric_scenario,
 )
 
 OCCUPANCY_LEVELS = [0.3, 0.5, 0.9]
@@ -87,6 +88,14 @@ EXPERIMENT_SPECS = {
             config_type='toy',
             val_args=[0.5],
             mutate=mutate_initial_state_congestion,
+        ),
+        ExperimentSpec(
+            name='toy_stratified_099_scenario_1024',
+            config_type='toy',
+            val_args=[0.5],
+            mutate=mutate_initial_state_congestion,
+            agent_mutate=partial(mutate_stratified_geometric_scenario,
+                                 num_strata=512, sample_path_number=1024),
         ),
         ExperimentSpec(
             name='steady_state_toy_study',

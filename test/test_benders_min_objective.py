@@ -34,53 +34,45 @@ def build_workers():
     return workers
 
 
-def build_solver(objective, weights=None):
+def weighted_mean_fn(weights):
+    return lambda action, values, ids: float(np.asarray(weights)[np.asarray(ids)] @ np.asarray(values))
+
+
+def build_solver(objective='mean', weights=None):
     master = gp.Model("toy_master")
     master.Params.OutputFlag = 0
     theta = master.addMVar(len(SCENARIO_COSTS), lb=-GRB.INFINITY, ub=1e8, name="theta")
     coeff = master.addMVar(N_COEFF, lb=-5.0, ub=5.0, name="coeff")
     kappa = np.full(len(SCENARIO_COSTS), 1.0 / len(SCENARIO_COSTS)) if weights is None else weights
-    if objective == 'mean':
-        master.setObjective(theta @ kappa, GRB.MAXIMIZE)
-    else:
-        eta = master.addVar(lb=-GRB.INFINITY, name="eta")
-        master.addConstr(eta <= theta, name="eta_le_theta")
-        master.setObjective(eta, GRB.MAXIMIZE)
+    master.setObjective(theta @ kappa, GRB.MAXIMIZE)
     master.update()
     return BendersDecompositionSolver(master_model=master, workers=build_workers(), imm_cost=None, theta_vars=theta,
-                                      action_vars=coeff, scenario_weights=weights, objective=objective)
+                                      action_vars=coeff, objective_fn=None if weights is None else weighted_mean_fn(weights))
 
 
-def test_scenario_objective_aggregations():
+def test_objective_value_uses_the_supplied_aggregation():
     values = np.array([3.0, 1.0, 2.0, 4.0])
-    assert build_solver('mean').scenario_objective(values) == 2.5
-    assert build_solver('min').scenario_objective(values) == 1.0
-    assert build_solver('mean', WEIGHTS).scenario_objective(values) == WEIGHTS @ values
+    assert build_solver('mean').objective_value(np.zeros(N_COEFF), values) == 2.5
+    assert build_solver('mean', WEIGHTS).objective_value(np.zeros(N_COEFF), values) == WEIGHTS @ values
+    shared = build_worst_case_solver(np.tile(LEVEL, (len(SCENARIO_COSTS), 1)))
+    for theta in (np.zeros(N_COEFF), np.array([1.0, -2.0, 0.5, 3.0])):
+        assert np.isclose(shared.objective_value(theta, values), 1.0)
 
 
-def test_unknown_objective_is_rejected():
-    try:
-        build_solver('max')
-    except ValueError:
-        pass
-    else:
-        raise AssertionError('unknown objective must be rejected')
-
-
-def test_min_objective_converges_and_beats_mean_optimum_on_the_minimum():
+def test_shared_state_worst_case_maximizes_the_minimum_scenario_value():
     mean_solver = build_solver('mean')
     mean_solver.solve(parallel=False, max_iter=200)
     theta_mean = np.array(mean_solver.action_vars.X)
-    min_solver = build_solver('min')
-    value, info = min_solver.solve(parallel=False, max_iter=200)
+    solver = build_worst_case_solver(np.tile(LEVEL, (len(SCENARIO_COSTS), 1)))
+    value, info = solver.solve(parallel=False, max_iter=200)
     assert info['gap'] < 1e-6
-    theta_min = np.array(min_solver.action_vars.X)
-    values_at_min, _ = min_solver.evaluate_action(theta_min, parallel=False)
-    values_at_mean, _ = min_solver.evaluate_action(theta_mean, parallel=False)
-    values_at_zero, _ = min_solver.evaluate_action(np.zeros(N_COEFF), parallel=False)
-    assert np.isclose(info['evaluated_value'], values_at_min.min(), atol=1e-6)
-    assert values_at_min.min() >= values_at_mean.min() - 1e-6
-    assert values_at_min.min() >= values_at_zero.min() - 1e-6
+    theta = np.asarray(info['action'])
+    values_at_theta, _ = solver.evaluate_action(theta, parallel=False)
+    values_at_mean, _ = solver.evaluate_action(theta_mean, parallel=False)
+    values_at_zero, _ = solver.evaluate_action(np.zeros(N_COEFF), parallel=False)
+    assert np.isclose(info['evaluated_value'], values_at_theta.min(), atol=1e-6)
+    assert values_at_theta.min() >= values_at_mean.min() - 1e-6
+    assert values_at_theta.min() >= values_at_zero.min() - 1e-6
 
 
 def test_seed_cuts_are_anchored_at_the_initial_cut_action():
@@ -174,3 +166,49 @@ def test_action_at_bound_ignores_fixed_coefficients():
     assert not solver._action_at_bound(np.array([0.0, 1.0, -1.0, 2.0]))
     assert solver._action_at_bound(np.array([0.0, 5.0, -1.0, 2.0]))
     assert solver._action_at_bound(np.array([0.0, 1.0, -5.0, 2.0]))
+
+
+LEVEL = np.array([1.0, 0.5, -0.5, 2.0])
+FEATURES = np.array([[1.0, 0.0, 0.0, 0.0], [0.5, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 1.0], [2.0, 0.5, 0.5, 0.0]])
+
+
+def worst_case_fn(features):
+    features = np.asarray(features, dtype=float)
+
+    def objective_fn(action, values, ids):
+        action = np.asarray(action, dtype=float)
+        return float(LEVEL @ action + (np.asarray(values) - features[np.asarray(ids)] @ action).min())
+
+    return objective_fn
+
+
+def build_worst_case_solver(features):
+    master = gp.Model("toy_master_wc")
+    master.Params.OutputFlag = 0
+    theta = master.addMVar(len(SCENARIO_COSTS), lb=-GRB.INFINITY, ub=1e8, name="theta")
+    coeff = master.addMVar(N_COEFF, lb=-5.0, ub=5.0, name="coeff")
+    eta = master.addVar(lb=-GRB.INFINITY, name="eta")
+    for n in range(len(SCENARIO_COSTS)):
+        master.addConstr(eta <= theta[n] - features[n] @ coeff, name=f"eta_le_theta_{n}")
+    master.setObjective(LEVEL @ coeff + eta, GRB.MAXIMIZE)
+    master.update()
+    solver = BendersDecompositionSolver(master_model=master, workers=build_workers(), imm_cost=None, theta_vars=theta,
+                                        action_vars=coeff, objective_fn=worst_case_fn(features))
+    solver.scenario_features = np.asarray(features, dtype=float)
+    return solver
+
+
+def worst_case_value(solver, theta):
+    values, _ = solver.evaluate_action(theta, parallel=False)
+    return float(LEVEL @ theta + (values - solver.scenario_features @ theta).min())
+
+
+def test_worst_case_objective_converges_to_level_plus_worst_residual():
+    solver = build_worst_case_solver(FEATURES)
+    value, info = solver.solve(parallel=False, max_iter=300)
+    theta = np.asarray(info['action'])
+    assert info['gap'] < 1e-6
+    assert np.isclose(info['evaluated_value'], worst_case_value(solver, theta), atol=1e-6)
+    assert np.isclose(solver.evaluate_action(theta, parallel=False)[1], info['evaluated_value'], atol=1e-6)
+    for probe in (np.zeros(N_COEFF), np.array([1.0, -1.0, 0.5, 2.0]), np.array([-3.0, 2.0, 2.0, -1.0])):
+        assert worst_case_value(solver, theta) >= worst_case_value(solver, probe) - 1e-6
