@@ -229,19 +229,37 @@ def test_epsilon_min_norm_trades_a_bounded_objective_loss_for_a_smaller_action()
     assert relaxed_value >= tight_value - slack - 1e-6
     assert np.isclose(relaxed.evaluate_action(relaxed_action, parallel=False)[1], relaxed_info['evaluated_value'],
                       atol=1e-6)
-    assert relaxed_info['min_norm_slack'] == slack
-    assert relaxed_info['min_norm_loss'] <= slack + 1e-6
+    assert set(relaxed_info['min_norm']) == {'requested', 'applied', 'loss'}
+    assert relaxed_info['min_norm']['requested'] == slack
+    assert relaxed_info['min_norm']['applied'] <= slack + 1e-12
+    assert relaxed_info['min_norm']['loss'] <= relaxed_info['min_norm']['applied'] + 1e-6
 
     huge = build_solver('mean')
     huge_value, huge_info = huge.solve(parallel=False, max_iter=300, min_norm_action=True, min_norm_slack=1e6)
     assert np.abs(np.asarray(huge_info['action'], dtype=float)).sum() <= np.abs(relaxed_action).sum() + 1e-9
-    assert huge_info['min_norm_loss'] <= 1e6
+    assert huge_info['min_norm']['loss'] <= huge_info['min_norm']['applied'] + 1e-6
 
 
 def test_epsilon_min_norm_is_off_by_default():
     solver = build_solver('mean')
     _, info = solver.solve(parallel=False, max_iter=300, min_norm_action=True)
-    assert info.get('min_norm_slack') in (None, 0.0)
+    assert 'min_norm' not in info
+
+
+def test_epsilon_min_norm_reports_nothing_when_it_gives_up():
+    solver = build_solver('mean')
+    calls = []
+    real = solver.evaluate_action
+
+    def worse(action, parallel=True):
+        values, value = real(action, parallel=parallel)
+        calls.append(value)
+        return values, value - 1e6
+
+    solver.evaluate_action = worse
+    _, info = solver.solve(parallel=False, max_iter=300, min_norm_action=True, min_norm_slack=0.05)
+    assert calls, 'the relaxation should have evaluated at least one candidate'
+    assert 'min_norm' not in info
 
 
 def test_min_norm_re_solve_can_run_repeatedly():

@@ -613,12 +613,13 @@ class BendersDecompositionSolver:
             loss = (value - best_value) if is_min else (best_value - value)
             if loss <= allowance:
                 info.update({'action': candidate, 'evaluated_value': value,
-                             'min_norm_slack': float(slack), 'min_norm_loss': float(max(loss, 0.0))})
-                print(f"Minimum-norm action within a slack of {slack:g}: objective {best_value:.6f} -> {value:.6f} "
-                      f"(loss {loss:.6f}), sum|a| {np.abs(best_action).sum():.6g} -> {np.abs(candidate).sum():.6g}")
+                             'min_norm': {'requested': float(slack), 'applied': float(allowance),
+                                          'loss': float(max(loss, 0.0))}})
+                print(f"Minimum-norm action within a slack of {allowance:g} (requested {slack:g}): objective "
+                      f"{best_value:.6f} -> {value:.6f} (loss {loss:.6f}), sum|a| "
+                      f"{np.abs(best_action).sum():.6g} -> {np.abs(candidate).sum():.6g}")
                 return
             allowance /= MIN_NORM_SLACK_BACKOFF
-        info.update({'min_norm_slack': float(slack), 'min_norm_loss': 0.0})
         print(f"Minimum-norm relaxation gave up after {MIN_NORM_SLACK_TRIALS} attempts; keeping the converged action")
 
     def solve_with_callback(self, tol=1e-6,

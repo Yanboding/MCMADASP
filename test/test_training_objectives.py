@@ -215,6 +215,111 @@ def test_evaluation_can_remove_the_pathwise_penalty_noise():
                       atol=1e-6)
 
 
+def test_weighted_lower_cvar_spans_the_minimum_and_the_mean():
+    from decision_maker.approximate_q_agent import weighted_lower_cvar
+    values = np.array([4.0, 1.0, 3.0, 2.0])
+    weights = np.array([0.4, 0.3, 0.2, 0.1])
+    assert np.isclose(weighted_lower_cvar(values, weights, 1.0), weights @ values)
+    assert np.isclose(weighted_lower_cvar(values, weights, 1e-9), values.min())
+    assert np.isclose(weighted_lower_cvar(values, weights, 0.3), 1.0)
+    assert np.isclose(weighted_lower_cvar(values, weights, 0.4), (0.3 * 1.0 + 0.1 * 2.0) / 0.4)
+    levels = [1e-9, 0.1, 0.3, 0.6, 1.0]
+    got = [weighted_lower_cvar(values, weights, level) for level in levels]
+    assert all(got[i] <= got[i + 1] + 1e-9 for i in range(len(got) - 1))
+
+
+def test_worst_case_with_alpha_one_reproduces_the_mean_criterion():
+    agent, state = make_agent(AbsorptionALPPenaltyFunction)
+    states = distinct_states(agent.env, agent.sample_path_number)
+    _, mean_theta, mean_info = agent.benders_decomposition_train(
+        init_state=states, parallel=False, coefficient_bound=1e3)
+    agent, _ = make_agent(AbsorptionALPPenaltyFunction)
+    _, cvar_theta, cvar_info = agent.benders_decomposition_train(
+        init_state=states, parallel=False, coefficient_bound=1e3,
+        training_objective='worst_case', worst_case_scope='joint', worst_case_alpha=1.0)
+    assert np.isclose(cvar_info['in_sample']['mean'], mean_info['in_sample']['mean'], atol=1e-4)
+    assert np.isclose(cvar_info['in_sample']['worst_case'], cvar_info['in_sample']['mean'], atol=1e-4)
+    np.testing.assert_allclose(cvar_theta, mean_theta, atol=1e-3)
+
+
+def test_worst_case_alpha_interpolates_between_the_minimum_and_the_mean():
+    from decision_maker.approximate_q_agent import weighted_lower_cvar
+    agent, _ = make_agent(AbsorptionALPPenaltyFunction)
+    states = distinct_states(agent.env, agent.sample_path_number)
+    kappa = np.asarray(agent.sample_path_weights, dtype=float)
+    reported = {}
+    for alpha in (None, 0.5, 1.0):
+        agent, _ = make_agent(AbsorptionALPPenaltyFunction)
+        _, theta, info = agent.benders_decomposition_train(
+            init_state=states, parallel=False, coefficient_bound=1e3,
+            training_objective='worst_case', worst_case_scope='joint', worst_case_alpha=alpha)
+        theta = np.asarray(theta, dtype=float)
+        residuals, _ = agent.coefficient_model.evaluate_action(theta, parallel=False)
+        level = float(agent.generating_function.approximate_value(agent._state_relevance_state(states), theta))
+        expected = level + weighted_lower_cvar(residuals, kappa, 1e-12 if alpha is None else alpha)
+        assert np.isclose(info['in_sample']['worst_case'], expected, atol=1e-6)
+        reported[alpha] = info['in_sample']['worst_case']
+    assert reported[None] <= reported[0.5] + 1e-6 <= reported[1.0] + 1e-6
+
+
+def test_runner_records_the_worst_case_alpha():
+    with mock.patch.object(cli, 'write_command_file'):
+        (record,) = cli.main(['train', 'base_toy_study', '--penalty-function', 'absorption_alp_penalty',
+                              '--coefficient-bound', '1000', '--objective', 'worst_case',
+                              '--worst-case-scope', 'joint', '--worst-case-alpha', '0.5',
+                              '--dat', 'unused.dat'])
+    record = dict(record)
+    record['sample_path_number'] = 4
+    record['experiment_name'] = record['experiment_name'] + '_cvar_unittest'
+    assert record['agent_args']['agent_args']['worst_case_alpha'] == 0.5
+    folder = os.path.join('experiments', 'results', record['experiment_name'])
+    try:
+        out = run.train_penalty_coefficients_for_env(**record, grb_env=None, grb_sub_envs=None, job_id='cvar_test')
+    finally:
+        shutil.rmtree(folder, ignore_errors=True)
+    assert out['worst_case_alpha'] == 0.5
+    assert set(out['in_sample']) == {'mean', 'std', 'half_width', 'worst_case'}
+    assert out['in_sample']['worst_case'] <= out['in_sample']['mean'] + 1e-6
+
+
+def test_worst_case_aggregation_weighs_only_the_scenarios_it_is_given():
+    from decision_maker.approximate_q_agent import weighted_lower_cvar
+    agent, _ = make_agent(AbsorptionALPPenaltyFunction)
+    kappa = np.asarray(agent.sample_path_weights, dtype=float)
+    blocks = np.array([0, 0, 1, 1])
+    values = np.array([5.0, 2.0, 9.0, 4.0])
+    subset = np.array([0, 2])
+    for alpha in (None, 0.4, 1.0):
+        objective_fn = agent.training_objective_fn('worst_case', blocks, worst_case_alpha=alpha)
+        got = objective_fn(np.zeros(agent.generating_function.number_of_coefficients), values[subset], subset)
+        weights = kappa[subset]
+        expected = sum(
+            weights[blocks[subset] == b].sum() * (
+                values[subset][blocks[subset] == b].min() if alpha is None
+                else weighted_lower_cvar(values[subset][blocks[subset] == b],
+                                         weights[blocks[subset] == b], alpha))
+            for b in np.unique(blocks[subset]))
+        assert np.isclose(got, expected, atol=1e-9), f'alpha {alpha}: {got} vs {expected}'
+    full = agent.training_objective_fn('worst_case', blocks, worst_case_alpha=0.4)
+    everything = full(np.zeros(agent.generating_function.number_of_coefficients), values, np.arange(4))
+    expected_full = sum(
+        kappa[blocks == b].sum() * weighted_lower_cvar(values[blocks == b], kappa[blocks == b], 0.4)
+        for b in (0, 1))
+    assert np.isclose(everything, expected_full, atol=1e-9)
+
+
+def test_worst_case_alpha_is_validated():
+    agent, state = make_agent(AbsorptionALPPenaltyFunction)
+    for bad in (0.0, -0.1, 1.5):
+        try:
+            agent.benders_decomposition_train(init_state=state, parallel=False, training_objective='worst_case',
+                                              worst_case_alpha=bad, coefficient_bound=1e3)
+        except ValueError as exc:
+            assert 'worst_case_alpha' in str(exc)
+        else:
+            raise AssertionError(f'alpha {bad} must be rejected')
+
+
 def test_relevance_state_reproduces_the_weighted_average_value():
     agent, _ = make_agent(AbsorptionALPPenaltyFunction)
     states = distinct_states(agent.env, agent.sample_path_number)

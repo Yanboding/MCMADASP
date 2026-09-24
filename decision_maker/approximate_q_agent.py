@@ -26,6 +26,17 @@ def state_key(state):
     return tuple(np.concatenate([np.asarray(component, dtype=float).reshape(-1) for component in state]).tolist())
 
 
+def weighted_lower_cvar(values, weights, alpha):
+    values = np.asarray(values, dtype=float)
+    weights = np.asarray(weights, dtype=float)
+    probabilities = weights / weights.sum()
+    order = np.argsort(values)
+    sorted_values, sorted_probabilities = values[order], probabilities[order]
+    below = np.cumsum(sorted_probabilities) - sorted_probabilities
+    taken = np.clip(alpha - below, 0.0, sorted_probabilities)
+    return float(sorted_values @ taken / min(alpha, 1.0))
+
+
 def block_membership(xi_blocks):
     blocks = np.asarray(xi_blocks, dtype=int).reshape(-1)
     return np.eye(blocks.max() + 1)[blocks]
@@ -184,7 +195,8 @@ class ApproxQAgent(InfiniteRTAgent):
 
     def train_master_builder_fn(self, coefficient_bound=GRB.INFINITY, regularization=None,
                                 regularization_scale=None, objective='mean', fixed_coefficients=None,
-                                coefficient_bound_overrides=None, xi_blocks=None, relevance_state=None):
+                                coefficient_bound_overrides=None, xi_blocks=None, relevance_state=None,
+                                worst_case_alpha=None):
         if objective not in TRAINING_OBJECTIVES:
             raise ValueError(f"training objective must be one of {TRAINING_OBJECTIVES}; got {objective!r}")
         master_model = gp.Model(f"SAA_train_Master", env=self.grb_env)
@@ -197,11 +209,20 @@ class ApproxQAgent(InfiniteRTAgent):
         z = theta_vars @ self.sample_path_weights
         coefficient_vars = self.generating_function.get_coefficient_var(model=master_model, coefficient_bound=coefficient_bound)
         if objective == 'worst_case':
+            kappa = np.asarray(self.sample_path_weights, dtype=float)
             membership = block_membership(xi_blocks)
+            block_weights = membership.T @ kappa
             xi = master_model.addMVar(membership.shape[1], lb=-GRB.INFINITY, name="xi")
-            master_model.addConstr(membership @ xi <= theta_vars, name="xi_le_theta")
-            block_weights = membership.T @ np.asarray(self.sample_path_weights, dtype=float)
-            z = self.generating_function.approximate_value(relevance_state, coefficient_vars) + block_weights @ xi
+            if worst_case_alpha is None:
+                master_model.addConstr(membership @ xi <= theta_vars, name="xi_le_theta")
+                tail = block_weights @ xi
+            else:
+                # Lower-tail conditional value at risk of the residuals: xi holds the
+                # tail threshold of its block and the slacks carry (xi - residual)_+.
+                slack = master_model.addMVar(self.sample_path_number, lb=0.0, name="cvar_slack")
+                master_model.addConstr(slack >= membership @ xi - theta_vars, name="cvar_slack_link")
+                tail = block_weights @ xi - (kappa @ slack) / worst_case_alpha
+            z = self.generating_function.approximate_value(relevance_state, coefficient_vars) + tail
         for index, bound in (coefficient_bound_overrides or {}).items():
             coefficient_vars[index].lb = -bound
             coefficient_vars[index].ub = bound
@@ -450,7 +471,8 @@ class ApproxQAgent(InfiniteRTAgent):
                                     noise_removal=None,
                                     min_norm_slack=0.0,
                                     coefficient_bound_overrides=None,
-                                    worst_case_scope='per_state'):
+                                    worst_case_scope='per_state',
+                                    worst_case_alpha=None):
         overall_start = time.time()
         fixed_coefficients = dict(fixed_coefficients or {})
         if noise_removal is not None and noise_removal not in NOISE_REMOVALS:
@@ -471,6 +493,12 @@ class ApproxQAgent(InfiniteRTAgent):
         self.subproblem_cold_solve_seconds.clear()
         self.subproblem_feature_links.clear()
         self.subproblem_noise.clear()
+        if worst_case_alpha is not None and not 0.0 < worst_case_alpha <= 1.0:
+            raise ValueError(f"worst_case_alpha must lie in (0, 1]; got {worst_case_alpha}")
+        if min_norm_slack and regularization is not None:
+            raise ValueError(
+                "min_norm_slack needs an unregularized master: the regularizer already makes the optimum "
+                "unique, so the minimum-norm re-solve is skipped")
         xi_blocks = relevance_state = None
         if training_objective == 'worst_case':
             xi_blocks = self._xi_blocks(init_state, worst_case_scope)
@@ -497,7 +525,7 @@ class ApproxQAgent(InfiniteRTAgent):
             coefficient_bound, regularization=regularization, regularization_scale=regularization_scale,
             objective=training_objective, fixed_coefficients=fixed_coefficients,
             coefficient_bound_overrides=coefficient_bound_overrides, xi_blocks=xi_blocks,
-            relevance_state=relevance_state)
+            relevance_state=relevance_state, worst_case_alpha=worst_case_alpha)
         master_time = time.time() - master_start
         if verbose:
             print(f"[TIMING] Master model building: {master_time:.2f}s")
@@ -505,12 +533,14 @@ class ApproxQAgent(InfiniteRTAgent):
         self.coefficient_model = BendersDecompositionSolver(
             master_model=master_model, workers=workers, imm_cost=None,
             theta_vars=theta_vars, action_vars=coefficient_vars,
-            objective_fn=self.training_objective_fn(training_objective, xi_blocks, relevance_state),
+            objective_fn=self.training_objective_fn(training_objective, xi_blocks, relevance_state,
+                                                    worst_case_alpha),
             report_fn=self.training_report_fn())
         self._prepare_training_checkpoint(checkpoint_path, resume_checkpoint_path)
         in_sample_objectives = {'mean': self.training_objective_fn('mean', relevance_state=relevance_state)}
         if xi_blocks is not None:
-            in_sample_objectives['worst_case'] = self.training_objective_fn('worst_case', xi_blocks, relevance_state)
+            in_sample_objectives['worst_case'] = self.training_objective_fn(
+                'worst_case', xi_blocks, relevance_state, worst_case_alpha)
         scenario_states = None if relevance_state is None else self._scenario_initial_states(init_state)
         initial_in_sample = None
         if init_solution is not None:
@@ -531,7 +561,6 @@ class ApproxQAgent(InfiniteRTAgent):
         
         info = dict(info or {})
         info['importance_sampling'] = self._build_importance_sampling_info()
-        info['min_norm_slack'] = float(min_norm_slack)
         if initial_in_sample is not None:
             info['initial_in_sample'] = initial_in_sample['in_sample']
         
@@ -586,23 +615,28 @@ class ApproxQAgent(InfiniteRTAgent):
 
         return objective_fn
 
-    def training_objective_fn(self, training_objective, xi_blocks=None, relevance_state=None):
+    def training_objective_fn(self, training_objective, xi_blocks=None, relevance_state=None,
+                              worst_case_alpha=None):
         if training_objective not in TRAINING_OBJECTIVES:
             raise ValueError(f"training objective must be one of {TRAINING_OBJECTIVES}; got {training_objective!r}")
         kappa = np.asarray(self.sample_path_weights, dtype=float)
         generating_function = self.generating_function
         if training_objective == 'worst_case':
             blocks = np.asarray(xi_blocks, dtype=int).reshape(-1)
-            block_weights = np.bincount(blocks, weights=kappa)
 
         def objective_fn(action, values, scenario_ids):
             ids = np.asarray(scenario_ids, dtype=int)
             values = np.asarray(values, dtype=float)
             if training_objective == 'worst_case':
-                minima = np.full(block_weights.size, np.inf)
-                np.minimum.at(minima, blocks[ids], values)
-                present = np.isfinite(minima)
-                aggregate = block_weights[present] @ minima[present]
+                # Weigh each block by the scenarios actually supplied, so a partial
+                # evaluation aggregates what it has instead of the whole block.
+                aggregate = 0.0
+                for block in np.unique(blocks[ids]):
+                    inside = blocks[ids] == block
+                    weights = kappa[ids][inside]
+                    aggregate += weights.sum() * (
+                        values[inside].min() if worst_case_alpha is None
+                        else weighted_lower_cvar(values[inside], weights, worst_case_alpha))
             else:
                 aggregate = kappa[ids] @ values
             if relevance_state is None:

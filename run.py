@@ -779,7 +779,9 @@ def train_penalty_coefficients_for_env(
     coefficient_bound_overrides = inner.pop('coefficient_bound_overrides', None)
     paths_per_state = inner.pop('paths_per_state', None)
     paths_per_state = None if paths_per_state is None else int(paths_per_state)
-    worst_case_scope = inner.pop('worst_case_scope', None)
+    worst_case_scope = inner.pop('worst_case_scope', None) or 'per_state'
+    worst_case_alpha = inner.pop('worst_case_alpha', None)
+    worst_case_alpha = None if worst_case_alpha is None else float(worst_case_alpha)
     if paths_per_state is not None and init_state_mode != 'generate':
         raise ValueError(f"paths_per_state applies to init_state_mode 'generate' only; got {init_state_mode!r}")
     if initial_coefficients is not None and len(initial_coefficients) != generating_function.number_of_coefficients:
@@ -840,7 +842,8 @@ def train_penalty_coefficients_for_env(
         noise_removal=noise_removal,
         min_norm_slack=min_norm_slack,
         coefficient_bound_overrides=_by_coefficient_index(coefficient_bound_overrides),
-        worst_case_scope=worst_case_scope or 'per_state',
+        worst_case_scope=worst_case_scope,
+        worst_case_alpha=worst_case_alpha,
     )
     elapsed = time.time() - start
     print(f"  solver={solver_choice}, obj={obj}, elapsed={elapsed:.1f}s")
@@ -866,9 +869,9 @@ def train_penalty_coefficients_for_env(
         'training_objective': training_objective,
         'paths_per_state': paths_per_state,
         'noise_removal': noise_removal,
-        'min_norm_slack': min_norm_slack,
-        'min_norm_loss': info.get('min_norm_loss'),
-        'worst_case_scope': worst_case_scope,
+        'min_norm': info.get('min_norm'),
+        'worst_case_scope': worst_case_scope if training_objective == 'worst_case' else None,
+        'worst_case_alpha': worst_case_alpha,
         'initial_coefficients_source': initial_coefficients_source,
         'fixed_coefficients': fixed_coefficients,
         'initial_in_sample': info.get('initial_in_sample'),

@@ -295,6 +295,12 @@ def build_parser():
              'joint = one minimum across every state and path, over the pathwise value '
              'minus the value-function approximation at that scenario\'s initial state')
     train.add_argument(
+        '--worst-case-alpha', type=float, default=None, metavar='ALPHA',
+        help='replace the minimum in the worst_case objective by the lower-tail conditional '
+             'value at risk at level ALPHA in (0, 1]: a level below the smallest scenario '
+             'weight reproduces the minimum, ALPHA = 1 reproduces the mean criterion, and '
+             'anything between trades robustness for the average bound')
+    train.add_argument(
         '--fix-block', action='append', default=None, metavar='BLOCK',
         help='pin a whole block of coefficients (intercept, regular, overtime, waitlist) at its '
              '--init-coefficients value, so training only moves the identified ones; repeatable')
@@ -572,13 +578,17 @@ def _check_warm_start_inside_box(initial_coefficients, inner, intercept_index, i
 def _apply_training_objective(test_envs, objective, initial_coefficients, source, fix_intercept=False,
                               noise_removal=None, intercept_bound=None, paths_per_state=None,
                               min_norm_slack=0.0, fix_blocks=None,
-                              worst_case_scope='per_state'):
+                              worst_case_scope='per_state', worst_case_alpha=None):
     if fix_intercept and intercept_bound is not None:
         raise ValueError('--fix-intercept and --intercept-bound are mutually exclusive')
     if paths_per_state is not None and paths_per_state < 2:
         raise ValueError(f'--paths-per-state must be at least 2; got {paths_per_state}')
     if worst_case_scope != 'per_state' and objective != 'worst_case':
         raise ValueError('--worst-case-scope needs --objective worst_case')
+    if worst_case_alpha is not None and objective != 'worst_case':
+        raise ValueError('--worst-case-alpha needs --objective worst_case')
+    if worst_case_alpha is not None and not 0.0 < worst_case_alpha <= 1.0:
+        raise ValueError(f'--worst-case-alpha must lie in (0, 1]; got {worst_case_alpha}')
     if intercept_bound is not None and not intercept_bound > 0:
         raise ValueError(f'--intercept-bound must be positive; got {intercept_bound}')
     updated = {}
@@ -589,6 +599,8 @@ def _apply_training_objective(test_envs, objective, initial_coefficients, source
             inner['training_objective'] = objective
         if worst_case_scope != 'per_state':
             inner['worst_case_scope'] = worst_case_scope
+        if worst_case_alpha is not None:
+            inner['worst_case_alpha'] = float(worst_case_alpha)
         if paths_per_state is not None:
             sample_path_number = inner.get('sample_path_number', 256)
             if sample_path_number % paths_per_state:
@@ -601,7 +613,11 @@ def _apply_training_objective(test_envs, objective, initial_coefficients, source
         if fix_blocks:
             if initial_coefficients is None:
                 raise ValueError('--fix-block needs --init-coefficients to pin the block at')
-            blocks = generating_function.coefficient_blocks()
+            try:
+                blocks = generating_function.coefficient_blocks()
+            except NotImplementedError as error:
+                raise ValueError(f'--fix-block: {generating_function.spec_name} has no named coefficient '
+                                 'blocks; use --fix-intercept or drop --fix-block') from error
             unknown = [name for name in fix_blocks if name not in blocks]
             if unknown:
                 raise ValueError(f'--fix-block: unknown block(s) {unknown}; choose from {sorted(blocks)}')
@@ -648,7 +664,7 @@ def _run_train(args):
     test_envs = _apply_training_objective(
         test_envs, args.objective, initial_coefficients, initial_coefficients_source, args.fix_intercept,
         args.noise_removal, args.intercept_bound, args.paths_per_state, args.min_norm_slack,
-        args.fix_block, args.worst_case_scope)
+        args.fix_block, args.worst_case_scope, args.worst_case_alpha)
     if args.name is not None:
         if len(test_envs) != 1:
             raise ValueError(f'--name needs exactly one variant; got {len(test_envs)}')
