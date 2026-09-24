@@ -1,0 +1,207 @@
+\documentclass[11pt]{article}
+\usepackage{amsmath,amssymb,amsthm,bm}
+\usepackage[margin=1in]{geometry}
+\usepackage[round]{natbib}
+
+\newtheorem{proposition}{Proposition}
+\newtheorem{lemma}{Lemma}
+\theoremstyle{definition}
+\newtheorem{definition}{Definition}
+\newtheorem{remark}{Remark}
+
+\title{Pathwise Optimization of Martingale Penalties:\\ Expected and Robust Fitting Problems}
+\author{}
+\date{}
+
+\begin{document}
+\maketitle
+
+\section{Pathwise Optimization Method}
+\label{sec:Path-wise Optimization Method}
+
+In this section, we propose a tight information-relaxation lower bound using the PO method \citep{desai2012}. The main idea is to optimize over a parameterized family of dual-feasible penalty functions so that the resulting penalized information-relaxation problem provides the tightest possible lower bound within this family.
+
+For an initial state \(\boldsymbol{s}^{(1)}\), revealed outcomes \(\chi(\omega)\), and \(\boldsymbol{\theta}\in\Theta\), define the parameterized perfect-information relaxation cost as
+\begin{subequations}
+\label{eq:parameterized_perfect_information_relaxation}
+\begin{align}
+V_{\boldsymbol{\theta}} \bigl(\boldsymbol{s}^{(1)},\chi(\omega)\bigr) :=\min_{\{\boldsymbol{a}^{(t)}\}_{t=1}^{\tau(\omega)}}\quad &\sum_{t=1}^{\tau(\omega)} \left[\Phi^{(t-1)}c(\boldsymbol{s}^{(t)},\boldsymbol{a}^{(t)}) + \Phi^{(t)}z_{\boldsymbol{\theta}}^{(t)} \bigl(\boldsymbol{s}^{(t)},\boldsymbol{a}^{(t)}, \boldsymbol{\chi}^{(t+1)}(\omega)\bigr)\right] \label{eq:parameterized_perfect_information_relaxation_obj}
+\end{align}
+\begin{align}
+\text{s.t.}\quad \boldsymbol{a}^{(t)} &\in\mathcal A(\boldsymbol{s}^{(t)}), &&t\in[\tau(\omega)], \label{constr:parameterized_action}\\
+\boldsymbol{s}^{(t+1)} &=f\bigl(\boldsymbol{s}^{(t)},\boldsymbol{a}^{(t)}, \boldsymbol{\delta}^{(t+1)}(\omega)\bigr), &&t\in[\tau(\omega)-1]. \label{constr:parameterized_state_transition}
+\end{align}
+\end{subequations}
+Equation~\eqref{eq:parameterized_perfect_information_relaxation_obj} sums the pathwise operating costs and parameterized penalties. Constraint~\eqref{constr:parameterized_action} imposes the original action space, and Constraint~\eqref{constr:parameterized_state_transition} propagates the state along the revealed path. By dual feasibility, taking the conditional expectation over future revealed paths gives the parameterized lower bound
+\begin{equation}
+\label{eq:parameterized_lower_bound_validity}
+\underline V_{\boldsymbol{\theta}}(\boldsymbol{s}^{(1)}) := \mathbb E_{\boldsymbol \chi} \left[ V_{\boldsymbol{\theta}}(\boldsymbol{s}^{(1)},\chi) \mid \boldsymbol{s}^{(1)} \right] \le V_*(\boldsymbol{s}^{(1)}), \qquad \forall \boldsymbol{s}^{(1)}\in\mathcal S.
+\end{equation}
+Equation~\eqref{eq:parameterized_lower_bound_validity} defines the state-specific lower bound used by PO. Its expectation is taken with respect to the conditional distribution of the future revealed path given \(\boldsymbol{s}^{(1)}\).
+
+Let \(\nu(\boldsymbol{s}^{(1)})\ge0\) denote the state-relevance weight assigned to initial state \(\boldsymbol{s}^{(1)}\in\mathcal S\), with \(\sum_{\boldsymbol{s}^{(1)}\in\mathcal S}\nu(\boldsymbol{s}^{(1)})=1\). We assume \(\boldsymbol{0}\in\Theta\). The ideal PO fitting problem is
+\begin{equation}
+\label{eq:parameterized_lowerbound}
+\max_{\boldsymbol{\theta}\in\Theta} \sum_{\boldsymbol{s}^{(1)}\in\mathcal S} \nu(\boldsymbol{s}^{(1)}) \underline V_{\boldsymbol{\theta}}(\boldsymbol{s}^{(1)}).
+\end{equation}
+Because \(\boldsymbol{\theta}=\boldsymbol{0}\) recovers the zero penalty, Equation~\eqref{eq:parameterized_lowerbound} cannot produce a weaker weighted lower bound than the zero-penalty relaxation.
+
+Because \(\mathcal S\) in \eqref{eq:parameterized_lowerbound} cannot be enumerated, we define \(\nu\) implicitly through a parametric distribution intended to approximate steady-state congestion levels under a ``good'' policy. We use the same state-relevance weights \(\nu\) in the ALP objective when fitting the affine value-function approximation of \citet{Saure2012ejor}. Let \(\eta\in(0,1]\) control the decay of occupancy over the planning horizon. For \(j\in[H-1]\) and \(i\in[I]\), the sampling distribution is
+\begin{subequations}
+\label{eq:representative_state_distribution}
+\begin{align}
+\hat u_j^{(1)} &\sim\mathrm{Binomial}(C_r+C_o,\eta^{j-1}), &&\forall j\in[H-1], \label{eq:representative_total_occupancy}\\
+u_j^{(1)} &=\min\{\hat u_j^{(1)},C_r\}, &&\forall j\in[H-1], \label{eq:representative_regular_occupancy}\\
+v_j^{(1)} &=\hat u_j^{(1)}-u_j^{(1)}, &&\forall j\in[H-1], \label{eq:representative_overtime_occupancy}\\
+u_H^{(1)}&=v_H^{(1)}=0, \label{eq:representative_terminal_occupancy}\\
+\boldsymbol w^{(1)} &\overset{d}{=}\boldsymbol\delta. \label{eq:representative_waitlist}
+\end{align}
+\end{subequations}
+
+For the affine value-function-based penalty, let \(\boldsymbol\theta_{\mathrm{ALP}}^*\) be an optimal ALP solution and let \(\boldsymbol\theta_{\mathrm{PO}}^*\) solve the ideal PO problem \eqref{eq:parameterized_lowerbound}. Assume that \(\boldsymbol\theta_{\mathrm{ALP}}^*\in\Theta\) and that \(\hat V_{\boldsymbol\theta_{\mathrm{ALP}}^*}\) satisfies the Bellman inequalities for every feasible state--action pair. The argument of \citet[Theorems~4 and~5]{desai2012} gives the following comparison under the common state-relevance distribution \(\nu\); for the random-horizon reformulation, the subsolution guarantee follows from \citet[Proposition~4.1]{Brown2017or}:
+\begin{equation}
+\label{eq:alp_po_weighted_bound_comparison}
+\mathbb E_{\boldsymbol s\sim\nu}\left[\hat V_{\boldsymbol\theta_{\mathrm{ALP}}^*}(\boldsymbol s)\right]\le\mathbb E_{\boldsymbol s\sim\nu}\left[\underline V_{\boldsymbol\theta_{\mathrm{ALP}}^*}(\boldsymbol s)\right]\le\mathbb E_{\boldsymbol s\sim\nu}\left[\underline V_{\boldsymbol\theta_{\mathrm{PO}}^*}(\boldsymbol s)\right]\le\mathbb E_{\boldsymbol s\sim\nu}\left[V_*(\boldsymbol s)\right].
+\end{equation}
+
+\section{Robust Pathwise Optimization}
+\label{sec:Robust Pathwise Optimization}
+
+The ideal PO problem \eqref{eq:parameterized_lowerbound} maximizes the \(\nu\)-weighted expectation of the pathwise relaxation cost. \citet{belomestny2019} study the analogous fitting problem for the dual martingale bound in optimal stopping and show that the expectation is not the only sensible criterion: since the optimal martingale makes the pathwise dual value constant across paths, fitting the coefficients by minimizing the worst path instead of the average path yields a valid bound, is again a convex problem, and produces an estimator with markedly lower variance whose coefficients converge to those of the optimal martingale. We transfer this idea to the information-relaxation lower bound. The role of the worst path is played by the essential infimum of the pathwise relaxation cost over revealed paths, and the fitting problem maximizes it; with several initial states the pathwise cost is first measured against the value that the coefficients assign to the initial state, so that paths from different states become comparable. The resulting problem is concave, remains a valid lower bound for every coefficient vector, and is solved by the same decomposition as the PO problem.
+
+\begin{definition}[Essential infimum]
+\label{def:essinf}
+Let \(\boldsymbol{\chi}\) be a random element with law \(\mathbb P\) and let \(g\) be a real-valued measurable function of \(\boldsymbol{\chi}\). Its essential infimum is
+\[
+\operatorname*{ess\,inf}_{\boldsymbol{\chi}} g(\boldsymbol{\chi}) \;:=\; \sup\bigl\{c\in\mathbb R:\ \mathbb P\bigl(g(\boldsymbol{\chi})<c\bigr)=0\bigr\},
+\]
+the largest constant that \(g(\boldsymbol{\chi})\) exceeds almost surely. The subscript names the random element, as in \(\mathbb E_{\boldsymbol{\chi}}[\,\cdot\,]\) of \eqref{eq:parameterized_lower_bound_validity}, and \(\operatorname*{ess\,inf}_{\boldsymbol{\chi}} g(\boldsymbol{\chi})\le\mathbb E_{\boldsymbol{\chi}}[g(\boldsymbol{\chi})]\).
+\end{definition}
+
+\subsection{Surely optimal martingale penalty}
+
+Fix an initial state \(\boldsymbol{s}^{(1)}\). Following \citet{belomestny2019}, we call a penalty \(z_{\boldsymbol{\theta}}\) \emph{surely optimal} at \(\boldsymbol{s}^{(1)}\) if
+\begin{equation}
+\label{eq:surely_optimal}
+V_{\boldsymbol{\theta}}\bigl(\boldsymbol{s}^{(1)},\boldsymbol{\chi}\bigr)=V_*(\boldsymbol{s}^{(1)})
+\qquad\text{for almost every revealed path }\boldsymbol{\chi},
+\end{equation}
+that is, the pathwise relaxation cost equals the optimal value with zero variance, so that a single revealed path already determines \(V_*(\boldsymbol{s}^{(1)})\). The martingale penalty generated by the optimal value function has this property: by the argument of \citet[Proposition~4.1]{Brown2017or}, the objective of \eqref{eq:parameterized_perfect_information_relaxation} equals \(V_*(\boldsymbol{s}^{(1)})\) plus a non-negatively weighted sum of one-period Bellman residuals of \(V_*\), which are non-negative for every action and vanish along the optimal actions. A penalty from the parameterized family is in general not surely optimal, and the dispersion of \(V_{\boldsymbol{\theta}}(\boldsymbol{s}^{(1)},\boldsymbol{\chi})\) across revealed paths measures its distance from \eqref{eq:surely_optimal}.
+
+This suggests fitting \(\boldsymbol{\theta}\) by raising the worst revealed path rather than the average one. The robust PO fitting problem at \(\boldsymbol{s}^{(1)}\) is
+\begin{equation}
+\label{eq:robust_po_single_state}
+\max_{\boldsymbol{\theta}\in\Theta}\;
+\operatorname*{ess\,inf}_{\boldsymbol{\chi}}
+V_{\boldsymbol{\theta}}\bigl(\boldsymbol{s}^{(1)},\boldsymbol{\chi}\bigr),
+\end{equation}
+where the essential infimum is taken over the conditional law of the revealed path given \(\boldsymbol{s}^{(1)}\). By Definition~\ref{def:essinf} and \eqref{eq:parameterized_lower_bound_validity},
+\begin{equation}
+\label{eq:robust_po_single_state_validity}
+\operatorname*{ess\,inf}_{\boldsymbol{\chi}}
+V_{\boldsymbol{\theta}}\bigl(\boldsymbol{s}^{(1)},\boldsymbol{\chi}\bigr)
+\;\le\;\underline V_{\boldsymbol{\theta}}(\boldsymbol{s}^{(1)})\;\le\;V_*(\boldsymbol{s}^{(1)}),
+\qquad\forall\,\boldsymbol{\theta}\in\Theta,
+\end{equation}
+so the optimal value of \eqref{eq:robust_po_single_state} is itself a lower bound on \(V_*(\boldsymbol{s}^{(1)})\), and both inequalities hold with equality exactly when \(z_{\boldsymbol{\theta}}\) is surely optimal. Whenever the family \(\{z_{\boldsymbol{\theta}}\}_{\boldsymbol{\theta}\in\Theta}\) contains a surely optimal penalty, \eqref{eq:robust_po_single_state} attains \(V_*(\boldsymbol{s}^{(1)})\); in general its maximizer is the member of the family whose worst path is closest to \eqref{eq:surely_optimal}. The objective is concave in \(\boldsymbol{\theta}\), because each \(V_{\boldsymbol{\theta}}(\boldsymbol{s}^{(1)},\boldsymbol{\chi})\) is a minimum of affine functions of \(\boldsymbol{\theta}\) and an infimum of concave functions is concave.
+
+Given \(N\) independent revealed paths \(\boldsymbol{\chi}^{1},\dots,\boldsymbol{\chi}^{N}\), the sample version of \eqref{eq:robust_po_single_state} is \(\max_{\boldsymbol{\theta}\in\Theta}\min_{n\in[N]}V_{\boldsymbol{\theta}}(\boldsymbol{s}^{(1)},\boldsymbol{\chi}^{n})\), the lower-bound analogue of the empirical maximization of \citet{belomestny2019}: for every fixed \(\boldsymbol{\theta}\), the minimum over the sampled paths is at least the essential infimum and decreases to it almost surely as \(N\to\infty\). Because the essential infimum depends on the law of \(\boldsymbol{\chi}\) only through its null sets, it is the same whether the paths are drawn from the target distribution or from a proposal distribution with the same support; the likelihood ratios \(\Phi^{(t)}\) enter only through the pathwise values themselves.
+
+\subsection{Worst-Case Relaxation Cost Maximization under State-Relevance Weights}
+
+The ideal PO problem \eqref{eq:parameterized_lowerbound} maximizes the expected relaxation cost under the state-relevance weights \(\nu\); this subsection maximizes its worst-case counterpart under the same weights. When the initial state is drawn from \(\nu\), the pathwise values of different states are not comparable, because \(V_*(\boldsymbol{s}^{(1)})\) itself varies with \(\boldsymbol{s}^{(1)}\); an essential infimum over all initial states and paths would be governed by the states with the smallest optimal value rather than by the quality of the penalty. We therefore measure each path against the value that \(\boldsymbol{\theta}\) assigns to its own initial state, where \(\hat V_{\boldsymbol{\theta}}\) denotes the affine value-function approximation with coefficients \(\boldsymbol{\theta}\). The following lemma is the pathwise form of the subsolution guarantee.
+
+\begin{lemma}
+\label{lem:slack}
+If \(\hat V_{\boldsymbol{\theta}}\) satisfies the Bellman inequalities for every feasible state--action pair, then \(V_{\boldsymbol{\theta}}(\boldsymbol{s}^{(1)},\boldsymbol{\chi})\ge\hat V_{\boldsymbol{\theta}}(\boldsymbol{s}^{(1)})\) for every initial state and every revealed path. If \(\hat V_{\boldsymbol{\theta}}=V_*\), then \(V_{\boldsymbol{\theta}}(\boldsymbol{s}^{(1)},\boldsymbol{\chi})=\hat V_{\boldsymbol{\theta}}(\boldsymbol{s}^{(1)})\) for almost every revealed path.
+\end{lemma}
+\begin{proof}
+The penalty generated by \(\hat V_{\boldsymbol{\theta}}\) satisfies
+\[
+\Phi^{(t)}z^{(t)}_{\boldsymbol{\theta}}\bigl(\boldsymbol{s}^{(t)},\boldsymbol{a}^{(t)},\boldsymbol{\chi}^{(t+1)}\bigr)
+=\gamma\,\Phi^{(t-1)}\,\mathbb E_{\boldsymbol{\delta}^{(t+1)}}\Bigl[\hat V_{\boldsymbol{\theta}}\bigl(f(\boldsymbol{s}^{(t)},\boldsymbol{a}^{(t)},\boldsymbol{\delta}^{(t+1)})\bigr)\Bigr]
+-\Phi^{(t)}\,\hat V_{\boldsymbol{\theta}}\bigl(\boldsymbol{s}^{(t+1)}\bigr),
+\qquad t\in[\tau],
+\]
+where the expectation is over the next-period arrival \(\boldsymbol{\delta}^{(t+1)}\) with \(\boldsymbol{s}^{(t)}\) and \(\boldsymbol{a}^{(t)}\) held fixed, \(\hat V_{\boldsymbol{\theta}}(\boldsymbol{s}^{(\tau+1)}):=0\) at the absorbing state, and \(\Phi^{(0)}=1\). Fix any feasible action sequence. Shifting the index of the realized terms gives \(\sum_{t=1}^{\tau}\Phi^{(t)}\hat V_{\boldsymbol{\theta}}(\boldsymbol{s}^{(t+1)})=\sum_{t=2}^{\tau}\Phi^{(t-1)}\hat V_{\boldsymbol{\theta}}(\boldsymbol{s}^{(t)})\), and adding and subtracting \(\Phi^{(0)}\hat V_{\boldsymbol{\theta}}(\boldsymbol{s}^{(1)})\) turns the objective of \eqref{eq:parameterized_perfect_information_relaxation} into
+\[
+\hat V_{\boldsymbol{\theta}}(\boldsymbol{s}^{(1)})+\sum_{t=1}^{\tau}\Phi^{(t-1)}\Bigl[c(\boldsymbol{s}^{(t)},\boldsymbol{a}^{(t)})+\gamma\,\mathbb E_{\boldsymbol{\delta}^{(t+1)}}\Bigl[\hat V_{\boldsymbol{\theta}}\bigl(f(\boldsymbol{s}^{(t)},\boldsymbol{a}^{(t)},\boldsymbol{\delta}^{(t+1)})\bigr)\Bigr]-\hat V_{\boldsymbol{\theta}}(\boldsymbol{s}^{(t)})\Bigr],
+\]
+the value of the approximation at the initial state plus a non-negatively weighted sum of one-period Bellman residuals, as in the subsolution argument of \citet[Proposition~4.1]{Brown2017or}. Under the Bellman inequalities every residual is non-negative, so the minimum over action sequences is at least \(\hat V_{\boldsymbol{\theta}}(\boldsymbol{s}^{(1)})\). When \(\hat V_{\boldsymbol{\theta}}=V_*\), the residuals vanish at the optimal actions and no other actions can do better, so equality holds.
+\end{proof}
+
+When the initial state is drawn from \(\nu\), we let the revealed outcome \(\boldsymbol{\chi}\) include the initial state \(\boldsymbol{s}^{(1)}\sim\nu\) together with the revealed path, so that a single essential infimum over \(\boldsymbol{\chi}\) ranges over both. The robust PO fitting problem under \(\nu\) is
+\begin{equation}
+\label{eq:robust_po}
+\max_{\boldsymbol{\theta}\in\Theta}\;
+R(\boldsymbol{\theta})
+:= \sum_{\boldsymbol{s}^{(1)}\in\mathcal S}\nu(\boldsymbol{s}^{(1)})\,\hat V_{\boldsymbol{\theta}}(\boldsymbol{s}^{(1)})
++ \operatorname*{ess\,inf}_{\boldsymbol{\chi}}
+\Bigl\{V_{\boldsymbol{\theta}}\bigl(\boldsymbol{s}^{(1)},\boldsymbol{\chi}\bigr)-\hat V_{\boldsymbol{\theta}}\bigl(\boldsymbol{s}^{(1)}\bigr)\Bigr\}.
+\end{equation}
+The first term is the level of the approximation under \(\nu\), which coincides with the ALP objective; the second term is the worst pathwise excess of the relaxation cost over that level. The two terms cannot be optimized separately: shifting \(\hat V_{\boldsymbol{\theta}}\) down by a constant raises every excess and lowers the level by the same amount. When \(\nu\) is a point mass, \(\hat V_{\boldsymbol{\theta}}(\boldsymbol{s}^{(1)})\) is constant and \eqref{eq:robust_po} reduces to \eqref{eq:robust_po_single_state}.
+
+\begin{proposition}
+\label{prop:robust_po}
+For every \(\boldsymbol{\theta}\in\Theta\), \(R(\boldsymbol{\theta})\) is concave and \(R(\boldsymbol{\theta})\le\mathbb E_{\boldsymbol s^{(1)}\sim\nu}[V_*(\boldsymbol s^{(1)})]\). Let \(\boldsymbol\theta_{\mathrm{RPO}}^*\) solve \eqref{eq:robust_po} and let \(\boldsymbol\theta_{\mathrm{ALP}}^*\in\Theta\) be an optimal ALP solution whose \(\hat V_{\boldsymbol\theta_{\mathrm{ALP}}^*}\) satisfies the Bellman inequalities for every feasible state--action pair. Then
+\begin{equation}
+\label{eq:alp_rpo_comparison}
+\mathbb E_{\boldsymbol s^{(1)}\sim\nu}\bigl[\hat V_{\boldsymbol\theta_{\mathrm{ALP}}^*}(\boldsymbol s^{(1)})\bigr]
+\;\le\; R(\boldsymbol\theta_{\mathrm{ALP}}^*)
+\;\le\; R(\boldsymbol\theta_{\mathrm{RPO}}^*)
+\;\le\; \mathbb E_{\boldsymbol s^{(1)}\sim\nu}\bigl[V_*(\boldsymbol s^{(1)})\bigr].
+\end{equation}
+\end{proposition}
+\begin{proof}
+By \eqref{eq:parameterized_lower_bound_validity} and Definition~\ref{def:essinf},
+\(\mathbb E_{\boldsymbol s^{(1)}\sim\nu}[V_*(\boldsymbol s^{(1)})]\ge\mathbb E_{\boldsymbol\chi}[V_{\boldsymbol{\theta}}(\boldsymbol s^{(1)},\boldsymbol\chi)]
+=\mathbb E_{\boldsymbol s^{(1)}\sim\nu}[\hat V_{\boldsymbol{\theta}}(\boldsymbol s^{(1)})]+\mathbb E_{\boldsymbol\chi}\bigl[V_{\boldsymbol{\theta}}(\boldsymbol s^{(1)},\boldsymbol\chi)-\hat V_{\boldsymbol{\theta}}(\boldsymbol s^{(1)})\bigr]
+\ge R(\boldsymbol{\theta})\), which is the last inequality. The level term is linear in \(\boldsymbol{\theta}\), \(V_{\boldsymbol{\theta}}\) is a minimum of affine functions of \(\boldsymbol{\theta}\), and an essential infimum of concave functions is concave, so \(R\) is concave. The first inequality follows from Lemma~\ref{lem:slack}, whose bound holds for every path and hence almost surely, and the second from optimality.
+\end{proof}
+
+Proposition~\ref{prop:robust_po} places the robust problem between the ALP and the optimal value in the same way as \eqref{eq:alp_po_weighted_bound_comparison} does for the ideal PO problem. The ALP enforces the Bellman inequalities on the whole state--action space, whereas \eqref{eq:robust_po} controls only the worst excess along perfect-information paths: inequalities that bind at states or actions such paths never visit are dropped, and a small negative excess on a set of paths of positive probability may be exchanged for a higher level. The ALP solution is a natural starting point for the robust problem but is not required by it.
+
+\subsection{Sample-average formulation and decomposition}
+
+Let \((\boldsymbol{s}^{(1),n},\boldsymbol{\chi}^{n})\), \(n\in[N]\), be sampled scenarios with initial states drawn from \eqref{eq:representative_state_distribution}, revealed paths drawn from the proposal distribution, and stratum weights \(\kappa_n\ge0\) with \(\sum_n\kappa_n=1\). The empirical counterpart of \eqref{eq:robust_po} is
+\begin{equation}
+\label{eq:robust_po_saa}
+\max_{\boldsymbol{\theta}\in\Theta}\;
+R_N(\boldsymbol{\theta}):=\sum_{n=1}^{N}\kappa_n\,\hat V_{\boldsymbol{\theta}}\bigl(\boldsymbol{s}^{(1),n}\bigr)
++\min_{n\in[N]}\Bigl\{V_{\boldsymbol{\theta}}\bigl(\boldsymbol{s}^{(1),n},\boldsymbol{\chi}^{n}\bigr)-\hat V_{\boldsymbol{\theta}}\bigl(\boldsymbol{s}^{(1),n}\bigr)\Bigr\},
+\end{equation}
+where \(V_{\boldsymbol{\theta}}(\boldsymbol{s}^{(1),n},\boldsymbol{\chi}^{n})\) is \eqref{eq:parameterized_perfect_information_relaxation} evaluated on scenario \(n\). Problem \eqref{eq:robust_po_saa} is a concave piecewise-linear maximization and is solved by the same Benders decomposition as the sample-average PO problem: the scenario subproblems are unchanged, and the master problem carries one epigraph variable \(\vartheta_n\) per scenario together with a single variable \(\eta\),
+\begin{equation}
+\label{eq:robust_po_master}
+\max_{\boldsymbol{\theta}\in\Theta,\;\eta,\;\vartheta}\;
+\sum_{n=1}^{N}\kappa_n\,\hat V_{\boldsymbol{\theta}}\bigl(\boldsymbol{s}^{(1),n}\bigr)+\eta
+\quad\text{s.t.}\quad
+\eta\le\vartheta_n-\hat V_{\boldsymbol{\theta}}\bigl(\boldsymbol{s}^{(1),n}\bigr),\qquad
+\vartheta_n\le V_{\hat{\boldsymbol{\theta}}}\bigl(\boldsymbol{s}^{(1),n},\boldsymbol{\chi}^{n}\bigr)+g_n(\hat{\boldsymbol{\theta}})^{\top}(\boldsymbol{\theta}-\hat{\boldsymbol{\theta}}),
+\qquad n\in[N],
+\end{equation}
+where \(g_n(\hat{\boldsymbol{\theta}})\) collects the penalty features of scenario \(n\) at its optimal actions for \(\hat{\boldsymbol{\theta}}\), a supergradient of \(V_{\boldsymbol{\theta}}(\boldsymbol{s}^{(1),n},\boldsymbol{\chi}^{n})\); cuts of the second type are added at the master iterates. Some coordinates of the penalty features do not depend on the actions (the intercept and the arrival terms); their contribution has mean zero but a non-zero sample mean, which adds a spurious linear slope to \eqref{eq:robust_po_saa} and to the sample-average PO problem alike. Centering these coordinates at their sample mean inside every scenario removes the slope without changing the out-of-sample estimator. As in \citet{belomestny2019}, the optimized value \(R_N(\boldsymbol\theta_{\mathrm{RPO}}^*)\) is an optimistic in-sample quantity; the fitted coefficients are assessed out of sample through the unbiased estimator of \eqref{eq:parameterized_lower_bound_validity} on fresh scenarios, whose mean is the bound and whose per-scenario dispersion measures the remaining distance from sure optimality.
+
+\begin{thebibliography}{9}
+\bibitem[Belomestny et al.(2019)]{belomestny2019}
+D.~Belomestny, R.~Hildebrand, and J.~Schoenmakers.
+Optimal stopping via pathwise dual empirical maximisation.
+\newblock \emph{Applied Mathematics \& Optimization}, 79(3):715--741, 2019.
+
+\bibitem[Brown and Haugh(2017)]{Brown2017or}
+D.~B. Brown and M.~B. Haugh.
+Information relaxation bounds for infinite horizon Markov decision processes.
+\newblock \emph{Operations Research}, 65(5):1355--1379, 2017.
+
+\bibitem[Desai et al.(2012)]{desai2012}
+V.~V. Desai, V.~F. Farias, and C.~C. Moallemi.
+Pathwise optimization for optimal stopping problems.
+\newblock \emph{Management Science}, 58(12):2292--2308, 2012.
+
+\bibitem[Saur\'e et al.(2012)]{Saure2012ejor}
+A.~Saur\'e, J.~Patrick, S.~Tyldesley, and M.~L. Puterman.
+Dynamic multi-appointment patient scheduling for radiation therapy.
+\newblock \emph{European Journal of Operational Research}, 223(2):573--584, 2012.
+\end{thebibliography}
+
+\end{document}

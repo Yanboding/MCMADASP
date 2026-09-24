@@ -401,7 +401,7 @@ def calculate_policy_costs_with_penalty(uid,
     return result
 
 def information_relaxation_bounds(env, generating_function_spec, penalty_ratios, state, sample_path_tail,
-                                  period_weights, terminal, grb_env, grb_sub_envs):
+                                  period_weights, terminal, grb_env, grb_sub_envs, remove_path_noise=False):
     bounds = {}
     for penalty_ratio in penalty_ratios:
         agent = ApproxQAgent(
@@ -416,7 +416,8 @@ def information_relaxation_bounds(env, generating_function_spec, penalty_ratios,
         )
         start = time.time()
         bound = agent.calculate_information_relaxation_cost(
-            state, sample_path=sample_path_tail, period_weights=period_weights, terminal=terminal)
+            state, sample_path=sample_path_tail, period_weights=period_weights, terminal=terminal,
+            remove_path_noise=remove_path_noise)
         print(f"Information relaxation cost at penalty ratio {penalty_ratio:g} computed in "
               f"{time.time() - start:.1f} seconds: {bound}")
         bounds[float(penalty_ratio)] = bound
@@ -477,6 +478,7 @@ def evaluate_policy_costs_with_information_relaxation(uid,
                                                       skip_information_relaxation=False,
                                                       penalty_ratios=None,
                                                       coefficients_source=None,
+                                                      remove_path_noise=False,
                                                       terminal=None):
     init_state = tuple(np.array(item) for item in init_state)
     sample_path = np.array(sample_path)
@@ -503,7 +505,7 @@ def evaluate_policy_costs_with_information_relaxation(uid,
     if not ordered_policy_specs:
         bounds = None if skip_information_relaxation else information_relaxation_bounds(
             env, generating_function_spec, ratios, init_state, sample_path_tail, period_weights, terminal,
-            grb_env, grb_sub_envs)
+            grb_env, grb_sub_envs, remove_path_noise)
         record = {
             **base_record,
             'policy_id': 'information_relaxation_only',
@@ -552,7 +554,7 @@ def evaluate_policy_costs_with_information_relaxation(uid,
         if not skip_information_relaxation and state_key not in bounds_by_state:
             bounds_by_state[state_key] = information_relaxation_bounds(
                 env, generating_function_spec, ratios, warmup_state, sample_path_tail, period_weights, terminal,
-                grb_env, grb_sub_envs)
+                grb_env, grb_sub_envs, remove_path_noise)
         bounds = bounds_by_state.get(state_key)
         policy_result.update({
             **base_record,
@@ -770,7 +772,10 @@ def train_penalty_coefficients_for_env(
     initial_coefficients = inner.pop('initial_coefficients', None)
     initial_coefficients_source = inner.pop('initial_coefficients_source', None)
     fixed_coefficients = inner.pop('fixed_coefficients', None)
-    center_noise = bool(inner.pop('center_noise', False))
+    noise_removal = inner.pop('noise_removal', None)
+    min_norm_slack = float(inner.pop('min_norm_slack', 0.0) or 0.0)
+    if noise_removal is None and inner.pop('center_noise', False):
+        noise_removal = 'mean'
     coefficient_bound_overrides = inner.pop('coefficient_bound_overrides', None)
     paths_per_state = inner.pop('paths_per_state', None)
     paths_per_state = None if paths_per_state is None else int(paths_per_state)
@@ -832,7 +837,8 @@ def train_penalty_coefficients_for_env(
         training_objective=training_objective,
         initial_coefficients=initial_coefficients,
         fixed_coefficients=_by_coefficient_index(fixed_coefficients),
-        center_noise=center_noise,
+        noise_removal=noise_removal,
+        min_norm_slack=min_norm_slack,
         coefficient_bound_overrides=_by_coefficient_index(coefficient_bound_overrides),
         worst_case_scope=worst_case_scope or 'per_state',
     )
@@ -859,10 +865,14 @@ def train_penalty_coefficients_for_env(
         'coefficient_bound_overrides': coefficient_bound_overrides,
         'training_objective': training_objective,
         'paths_per_state': paths_per_state,
+        'noise_removal': noise_removal,
+        'min_norm_slack': min_norm_slack,
+        'min_norm_loss': info.get('min_norm_loss'),
         'worst_case_scope': worst_case_scope,
         'initial_coefficients_source': initial_coefficients_source,
         'fixed_coefficients': fixed_coefficients,
         'initial_in_sample': info.get('initial_in_sample'),
+        'improvement': info.get('improvement'),
         'in_sample': info['in_sample'],
     }
     if regularization is not None:

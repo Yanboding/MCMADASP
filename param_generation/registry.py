@@ -39,6 +39,24 @@ def _occupancy_experiment_specs():
     ]
 
 
+TOY_STRATIFIED_SCENARIO_NUMBERS = [512, 1024]
+
+
+def _toy_stratified_experiment_specs():
+    return [
+        ExperimentSpec(
+            name=f'toy_stratified_099_scenario_{sample_path_number}',
+            config_type='toy',
+            val_args=[0.5],
+            mutate=mutate_initial_state_congestion,
+            agent_mutate=partial(mutate_stratified_geometric_scenario,
+                                 num_strata=sample_path_number // 2,
+                                 sample_path_number=sample_path_number),
+        )
+        for sample_path_number in TOY_STRATIFIED_SCENARIO_NUMBERS
+    ]
+
+
 EXPERIMENT_SPECS = {
     spec.name: spec for spec in [
         ExperimentSpec(
@@ -89,14 +107,7 @@ EXPERIMENT_SPECS = {
             val_args=[0.5],
             mutate=mutate_initial_state_congestion,
         ),
-        ExperimentSpec(
-            name='toy_stratified_099_scenario_1024',
-            config_type='toy',
-            val_args=[0.5],
-            mutate=mutate_initial_state_congestion,
-            agent_mutate=partial(mutate_stratified_geometric_scenario,
-                                 num_strata=512, sample_path_number=1024),
-        ),
+        *_toy_stratified_experiment_specs(),
         ExperimentSpec(
             name='steady_state_toy_study',
             config_type='toy',

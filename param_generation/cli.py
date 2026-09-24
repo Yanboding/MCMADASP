@@ -23,7 +23,7 @@ from param_generation.mutators import mutate_initial_state_congestion
 from param_generation.registry import EXPERIMENT_SPECS
 from param_generation.training import train_alp_coefficients
 from decision_maker.alp_rg_agent import alp_expected_initial_state
-from decision_maker.approximate_q_agent import TRAINING_OBJECTIVES, WORST_CASE_SCOPES
+from decision_maker.approximate_q_agent import NOISE_REMOVALS, TRAINING_OBJECTIVES, WORST_CASE_SCOPES
 from utils import get_uid
 
 
@@ -295,6 +295,15 @@ def build_parser():
              'joint = one minimum across every state and path, over the pathwise value '
              'minus the value-function approximation at that scenario\'s initial state')
     train.add_argument(
+        '--fix-block', action='append', default=None, metavar='BLOCK',
+        help='pin a whole block of coefficients (intercept, regular, overtime, waitlist) at its '
+             '--init-coefficients value, so training only moves the identified ones; repeatable')
+    train.add_argument(
+        '--min-norm-slack', type=float, default=0.0, metavar='EPS',
+        help='after the cutting plane converges, return the smallest-norm coefficients whose '
+             'sample-average objective is within EPS of the converged one, verified on the '
+             'subproblems; 0 keeps the converged coefficients')
+    train.add_argument(
         '--paths-per-state', type=int, default=None, metavar='K',
         help='generate mode only: draw sample_path_number / K initial states and give '
              'each of them K sample paths (the worst_case objective takes the minimum '
@@ -307,12 +316,14 @@ def build_parser():
         '--name', default=None,
         help='experiment name for the generated command (requires a single variant)')
     train.add_argument(
-        '--center-noise', action='store_true',
-        help='subtract the scenario-weighted sample mean of the zero-mean, '
-             'action-independent penalty terms (the intercept and the arrival terms, '
-             'i.e. the constants of the feature expressions) inside every training '
-             'subproblem, so the sample-average objective has no slope along those '
-             'directions; evaluation still uses the raw penalty')
+        '--noise-removal', choices=NOISE_REMOVALS, default=None,
+        help='remove the zero-mean, action-independent part of the penalty features (the '
+             'constants of the feature expressions) inside every training subproblem: '
+             'mean subtracts their scenario-weighted sample mean, so the sample-average '
+             'objective has no slope along those directions and the reported bound is '
+             'still the original penalty; pathwise subtracts each path own constant, '
+             'which leaves the population problem unchanged and removes that noise '
+             'entirely, and then the reported bound is the modified penalty')
     train.add_argument(
         '--intercept-bound', type=float, default=None, metavar='B',
         help='box |W_0| <= B for the intercept coefficient instead of --coefficient-bound '
@@ -559,7 +570,8 @@ def _check_warm_start_inside_box(initial_coefficients, inner, intercept_index, i
 
 
 def _apply_training_objective(test_envs, objective, initial_coefficients, source, fix_intercept=False,
-                              center_noise=False, intercept_bound=None, paths_per_state=None,
+                              noise_removal=None, intercept_bound=None, paths_per_state=None,
+                              min_norm_slack=0.0, fix_blocks=None,
                               worst_case_scope='per_state'):
     if fix_intercept and intercept_bound is not None:
         raise ValueError('--fix-intercept and --intercept-bound are mutually exclusive')
@@ -584,8 +596,17 @@ def _apply_training_objective(test_envs, objective, initial_coefficients, source
                     f'--paths-per-state {paths_per_state} does not divide sample_path_number {sample_path_number}')
             inner['paths_per_state'] = paths_per_state
         generating_function = None
-        if initial_coefficients is not None or fix_intercept or intercept_bound is not None:
+        if initial_coefficients is not None or fix_intercept or intercept_bound is not None or fix_blocks:
             generating_function = _training_generating_function(variant)
+        if fix_blocks:
+            if initial_coefficients is None:
+                raise ValueError('--fix-block needs --init-coefficients to pin the block at')
+            blocks = generating_function.coefficient_blocks()
+            unknown = [name for name in fix_blocks if name not in blocks]
+            if unknown:
+                raise ValueError(f'--fix-block: unknown block(s) {unknown}; choose from {sorted(blocks)}')
+            inner['fixed_coefficients'] = {str(index): float(initial_coefficients[index])
+                                           for name in fix_blocks for index in blocks[name]}
         intercept_index = None
         if intercept_bound is not None:
             intercept_index = _intercept_index(generating_function, '--intercept-bound')
@@ -606,8 +627,10 @@ def _apply_training_objective(test_envs, objective, initial_coefficients, source
             inner['initial_coefficients_source'] = source
         if fix_intercept:
             inner['fixed_coefficients'] = {str(_intercept_index(generating_function, '--fix-intercept')): 0.0}
-        if center_noise:
-            inner['center_noise'] = True
+        if noise_removal is not None:
+            inner['noise_removal'] = noise_removal
+        if min_norm_slack:
+            inner['min_norm_slack'] = float(min_norm_slack)
         uid = get_uid({'env_args': variant['env_args'], 'agent_args': variant['agent_args']})
         updated[(uid, experiment_name, mutate_val)] = variant
     return updated
@@ -624,7 +647,8 @@ def _run_train(args):
     initial_coefficients, initial_coefficients_source = _load_initial_coefficients(args.init_coefficients)
     test_envs = _apply_training_objective(
         test_envs, args.objective, initial_coefficients, initial_coefficients_source, args.fix_intercept,
-        args.center_noise, args.intercept_bound, args.paths_per_state, args.worst_case_scope)
+        args.noise_removal, args.intercept_bound, args.paths_per_state, args.min_norm_slack,
+        args.fix_block, args.worst_case_scope)
     if args.name is not None:
         if len(test_envs) != 1:
             raise ValueError(f'--name needs exactly one variant; got {len(test_envs)}')

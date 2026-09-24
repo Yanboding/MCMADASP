@@ -486,15 +486,6 @@ def test_train_fix_intercept_and_bad_init_coefficients_are_rejected(tmp_path):
             raise AssertionError('a wrong-length warm start must be rejected at generation time')
 
 
-def test_train_center_noise_flag_changes_uid():
-    with mock.patch.object(cli, 'write_command_file'):
-        (plain,) = cli.main(['train', 'base_toy_study', '--dat', 'unused.dat'])
-        (centered,) = cli.main(['train', 'base_toy_study', '--center-noise', '--dat', 'unused.dat'])
-    assert 'center_noise' not in plain['agent_args']['agent_args']
-    assert centered['agent_args']['agent_args']['center_noise'] is True
-    assert plain['uid'] != centered['uid']
-
-
 def test_train_intercept_bound_flag_and_conflicts(tmp_path):
     (variant,) = cli._apply_penalty_function(
         cli.build_variation_test_env(cli.EXPERIMENT_SPECS['base_toy_study']), 'absorption_alp_penalty').values()
@@ -548,7 +539,7 @@ if __name__ == '__main__':
     test_train_objective_changes_uid_and_defaults_to_mean()
     test_train_fix_intercept_flag_pins_coefficient_zero()
     test_train_fix_intercept_and_bad_init_coefficients_are_rejected(__import__('pathlib').Path(tempfile.mkdtemp()))
-    test_train_center_noise_flag_changes_uid()
+    test_train_noise_removal_flag_changes_uid()
     test_train_intercept_bound_flag_and_conflicts(__import__('pathlib').Path(tempfile.mkdtemp()))
 
 
@@ -592,11 +583,51 @@ def test_train_worst_case_scope_flag():
         raise AssertionError('--worst-case-scope needs --objective worst_case')
 
 
-def test_toy_stratified_spec_carries_the_geometric_099_proposal():
+def test_toy_stratified_specs_carry_the_geometric_099_proposal():
+    for scenario_number in (512, 1024):
+        with mock.patch.object(cli, 'write_command_file'):
+            (record,) = cli.main(['train', f'toy_stratified_099_scenario_{scenario_number}',
+                                  '--variants', '0.5', '--dat', 'unused.dat'])
+        inner = record['agent_args']['agent_args']
+        assert inner['sample_path_number'] == scenario_number
+        assert record['sample_path_number'] == scenario_number
+        assert inner['sample_path_length_proposal'] == {
+            'type': 'stratified_geometric', 'discount_factor_proposal': 0.99,
+            'num_strata': scenario_number // 2}
+        assert record['init_state_mode'] == 'generate'
+
+
+def test_train_noise_removal_flag_changes_uid():
     with mock.patch.object(cli, 'write_command_file'):
-        (record,) = cli.main(['train', 'toy_stratified_099_scenario_1024', '--variants', '0.5', '--dat', 'unused.dat'])
-    inner = record['agent_args']['agent_args']
-    assert inner['sample_path_number'] == 1024 and record['sample_path_number'] == 1024
-    assert inner['sample_path_length_proposal'] == {
-        'type': 'stratified_geometric', 'discount_factor_proposal': 0.99, 'num_strata': 512}
-    assert record['init_state_mode'] == 'generate'
+        (plain,) = cli.main(['train', 'base_toy_study', '--dat', 'unused.dat'])
+        (mean,) = cli.main(['train', 'base_toy_study', '--noise-removal', 'mean', '--dat', 'unused.dat'])
+        (pathwise,) = cli.main(['train', 'base_toy_study', '--noise-removal', 'pathwise', '--dat', 'unused.dat'])
+    assert 'noise_removal' not in plain['agent_args']['agent_args']
+    assert mean['agent_args']['agent_args']['noise_removal'] == 'mean'
+    assert pathwise['agent_args']['agent_args']['noise_removal'] == 'pathwise'
+    assert len({plain['uid'], mean['uid'], pathwise['uid']}) == 3
+
+
+def test_train_fix_block_pins_the_named_blocks_at_the_warm_start(tmp_path):
+    warm = tmp_path / 'warm.jsonl'
+    from experiments import get_config_by_type
+    from generating_function.alp_penalty_function import AbsorptionALPPenaltyFunction
+    function = AbsorptionALPPenaltyFunction(get_config_by_type('toy').env)
+    coefficients = [float(index + 1) for index in range(function.number_of_coefficients)]
+    warm.write_text(json.dumps({'uid': 'warm', 'coefficients': coefficients}) + '\n')
+    with mock.patch.object(cli, 'write_command_file'):
+        (record,) = cli.main(['train', 'base_toy_study', '--penalty-function', 'absorption_alp_penalty',
+                              '--init-coefficients', str(warm), '--fix-block', 'waitlist',
+                              '--fix-block', 'intercept', '--dat', 'unused.dat'])
+    fixed = record['agent_args']['agent_args']['fixed_coefficients']
+    blocks = function.coefficient_blocks()
+    expected = {str(i): coefficients[i] for i in blocks['waitlist'] + blocks['intercept']}
+    assert fixed == expected
+    try:
+        with mock.patch.object(cli, 'write_command_file'):
+            cli.main(['train', 'base_toy_study', '--penalty-function', 'absorption_alp_penalty',
+                      '--fix-block', 'waitlist', '--dat', 'unused.dat'])
+    except ValueError as exc:
+        assert 'init-coefficients' in str(exc)
+    else:
+        raise AssertionError('--fix-block needs a warm start to pin at')

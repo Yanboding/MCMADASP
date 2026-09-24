@@ -368,6 +368,8 @@ def objective_confidence_interval(values, weights=None, strata=None):
 
 
 MIN_NORM_MAX_SLACK = 1e-7
+MIN_NORM_SLACK_TRIALS = 5
+MIN_NORM_SLACK_BACKOFF = 4.0
 
 
 def uniform_mean_objective(action, values, scenario_ids):
@@ -417,6 +419,7 @@ class BendersDecompositionSolver:
               checkpoint_path=None,
               resume_checkpoint_path=None,
               min_norm_action=False,
+              min_norm_slack=0.0,
               purge_after=None,
               purge_slack_tol=1e-6):
         info = {}
@@ -585,7 +588,38 @@ class BendersDecompositionSolver:
             if executor is not None:
                 executor.shutdown(wait=False)
         info.update(summary)
+        if min_norm_action and min_norm_slack and summary and not info.get('debug'):
+            self._relax_action_towards_the_minimum_norm(info, min_norm_slack, parallel, verbose)
         return upper_bound, info
+
+    def _relax_action_towards_the_minimum_norm(self, info, slack, parallel, verbose):
+        # The cut model overestimates the true objective away from the action it
+        # converged at, so a candidate that is slack-optimal for the cut model can
+        # be worse than that for the subproblems. Shrink the slack until the
+        # measured loss respects it.
+        is_min = self.master_model.ModelSense == GRB.MINIMIZE
+        self.master_model.optimize()
+        if self.master_model.Status != GRB.OPTIMAL:
+            print(f"Minimum-norm relaxation skipped: master status {self.master_model.Status}")
+            return
+        reference_value = self.master_model.ObjVal
+        best_action = np.asarray(info['action'], dtype=float)
+        best_value = float(info['evaluated_value'])
+        allowance = float(slack)
+        for _ in range(MIN_NORM_SLACK_TRIALS):
+            candidate, _ = self._min_norm_master_action(best_action, None, verbose=verbose, slack=allowance,
+                                                        reference_value=reference_value)
+            _, value = self.evaluate_action(candidate, parallel=parallel)
+            loss = (value - best_value) if is_min else (best_value - value)
+            if loss <= allowance:
+                info.update({'action': candidate, 'evaluated_value': value,
+                             'min_norm_slack': float(slack), 'min_norm_loss': float(max(loss, 0.0))})
+                print(f"Minimum-norm action within a slack of {slack:g}: objective {best_value:.6f} -> {value:.6f} "
+                      f"(loss {loss:.6f}), sum|a| {np.abs(best_action).sum():.6g} -> {np.abs(candidate).sum():.6g}")
+                return
+            allowance /= MIN_NORM_SLACK_BACKOFF
+        info.update({'min_norm_slack': float(slack), 'min_norm_loss': 0.0})
+        print(f"Minimum-norm relaxation gave up after {MIN_NORM_SLACK_TRIALS} attempts; keeping the converged action")
 
     def solve_with_callback(self, tol=1e-6,
                             max_iter=150,
@@ -873,18 +907,20 @@ class BendersDecompositionSolver:
         print(f"Master failure artifacts: {directory}")
         return {"directory": directory, "reason": reason, "summary": summary}
 
-    def _min_norm_master_action(self, fallback_action, fallback_theta, verbose=False):
+    def _min_norm_master_action(self, fallback_action, fallback_theta, verbose=False, slack=None,
+                                reference_value=None):
         model = self.master_model
         original_sense = model.ModelSense
         primary_objective = model.getObjective()
-        objective_value = model.ObjVal
+        objective_value = model.ObjVal if reference_value is None else float(reference_value)
         if self._action_abs_vars is None:
             abs_vars = model.addMVar(
                 self.action_vars.shape[0], lb=0.0, name="action_abs")
             model.addConstr(abs_vars >= self.action_vars, name="action_abs_pos")
             model.addConstr(abs_vars >= -self.action_vars, name="action_abs_neg")
             self._action_abs_vars = abs_vars
-        slack = min(1e-9 * max(1.0, abs(objective_value)), MIN_NORM_MAX_SLACK)
+        if slack is None:
+            slack = min(1e-9 * max(1.0, abs(objective_value)), MIN_NORM_MAX_SLACK)
         if original_sense == GRB.MINIMIZE:
             guard = model.addConstr(
                 primary_objective <= objective_value + slack, name="min_norm_guard")
@@ -897,6 +933,7 @@ class BendersDecompositionSolver:
             if model.Status == GRB.OPTIMAL:
                 return (np.array(self.action_vars.X, dtype=float),
                         np.array(self.theta_vars.X, dtype=float))
+
             print(f"Min-norm re-solve not optimal (Status {model.Status}); "
                   f"keeping first-phase master action")
             return fallback_action, fallback_theta

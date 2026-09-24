@@ -45,7 +45,7 @@ def test_centering_shifts_the_worst_case_objective_without_touching_the_initial_
         coefficient_bound=1e3)
     _, theta, info = agent.benders_decomposition_train(
         init_state=states, parallel=False, training_objective='worst_case', worst_case_scope='joint',
-        coefficient_bound=1e3, center_noise=True)
+        coefficient_bound=1e3, noise_removal='mean')
     noise_mean = agent.noise_mean
     assert np.abs(noise_mean).max() > 0
     for probe in (np.asarray(theta, dtype=float), np.zeros_like(noise_mean), np.linspace(-1, 1, noise_mean.size)):
@@ -53,7 +53,7 @@ def test_centering_shifts_the_worst_case_objective_without_touching_the_initial_
         raw_values, _ = raw.coefficient_model.evaluate_action(probe, parallel=False)
         np.testing.assert_allclose(centered_values, raw_values - probe @ noise_mean, atol=1e-6)
     theta = np.asarray(theta, dtype=float)
-    assert set(info['in_sample']) == {'mean', 'std', 'worst_case'}
+    assert set(info['in_sample']) == {'mean', 'std', 'half_width', 'worst_case'}
     raw_values, _ = raw.coefficient_model.evaluate_action(theta, parallel=False)
     features = initial_state_features(agent, states)
     kappa = np.asarray(agent.sample_path_weights, dtype=float)
@@ -68,9 +68,9 @@ def test_centering_shifts_the_worst_case_objective_without_touching_the_initial_
 def test_in_sample_reports_the_cost_mean_and_std_at_both_coefficient_sets():
     agent, state = make_agent(AbsorptionALPPenaltyFunction)
     states = distinct_states(agent.env, agent.sample_path_number)
-    for init_state, objective, scope, keys in ((states, 'mean', None, {'mean', 'std'}),
-                                               (states, 'worst_case', 'joint', {'mean', 'std', 'worst_case'}),
-                                               (state, 'worst_case', 'per_state', {'mean', 'std', 'worst_case'})):
+    for init_state, objective, scope, keys in ((states, 'mean', None, {'mean', 'std', 'half_width'}),
+                                               (states, 'worst_case', 'joint', {'mean', 'std', 'half_width', 'worst_case'}),
+                                               (state, 'worst_case', 'per_state', {'mean', 'std', 'half_width', 'worst_case'})):
         agent, _ = make_agent(AbsorptionALPPenaltyFunction)
         warm = np.zeros(agent.generating_function.number_of_coefficients)
         kwargs = {} if scope is None else {'worst_case_scope': scope}
@@ -91,7 +91,7 @@ def test_in_sample_reports_the_cost_mean_and_std_at_both_coefficient_sets():
 def test_runner_records_only_the_raw_in_sample_statistics():
     with mock.patch.object(cli, 'write_command_file'):
         (record,) = cli.main(['train', 'base_toy_study', '--penalty-function', 'absorption_alp_penalty',
-                              '--coefficient-bound', '1000', '--center-noise', '--dat', 'unused.dat'])
+                              '--coefficient-bound', '1000', '--noise-removal', 'mean', '--dat', 'unused.dat'])
     record = dict(record)
     record['sample_path_number'] = 4
     record['experiment_name'] = record['experiment_name'] + '_cost_unittest'
@@ -101,12 +101,118 @@ def test_runner_records_only_the_raw_in_sample_statistics():
         out = run.train_penalty_coefficients_for_env(**record, grb_env=None, grb_sub_envs=None, job_id='cost_test')
     finally:
         shutil.rmtree(folder, ignore_errors=True)
-    assert set(out['in_sample']) == {'mean', 'std'}
+    assert set(out['in_sample']) == {'mean', 'std', 'half_width'}
     assert out['in_sample']['std'] >= 0
     assert out['tight_penalized_lower_bound'] == out['in_sample']['mean']
     for dropped in ('in_sample_cost', 'noise_centered', 'noise_mean',
                     'initial_in_sample_centered', 'in_sample_centered'):
         assert dropped not in out
+
+
+def test_training_records_the_paired_improvement_over_the_warm_start():
+    from metaheuristic_algorithm.benders_decomposition_solver import objective_confidence_interval
+    agent, state = make_agent(AbsorptionALPPenaltyFunction)
+    warm = np.zeros(agent.generating_function.number_of_coefficients)
+    obj, theta, info = agent.benders_decomposition_train(
+        init_state=state, parallel=False, coefficient_bound=1e3, initial_coefficients=warm)
+    kappa = np.asarray(agent.sample_path_weights, dtype=float)
+    strata = np.asarray(agent.sample_path_strata)
+    final, _ = agent.coefficient_model.evaluate_action(np.asarray(theta, dtype=float), parallel=False)
+    initial, _ = agent.coefficient_model.evaluate_action(warm, parallel=False)
+    mean, half_width = objective_confidence_interval(final - initial, weights=kappa, strata=strata)
+    assert set(info['improvement']) == {'mean', 'half_width'}
+    assert np.isclose(info['improvement']['mean'], mean, atol=1e-6)
+    assert np.isclose(info['improvement']['half_width'], half_width, atol=1e-6)
+    assert np.isclose(info['improvement']['mean'],
+                      info['in_sample']['mean'] - info['initial_in_sample']['mean'], atol=1e-6)
+    assert set(info['in_sample']) == {'mean', 'std', 'half_width'}
+    assert info['in_sample']['half_width'] > 0
+    agent, state = make_agent(AbsorptionALPPenaltyFunction)
+    _, _, cold = agent.benders_decomposition_train(init_state=state, parallel=False, coefficient_bound=1e3)
+    assert 'improvement' not in cold
+
+
+def test_pathwise_noise_removal_subtracts_each_path_own_penalty_constant():
+    raw_agent, state = make_agent(AbsorptionALPPenaltyFunction)
+    _, theta_raw, _ = raw_agent.benders_decomposition_train(init_state=state, parallel=False, coefficient_bound=1e3)
+    agent, state = make_agent(AbsorptionALPPenaltyFunction)
+    obj, theta, info = agent.benders_decomposition_train(
+        init_state=state, parallel=False, coefficient_bound=1e3, noise_removal='pathwise',
+        initial_coefficients=theta_raw)
+    constants = np.array([agent.subproblem_noise[sid] for sid in range(agent.sample_path_number)], dtype=float)
+    assert np.abs(constants).max() > 0
+    for probe in (np.asarray(theta, dtype=float), np.zeros(constants.shape[1]), np.linspace(-1, 1, constants.shape[1])):
+        removed, _ = agent.coefficient_model.evaluate_action(probe, parallel=False)
+        original, _ = raw_agent.coefficient_model.evaluate_action(probe, parallel=False)
+        np.testing.assert_allclose(removed, original - constants @ probe, atol=1e-6)
+    reference, _ = make_agent(AbsorptionALPPenaltyFunction)
+    reference._build_training_workers(init_state=state, parallel=False, initial_coefficients=np.asarray(theta_raw))
+    for worker in agent.coefficient_model.workers:
+        value, gradient, seed = worker.initial_cut
+        reference_value, reference_gradient, reference_seed = reference.subproblem_initial_cuts[worker.subproblem_id]
+        np.testing.assert_allclose(seed, reference_seed, atol=1e-9)
+        assert np.isclose(value, reference_value - constants[worker.subproblem_id] @ seed, atol=1e-6)
+        np.testing.assert_allclose(gradient, reference_gradient - constants[worker.subproblem_id], atol=1e-6)
+    kappa = np.asarray(agent.sample_path_weights, dtype=float)
+    values, _ = agent.coefficient_model.evaluate_action(np.asarray(theta, dtype=float), parallel=False)
+    assert np.isclose(info['in_sample']['mean'], float(kappa @ values), atol=1e-6)
+    assert info['in_sample']['mean'] > info['initial_in_sample']['mean'] - 1e-6
+
+
+def test_mean_noise_removal_keeps_reporting_the_original_penalty():
+    agent, state = make_agent(AbsorptionALPPenaltyFunction)
+    obj, theta, info = agent.benders_decomposition_train(
+        init_state=state, parallel=False, coefficient_bound=1e3, noise_removal='mean')
+    kappa = np.asarray(agent.sample_path_weights, dtype=float)
+    values, _ = agent.coefficient_model.evaluate_action(np.asarray(theta, dtype=float), parallel=False)
+    shift = float(np.asarray(theta) @ agent.noise_mean)
+    assert np.isclose(info['in_sample']['mean'], float(kappa @ values) + shift, atol=1e-6)
+
+
+def test_unknown_noise_removal_is_rejected():
+    agent, state = make_agent(AbsorptionALPPenaltyFunction)
+    try:
+        agent.benders_decomposition_train(init_state=state, parallel=False, noise_removal='median')
+    except ValueError as exc:
+        assert 'noise_removal' in str(exc)
+    else:
+        raise AssertionError('an unknown noise_removal must be rejected')
+
+
+def test_coefficient_blocks_expose_the_index_ranges():
+    config = get_config_by_type('toy')
+    env = config.env
+    function = AbsorptionALPPenaltyFunction(env)
+    blocks = function.coefficient_blocks()
+    assert list(blocks) == ['intercept', 'regular', 'overtime', 'waitlist']
+    assert blocks['intercept'] == [0]
+    assert blocks['regular'] == list(range(1, 1 + env.planning_horizon))
+    assert blocks['overtime'] == list(range(1 + env.planning_horizon, 1 + 2 * env.planning_horizon))
+    assert blocks['waitlist'] == list(range(1 + 2 * env.planning_horizon, function.number_of_coefficients))
+    try:
+        LinearPenaltyFunction(env).coefficient_blocks()
+    except NotImplementedError as exc:
+        assert 'blocks' in str(exc)
+    else:
+        raise AssertionError('a generating function without named blocks must say so')
+
+
+def test_evaluation_can_remove_the_pathwise_penalty_noise():
+    agent, state = make_agent(AbsorptionALPPenaltyFunction)
+    theta = np.linspace(-3, 4, agent.generating_function.number_of_coefficients)
+    agent.generating_function.set_coefficients(theta)
+    path = agent.sample_paths[0]
+    arrivals = np.asarray(path.arrivals)
+    weights = np.asarray(path.period_weights(agent.discount_factor), dtype=float) if hasattr(path, 'period_weights') \
+        else np.asarray(path.survival_weights, dtype=float)
+    kwargs = {'terminal': path.terminal, 'period_weights': weights}
+    raw = agent.calculate_information_relaxation_cost(state, arrivals, **kwargs)
+    removed = agent.calculate_information_relaxation_cost(state, arrivals, remove_path_noise=True, **kwargs)
+    assert np.isfinite(raw) and np.isfinite(removed) and not np.isclose(raw, removed)
+    agent.generating_function.set_coefficients(np.zeros_like(theta))
+    assert np.isclose(agent.calculate_information_relaxation_cost(state, arrivals, **kwargs),
+                      agent.calculate_information_relaxation_cost(state, arrivals, remove_path_noise=True, **kwargs),
+                      atol=1e-6)
 
 
 def test_relevance_state_reproduces_the_weighted_average_value():
@@ -160,8 +266,10 @@ def in_sample(agent, theta, init_state=None, scope='per_state'):
                   else state_blocks(agent, init_state))
         minima = np.array([values[blocks == b].min() for b in range(blocks.max() + 1)])
         result['worst_case'] = float(kappa @ features @ theta) + float(np.bincount(blocks, weights=kappa) @ minima)
-    mean = float(kappa @ costs)
+    from metaheuristic_algorithm.benders_decomposition_solver import objective_confidence_interval
+    mean, half_width = objective_confidence_interval(costs, weights=kappa, strata=np.asarray(agent.sample_path_strata))
     result['mean'] = mean
+    result['half_width'] = half_width
     result['std'] = float(np.sqrt(kappa @ (costs - mean) ** 2))
     return result
 
@@ -181,12 +289,12 @@ def distinct_states(env, count):
 def test_worst_case_objective_trains_from_initial_coefficients_and_reports_in_sample():
     agent, state = make_agent(AbsorptionALPPenaltyFunction)
     obj_mean, theta_mean, info_mean = agent.benders_decomposition_train(init_state=state, parallel=False, coefficient_bound=1e3)
-    assert 'initial_in_sample' not in info_mean and set(info_mean['in_sample']) == {'mean', 'std'}
+    assert 'initial_in_sample' not in info_mean and set(info_mean['in_sample']) == {'mean', 'std', 'half_width'}
     assert obj_mean == info_mean['in_sample']['mean']
     agent, state = make_agent(AbsorptionALPPenaltyFunction)
     obj, theta, info = agent.benders_decomposition_train(
         init_state=state, parallel=False, training_objective='worst_case', initial_coefficients=theta_mean, coefficient_bound=1e3)
-    assert set(info['in_sample']) == set(info['initial_in_sample']) == {'mean', 'std', 'worst_case'}
+    assert set(info['in_sample']) == set(info['initial_in_sample']) == {'mean', 'std', 'half_width', 'worst_case'}
     expected = in_sample(agent, theta, state)
     for key in expected:
         assert np.isclose(info['in_sample'][key], expected[key], atol=1e-6)
@@ -199,7 +307,7 @@ def test_worst_case_objective_trains_from_initial_coefficients_and_reports_in_sa
 def test_linear_penalty_trains_the_mean_but_not_the_worst_case():
     agent, state = make_agent()
     obj, theta, info = agent.benders_decomposition_train(init_state=state, parallel=False)
-    assert set(info['in_sample']) == {'mean', 'std'}
+    assert set(info['in_sample']) == {'mean', 'std', 'half_width'}
     for scope in ('per_state', 'joint'):
         agent, state = make_agent()
         try:
@@ -343,12 +451,12 @@ def test_warm_started_training_skips_the_iteration_pinned_at_the_warm_start():
     assert not solver._seeded_at(solver.workers, None)
 
 
-def test_noise_centering_shifts_every_scenario_by_theta_dot_noise_mean():
+def test_mean_centering_shifts_every_scenario_by_theta_dot_noise_mean():
     raw_agent, state = make_agent(AbsorptionALPPenaltyFunction)
     _, theta_raw, _ = raw_agent.benders_decomposition_train(init_state=state, parallel=False)
     centered_agent, state = make_agent(AbsorptionALPPenaltyFunction)
     obj, theta, info = centered_agent.benders_decomposition_train(
-        init_state=state, parallel=False, center_noise=True, initial_coefficients=theta_raw)
+        init_state=state, parallel=False, noise_removal='mean', initial_coefficients=theta_raw)
     noise_mean = centered_agent.noise_mean
     seed_values, _ = centered_agent.coefficient_model.evaluate_action(np.asarray(theta_raw, dtype=float), parallel=False)
     for worker in centered_agent.coefficient_model.workers:
@@ -360,7 +468,7 @@ def test_noise_centering_shifts_every_scenario_by_theta_dot_noise_mean():
         raw_values, _ = raw_agent.coefficient_model.evaluate_action(probe, parallel=False)
         centered_values, _ = centered_agent.coefficient_model.evaluate_action(probe, parallel=False)
         np.testing.assert_allclose(centered_values, raw_values - probe @ noise_mean, atol=1e-6)
-    assert set(info['in_sample']) == {'mean', 'std'}
+    assert set(info['in_sample']) == {'mean', 'std', 'half_width'}
     assert np.isclose(info['in_sample']['mean'],
                       centered_agent.sample_path_weights @ seed_values + np.asarray(theta) @ noise_mean
                       + centered_agent.sample_path_weights @ (
@@ -371,18 +479,18 @@ def test_noise_centering_shifts_every_scenario_by_theta_dot_noise_mean():
 
 def test_runner_records_noise_centering():
     with mock.patch.object(cli, 'write_command_file'):
-        (record,) = cli.main(['train', 'base_toy_study', '--penalty-function', 'absorption_alp_penalty', '--center-noise', '--dat', 'unused.dat'])
+        (record,) = cli.main(['train', 'base_toy_study', '--penalty-function', 'absorption_alp_penalty', '--noise-removal', 'mean', '--dat', 'unused.dat'])
     record = dict(record)
     record['sample_path_number'] = 4
     record['experiment_name'] = record['experiment_name'] + '_center_unittest'
-    assert record['agent_args']['agent_args']['center_noise'] is True
+    assert record['agent_args']['agent_args']['noise_removal'] == 'mean'
     folder = os.path.join('experiments', 'results', record['experiment_name'])
     assert not os.path.exists(folder)
     try:
         out = run.train_penalty_coefficients_for_env(**record, grb_env=None, grb_sub_envs=None, job_id='center_test')
     finally:
         shutil.rmtree(folder, ignore_errors=True)
-    assert set(out['in_sample']) == {'mean', 'std'}
+    assert set(out['in_sample']) == {'mean', 'std', 'half_width'}
     assert out['tight_penalized_lower_bound'] == out['in_sample']['mean']
 
 
@@ -396,7 +504,7 @@ def test_coefficient_bound_overrides_widen_single_coefficients():
     warm[0] = -500.0
     obj, theta, info = agent.benders_decomposition_train(
         init_state=state, parallel=False, coefficient_bound=10.0, coefficient_bound_overrides={0: 1e6},
-        initial_coefficients=warm, center_noise=True)
+        initial_coefficients=warm, noise_removal='mean')
     assert abs(theta[0]) <= 1e6 and max(abs(v) for v in theta[1:]) <= 10.0 + 1e-9
     assert np.isclose(info['initial_in_sample']['mean'], in_sample(agent, warm)['mean'] + warm @ agent.noise_mean, atol=1e-6)
 

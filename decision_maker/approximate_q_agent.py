@@ -19,6 +19,7 @@ from utils import solve_and_handle_errors, flatten, set_link_rhs, acquire_grb_en
 
 TRAINING_OBJECTIVES = ('mean', 'worst_case')
 WORST_CASE_SCOPES = ('per_state', 'joint')
+NOISE_REMOVALS = ('mean', 'pathwise')
 
 
 def state_key(state):
@@ -51,7 +52,7 @@ class ApproxQAgent(InfiniteRTAgent):
         self.arrival_generator = copy.deepcopy(self.env.arrival_generator)
         self.sample_path_proposal = sample_path_proposal or ArrivalGeneratorSamplePathProposal()
         (self.sample_paths, self.sample_path_weights, self.sample_path_strata) = self._initialize_sample_paths(sample_path_number)
-        self.center_noise = False
+        self.noise_removal = None
         self.noise_mean = None
         self.subproblem_feature_links = {}
         self.subproblem_noise = {}
@@ -362,22 +363,22 @@ class ApproxQAgent(InfiniteRTAgent):
             for sids in groups.values():
                 workers.update(build_group(sids))
 
-        self.noise_mean = np.zeros(self._require_generating_function().number_of_coefficients)
-        if self.center_noise:
-            self._center_training_noise(workers)
+        constants = np.array([self.subproblem_noise[sid] for sid in range(self.sample_path_number)], dtype=float)
+        self.noise_mean = np.asarray(self.sample_path_weights, dtype=float) @ constants
+        if self.noise_removal is not None:
+            self._remove_training_noise(workers, constants)
         return [workers[sid] for sid in range(self.sample_path_number)]
 
-    def _center_training_noise(self, workers):
-        kappa = np.asarray(self.sample_path_weights, dtype=float)
-        self.noise_mean = kappa @ np.array([self.subproblem_noise[sid] for sid in range(self.sample_path_number)])
+    def _remove_training_noise(self, workers, constants):
         for sid, worker in workers.items():
+            removed = self.noise_mean if self.noise_removal == 'mean' else constants[sid]
             link = self.subproblem_feature_links[sid]
-            link.RHS = np.array(link.RHS, dtype=float) - self.noise_mean
+            link.RHS = np.array(link.RHS, dtype=float) - removed
             worker.model.update()
             if sid in self.subproblem_initial_cuts:
                 value, gradient, seed = self.subproblem_initial_cuts[sid]
                 self.subproblem_initial_cuts[sid] = (
-                    value - float(np.asarray(seed, dtype=float) @ self.noise_mean), gradient - self.noise_mean, seed)
+                    value - float(np.asarray(seed, dtype=float) @ removed), gradient - removed, seed)
                 worker.initial_cut = self.subproblem_initial_cuts[sid]
 
     def _regularization_scale(self, mode):
@@ -446,12 +447,15 @@ class ApproxQAgent(InfiniteRTAgent):
                                     training_objective='mean',
                                     initial_coefficients=None,
                                     fixed_coefficients=None,
-                                    center_noise=False,
+                                    noise_removal=None,
+                                    min_norm_slack=0.0,
                                     coefficient_bound_overrides=None,
                                     worst_case_scope='per_state'):
         overall_start = time.time()
         fixed_coefficients = dict(fixed_coefficients or {})
-        self.center_noise = bool(center_noise)
+        if noise_removal is not None and noise_removal not in NOISE_REMOVALS:
+            raise ValueError(f"noise_removal must be one of {NOISE_REMOVALS} or None; got {noise_removal!r}")
+        self.noise_removal = noise_removal
         master_time = None
         workers_time = None
         coefficient_vars = None
@@ -520,13 +524,14 @@ class ApproxQAgent(InfiniteRTAgent):
         # A regularizer already makes the optimum bounded/unique, so the
         # min-norm tie-break is unnecessary (and its objective guard would turn
         # into a QCP under L2).
-        upper_bound, info = self.coefficient_model.solve(init_solution=init_solution, is_hard_bound=True, max_iter=3000, parallel=parallel, verbose=verbose, checkpoint_path=checkpoint_path, resume_checkpoint_path=resume_checkpoint_path, min_norm_action=(regularization is None), purge_after=purge_after)
+        upper_bound, info = self.coefficient_model.solve(init_solution=init_solution, is_hard_bound=True, max_iter=3000, parallel=parallel, verbose=verbose, checkpoint_path=checkpoint_path, resume_checkpoint_path=resume_checkpoint_path, min_norm_action=(regularization is None), min_norm_slack=min_norm_slack, purge_after=purge_after)
         solver_time = time.time() - solver_start
         if verbose:
             print(f"[TIMING] Solver execution (parallel={parallel}): {solver_time:.2f}s")
         
         info = dict(info or {})
         info['importance_sampling'] = self._build_importance_sampling_info()
+        info['min_norm_slack'] = float(min_norm_slack)
         if initial_in_sample is not None:
             info['initial_in_sample'] = initial_in_sample['in_sample']
         
@@ -550,7 +555,15 @@ class ApproxQAgent(InfiniteRTAgent):
         self.is_trained = True
         generating_function = self._require_generating_function()
         generating_function.set_coefficients(self.coefficients)
-        info.update(self._in_sample_values(self.coefficients, parallel, in_sample_objectives, scenario_states))
+        final = self._in_sample_values(self.coefficients, parallel, in_sample_objectives, scenario_states)
+        final_costs = final.pop('costs')
+        info.update(final)
+        if initial_in_sample is not None:
+            mean, half_width = objective_confidence_interval(
+                final_costs - initial_in_sample['costs'],
+                weights=np.asarray(self.sample_path_weights, dtype=float),
+                strata=np.asarray(self.sample_path_strata))
+            info['improvement'] = {'mean': mean, 'half_width': half_width}
         objective = info['in_sample']['mean']
         if regularization is not None:
             scale_vector = getattr(self, '_regularization_scale_vector', None)
@@ -642,7 +655,7 @@ class ApproxQAgent(InfiniteRTAgent):
 
     def _aggregate_in_sample(self, values, coefficients, objectives, scenario_states=None):
         coefficients = np.asarray(coefficients, dtype=float)
-        shift = float(coefficients @ self.noise_mean)
+        shift = float(coefficients @ self.noise_mean) if self.noise_removal == 'mean' else 0.0
         scenario_ids = np.arange(self.sample_path_number)
 
         def aggregate(scenario_values):
@@ -650,22 +663,24 @@ class ApproxQAgent(InfiniteRTAgent):
                     for name, objective_fn in objectives.items()}
 
         raw_values = np.asarray(values, dtype=float) + shift
-        in_sample = aggregate(raw_values)
-        in_sample.update(self._pathwise_cost_statistics(raw_values, coefficients, scenario_states))
-        return {'in_sample': in_sample}
-
-    def _pathwise_cost_statistics(self, raw_values, coefficients, scenario_states):
-        costs = raw_values
-        if scenario_states is not None:
-            generating_function = self._require_generating_function()
-            costs = costs + np.array([generating_function.approximate_value(state, coefficients)
-                                      for state in scenario_states])
+        costs = self._pathwise_costs(raw_values, coefficients, scenario_states)
         kappa = np.asarray(self.sample_path_weights, dtype=float)
-        mean = float(kappa @ costs)
-        return {'mean': mean, 'std': float(np.sqrt(max(kappa @ (costs - mean) ** 2, 0.0)))}
+        mean, half_width = objective_confidence_interval(
+            costs, weights=kappa, strata=np.asarray(self.sample_path_strata))
+        in_sample = aggregate(raw_values)
+        in_sample.update({'mean': mean, 'half_width': half_width,
+                          'std': float(np.sqrt(max(kappa @ (costs - mean) ** 2, 0.0)))})
+        return {'in_sample': in_sample, 'costs': costs}
+
+    def _pathwise_costs(self, raw_values, coefficients, scenario_states):
+        if scenario_states is None:
+            return np.asarray(raw_values, dtype=float)
+        generating_function = self._require_generating_function()
+        return np.asarray(raw_values, dtype=float) + np.array(
+            [generating_function.approximate_value(state, coefficients) for state in scenario_states])
 
     def calculate_information_relaxation_cost(self, state, sample_path, verbose=False, period_weights=None,
-                                              terminal=None, first_action=None):
+                                              terminal=None, first_action=None, remove_path_noise=False):
         path = sample_path_from_record(sample_path, period_weights, terminal)
         generating_function = self._require_generating_function()
         theta = generating_function.coefficient_vector()
@@ -688,7 +703,13 @@ class ApproxQAgent(InfiniteRTAgent):
         model.setObjective(cost + self.penalty_ratio * (theta * Phi).sum(), GRB.MINIMIZE)
         if not solve_and_handle_errors(model, verbose=verbose):
             raise RuntimeError("Direct model optimal solution not found")
-        return model.ObjVal
+        if not remove_path_noise:
+            return model.ObjVal
+        # The constants of the penalty features do not depend on the action, so
+        # dropping them leaves the minimiser and the expected bound untouched.
+        constants = np.array([Phi[i].item().getConstant() for i in range(generating_function.number_of_coefficients)],
+                             dtype=float)
+        return model.ObjVal - self.penalty_ratio * float(theta @ constants)
 
     def hindsight_scenario_weights(self, form):
         if form.hindsight_scenario_weights == 'kappa':

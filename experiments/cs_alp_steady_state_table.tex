@@ -1,0 +1,36 @@
+\begin{table}[!htbp]
+\centering
+\begin{threeparttable}
+\caption{Estimated case-study policy performance with the ALP penalty, $\gamma=0.99$, starting from the ALP steady state (750 warm-up periods from an empty book).}
+\label{tab:cs_alp_steady_state_performance}
+
+\small
+\setlength{\tabcolsep}{4pt}
+\renewcommand{\arraystretch}{1.15}
+
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{lcccccccc}
+\toprule
+Policy
+& \makecell{Discounted\\total cost}
+& \makecell{Improvement over\\Myopic (\%)}
+& \makecell{Wait-time\\violations (\%)}
+& \makecell{Overtime\\utilization (\%)}
+& \makecell{Gap to\\zero-penalty LB}
+& \makecell{Gap to zero-\\penalty LB (\%)}
+& \makecell{Gap to\\penalized LB}
+& \makecell{Gap to\\penalized LB (\%)}\\
+\midrule
+Penalized Hindsight & \(\mathbf{68{,}815 \pm 2{,}737.2}\) & \(\mathbf{46.3 \pm 0.8}\) & \(\mathbf{65 \pm 0.9}\) & \(40 \pm 0.2\) & \(\mathbf{26{,}173 \pm 1{,}007.8}\) & \(\mathbf{61.4 \pm 2.4}\) & \(\mathbf{7{,}313 \pm 408.3}\) & \(\mathbf{12.1 \pm 0.7}\) \\
+ALP & \(99{,}119 \pm 5{,}029.0\) & \(22.7 \pm 1.6\) & \(74 \pm 0.8\) & \(43 \pm 0.2\) & \(56{,}477 \pm 3{,}374.3\) & \(132.4 \pm 7.9\) & \(37{,}613 \pm 2{,}822.5\) & \(62.4 \pm 4.7\) \\
+Myopic & \(128{,}202 \pm 5{,}239.5\) & --- & \(73 \pm 1.0\) & \(\mathbf{31 \pm 0.1}\) & \(85{,}560 \pm 3{,}694.4\) & \(200.6 \pm 8.7\) & \(66{,}677 \pm 2{,}958.5\) & \(110.7 \pm 4.9\) \\
+\bottomrule
+\end{tabular}%
+}
+
+\begin{tablenotes}[flushleft]
+\footnotesize
+\item \textit{Note.} Values are sample means \(\pm\) 95\% confidence-interval half-widths over \(2{,}048\) evaluation sample paths. Discounted total cost is the survival-weighted cost over the sampled absorption horizon. Improvement over Myopic is the paired relative reduction in discounted total cost on common sample paths, with a delta-method 95\% confidence interval. Wait-time violations and overtime utilization are percentages over the evaluation periods. The gap to the zero-penalty lower bound is the policy cost minus the zero-penalty perfect-information relaxation cost; the gap to the penalized lower bound is the penalized policy cost minus the penalized perfect-information relaxation cost. Relative gaps are expressed as a percentage of the corresponding lower bound. Bold entries are the best value in each metric.
+\end{tablenotes}
+\end{threeparttable}
+\end{table}

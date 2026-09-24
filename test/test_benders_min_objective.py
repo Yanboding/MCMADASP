@@ -212,3 +212,43 @@ def test_worst_case_objective_converges_to_level_plus_worst_residual():
     assert np.isclose(solver.evaluate_action(theta, parallel=False)[1], info['evaluated_value'], atol=1e-6)
     for probe in (np.zeros(N_COEFF), np.array([1.0, -1.0, 0.5, 2.0]), np.array([-3.0, 2.0, 2.0, -1.0])):
         assert worst_case_value(solver, theta) >= worst_case_value(solver, probe) - 1e-6
+
+
+def test_epsilon_min_norm_trades_a_bounded_objective_loss_for_a_smaller_action():
+    tight = build_solver('mean')
+    tight_value, tight_info = tight.solve(parallel=False, max_iter=300, min_norm_action=True)
+    tight_action = np.asarray(tight_info['action'], dtype=float)
+
+    slack = 0.05
+    relaxed = build_solver('mean')
+    relaxed_value, relaxed_info = relaxed.solve(parallel=False, max_iter=300, min_norm_action=True,
+                                                min_norm_slack=slack)
+    relaxed_action = np.asarray(relaxed_info['action'], dtype=float)
+
+    assert np.abs(relaxed_action).sum() <= np.abs(tight_action).sum() + 1e-9
+    assert relaxed_value >= tight_value - slack - 1e-6
+    assert np.isclose(relaxed.evaluate_action(relaxed_action, parallel=False)[1], relaxed_info['evaluated_value'],
+                      atol=1e-6)
+    assert relaxed_info['min_norm_slack'] == slack
+    assert relaxed_info['min_norm_loss'] <= slack + 1e-6
+
+    huge = build_solver('mean')
+    huge_value, huge_info = huge.solve(parallel=False, max_iter=300, min_norm_action=True, min_norm_slack=1e6)
+    assert np.abs(np.asarray(huge_info['action'], dtype=float)).sum() <= np.abs(relaxed_action).sum() + 1e-9
+    assert huge_info['min_norm_loss'] <= 1e6
+
+
+def test_epsilon_min_norm_is_off_by_default():
+    solver = build_solver('mean')
+    _, info = solver.solve(parallel=False, max_iter=300, min_norm_action=True)
+    assert info.get('min_norm_slack') in (None, 0.0)
+
+
+def test_min_norm_re_solve_can_run_repeatedly():
+    solver = build_solver('mean')
+    solver.solve(parallel=False, max_iter=300)
+    solver.master_model.optimize()
+    reference = solver.master_model.ObjVal
+    first, _ = solver._min_norm_master_action(np.zeros(N_COEFF), None, slack=0.05, reference_value=reference)
+    second, _ = solver._min_norm_master_action(np.zeros(N_COEFF), None, slack=0.01, reference_value=reference)
+    assert np.abs(first).sum() <= np.abs(second).sum() + 1e-9

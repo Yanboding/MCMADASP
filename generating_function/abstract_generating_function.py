@@ -41,6 +41,9 @@ class GeneratingFunction:
     def state_features(self, state):
         raise NotImplementedError(f'{self.spec_name} does not define state features')
 
+    def coefficient_blocks(self):
+        raise NotImplementedError(f'{self.spec_name} does not define named coefficient blocks')
+
     def approximate_value(self, state, solution=None):
         features = self.state_features(state)
         return features @ (self.coefficient_vector() if solution is None else solution)

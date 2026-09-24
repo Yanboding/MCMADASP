@@ -200,3 +200,10 @@ decision_maker/col_generation_debug.py
 docs/
 # Golden values of the legacy penalty code (test/record_legacy_golden.py)
 !test/golden/legacy_penalty.json
+
+# Generated experiment artifacts
+outputs/
+.DS_Store
+
+# LaTeX build products
+*.pdf
