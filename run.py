@@ -20,6 +20,7 @@ from importance_sampling import build_proposal
 from utils import iter_to_tuple, get_uid, safe_open, RunningStats, encode, decode, get_solution_value, acquire_grb_env, read_lines_with_pattern
 from decision_maker import MyopicAgent, ALPRowGenerationAgent, ApproxQAgent
 from policy_evaluator import PolicyEvaluator
+from policy_evaluator.potential_improvement import arrival_informed_schedule_cost
 from generating_function import AbsorptionALPPenaltyFunction, AbsorptionLinearPenaltyFunction, LinearPenaltyFunction
 from importance_sampling.sample_path import sample_path_from_record
 
@@ -401,7 +402,8 @@ def calculate_policy_costs_with_penalty(uid,
     return result
 
 def information_relaxation_bounds(env, generating_function_spec, penalty_ratios, state, sample_path_tail,
-                                  period_weights, terminal, grb_env, grb_sub_envs, remove_path_noise=False):
+                                  period_weights, terminal, grb_env, grb_sub_envs, remove_path_noise=False,
+                                  fixed_actions=None):
     bounds = {}
     for penalty_ratio in penalty_ratios:
         agent = ApproxQAgent(
@@ -417,11 +419,67 @@ def information_relaxation_bounds(env, generating_function_spec, penalty_ratios,
         start = time.time()
         bound = agent.calculate_information_relaxation_cost(
             state, sample_path=sample_path_tail, period_weights=period_weights, terminal=terminal,
-            remove_path_noise=remove_path_noise)
+            remove_path_noise=remove_path_noise, fixed_actions=fixed_actions)
         print(f"Information relaxation cost at penalty ratio {penalty_ratio:g} computed in "
               f"{time.time() - start:.1f} seconds: {bound}")
         bounds[float(penalty_ratio)] = bound
     return bounds
+
+
+def estimate_potential_improvement(uid, experiment_name, mutate_val, group_id, env_args, init_state,
+                                   arrival_stream, baseline_length, baseline_period_weights, baseline_terminal,
+                                   prefix_periods, continuation_length, continuation_period_weights,
+                                   path_weight, path_stratum, generating_function_spec, alp_coefficients,
+                                   grb_env, grb_sub_envs, job_id):
+    output_file = os.path.join('experiments', 'results', experiment_name, f'{job_id}.jsonl')
+    os.makedirs(os.path.dirname(output_file), exist_ok=True)
+    if jsonl_uid_exists(output_file, uid):
+        print(f"Skip existing potential-improvement replication uid={uid}")
+        return None
+    start = time.time()
+    env = get_config_by_type(case_type='infinite_custom', args=env_args).env
+    init_state = tuple(np.array(component) for component in init_state)
+    stream = np.array(arrival_stream)
+    penalized_cost = float(information_relaxation_bounds(
+        env, generating_function_spec, [1.0], init_state, stream[:baseline_length], baseline_period_weights,
+        baseline_terminal, grb_env, grb_sub_envs, remove_path_noise=True)[1.0])
+    alp_agent = ALPRowGenerationAgent(env, discount_factor=env.discount_factor,
+                                      coefficients=alp_coefficients, grb_env=grb_env)
+    relaxation_agent = ApproxQAgent(
+        env,
+        discount_factor=env.discount_factor,
+        current_decision_var_type='integer',
+        future_decision_var_type='integer',
+        generating_function=_build_generating_function(env=env, spec=generating_function_spec),
+        penalty_ratio=0.0,
+        grb_env=grb_env,
+        subproblem_grb_envs=grb_sub_envs,
+    )
+    schedule = arrival_informed_schedule_cost(env, alp_agent, relaxation_agent, init_state, stream,
+                                              prefix_periods, continuation_length, continuation_period_weights,
+                                              action_periods=baseline_length + 1)
+    schedule_penalized_cost = float(information_relaxation_bounds(
+        env, generating_function_spec, [1.0], init_state, stream[:baseline_length], baseline_period_weights,
+        baseline_terminal, grb_env, grb_sub_envs, remove_path_noise=True,
+        fixed_actions=schedule['actions'][:baseline_length + 1])[1.0])
+    record = {
+        'uid': uid,
+        'group_id': group_id,
+        'penalized_information_relaxation_cost': penalized_cost,
+        'partial_information_relaxation_cost': schedule['schedule_cost'],
+        'potential_gap': schedule['schedule_cost'] - penalized_cost,
+        'prefix_partial_information_relaxation_cost': schedule['prefix_cost'],
+        'tail_error_bound': schedule['continuation_cost'],
+        'schedule_penalized_information_relaxation_cost': schedule_penalized_cost,
+        'run_time_seconds': time.time() - start,
+        'path_weight': path_weight,
+        'path_stratum': path_stratum,
+    }
+    with open(output_file, 'a') as handle:
+        handle.write(json.dumps(record) + '\n')
+    print(f"Potential improvement uid={uid}: partial {record['partial_information_relaxation_cost']:.4f}, "
+          f"penalized {penalized_cost:.4f}, gap {record['potential_gap']:.4f}")
+    return record
 
 
 def _append_jsonl_record(output_file, record):
@@ -1044,6 +1102,13 @@ if __name__ == '__main__':
         if 'policy_specs' in param:
             print('Wow, this is an evaluation record with policy_specs:')
             evaluate_policy_costs_with_information_relaxation(
+                **param,
+                grb_env=grb_env,
+                grb_sub_envs=grb_sub_envs,
+                job_id=args.job_id,
+            )
+        elif param.pop('potential_improvement', False):
+            estimate_potential_improvement(
                 **param,
                 grb_env=grb_env,
                 grb_sub_envs=grb_sub_envs,

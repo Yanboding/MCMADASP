@@ -172,7 +172,7 @@ class ApproxQAgent(InfiniteRTAgent):
         return linking_constraints
 
     def pathwise_terms(self, model, generating_function, form, path, state_var, action_var,
-                       include_first_cost=True):
+                       include_first_cost=True, fixed_actions=None, action_vars=None):
         gamma = self.discount_factor
         W = form.period_weights(path, gamma)
         tau = path.periods
@@ -189,6 +189,10 @@ class ApproxQAgent(InfiniteRTAgent):
                 state_var, action_var, arrival, expected_weight, realized_weight, is_var=True).add_to(Phi)
             state_var = self.get_next_state(model=model, state=state_var, action=action_var, new_arrival=arrival)
             action_var = self.get_action_var(model=model, advance_scheduling_type=self.future_decision_var_type)
+            if fixed_actions is not None:
+                self.set_action(action_var=action_var, action=fixed_actions[s + 1])
+            if action_vars is not None:
+                action_vars.append(action_var)
             self.add_action_space_constraints(model=model, state_var=state_var, action_var=action_var)
             cost = cost + W[s + 1] * self.env.cost_fn(state_var, action_var, is_var=True)
         return cost, Phi, state_var, action_var
@@ -713,8 +717,8 @@ class ApproxQAgent(InfiniteRTAgent):
         return np.asarray(raw_values, dtype=float) + np.array(
             [generating_function.approximate_value(state, coefficients) for state in scenario_states])
 
-    def calculate_information_relaxation_cost(self, state, sample_path, verbose=False, period_weights=None,
-                                              terminal=None, first_action=None, remove_path_noise=False):
+    def _information_relaxation_model(self, state, sample_path, period_weights, terminal, first_action=None,
+                                      fixed_actions=None):
         path = sample_path_from_record(sample_path, period_weights, terminal)
         generating_function = self._require_generating_function()
         theta = generating_function.coefficient_vector()
@@ -732,18 +736,42 @@ class ApproxQAgent(InfiniteRTAgent):
         self.add_action_space_constraints(model=model, state_var=state_var, action_var=action_var)
         if first_action is not None:
             self.set_action(action_var=action_var, action=first_action)
+        if fixed_actions is not None:
+            self.set_action(action_var=action_var, action=fixed_actions[0])
+        action_vars = [action_var]
         cost, Phi, _, _ = self.pathwise_terms(
-            model, generating_function, generating_function.form('evaluation'), path, state_var, action_var)
+            model, generating_function, generating_function.form('evaluation'), path, state_var, action_var,
+            fixed_actions=fixed_actions, action_vars=action_vars)
         model.setObjective(cost + self.penalty_ratio * (theta * Phi).sum(), GRB.MINIMIZE)
+        return model, theta, Phi, action_vars
+
+    def calculate_information_relaxation_cost(self, state, sample_path, verbose=False, period_weights=None,
+                                              terminal=None, first_action=None, remove_path_noise=False,
+                                              fixed_actions=None):
+        model, theta, Phi, _ = self._information_relaxation_model(
+            state, sample_path, period_weights, terminal, first_action, fixed_actions)
         if not solve_and_handle_errors(model, verbose=verbose):
             raise RuntimeError("Direct model optimal solution not found")
         if not remove_path_noise:
             return model.ObjVal
         # The constants of the penalty features do not depend on the action, so
         # dropping them leaves the minimiser and the expected bound untouched.
-        constants = np.array([Phi[i].item().getConstant() for i in range(generating_function.number_of_coefficients)],
-                             dtype=float)
+        constants = np.array([Phi[i].item().getConstant() for i in range(theta.shape[0])], dtype=float)
         return model.ObjVal - self.penalty_ratio * float(theta @ constants)
+
+    def information_relaxation_schedule(self, state, sample_path, period_weights, terminal, start_actions=None,
+                                        verbose=False):
+        model, _, _, action_vars = self._information_relaxation_model(state, sample_path, period_weights, terminal)
+        if start_actions is not None:
+            for (x_var, y_var), (x, y) in zip(action_vars, start_actions):
+                x_var.Start = np.asarray(x, dtype=float)
+                y_var.Start = np.asarray(y, dtype=float)
+        if not solve_and_handle_errors(model, verbose=verbose):
+            raise RuntimeError("information relaxation schedule not solved to optimality")
+        actions = [(np.round(x_var.X).astype(int), np.round(y_var.X).astype(int)) for x_var, y_var in action_vars]
+        info = {'objective': float(model.ObjVal), 'bound': float(model.ObjBound),
+                'gap': float(model.MIPGap), 'runtime': float(model.Runtime)}
+        return float(model.ObjVal), actions, info
 
     def hindsight_scenario_weights(self, form):
         if form.hindsight_scenario_weights == 'kappa':

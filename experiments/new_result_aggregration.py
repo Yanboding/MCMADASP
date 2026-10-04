@@ -17,7 +17,7 @@ from visualization.line_plot import approximate_value_plot_from_running_stats
 
 # --- 1. Top-level Factory Functions (Required for Pickling) ---
 
-AGGREGATION_VERSION = 5
+AGGREGATION_VERSION = 8
 BOOKING_POLICY_ORDER = (
     ('approx_penalized_hindsight', 'Penalized Hindsight', '#2a78d6'),
     ('row_gen_alp', 'ALP', '#eb6834'),
@@ -344,13 +344,13 @@ class SimulateEvaluationResult:
         for overtime in overtime_days:
             self.overtime_utilization[(group_id, policy_id)] += overtime / self.env.overtime_capacity * 100
         patients_outside_target = sum(
-            total_scheduled_patients_by_type[t] - cum_scheduled_patients[self.waiting_time_targets[t] - 1][t]
+            total_scheduled_patients_by_type[t] - cum_scheduled_patients[self.waiting_time_targets[t]][t]
             for t in range(self.env.num_types)
             if total_scheduled_patients_by_type[t] > 0
         )
         if total_scheduled_patients > 0:
             self.waiting_time_violation[(group_id, policy_id)] += patients_outside_target / total_scheduled_patients * 100
-        
+
         self.solving_time_per_state[(group_id, policy_id)] += data.get('solving_time_per_state', 0)
     
     def waiting_time_target_ptc_table(self, days=(1, 5, 10, 15, 20), confidence=0.95,
@@ -452,55 +452,54 @@ Type
             lines.append(f'{i + 1:>4} | ' + ' | '.join(cells))
         return '\n'.join(lines)
 
-    def plot_booking_day_preferences(self, save_file, policy_order=BOOKING_POLICY_ORDER, types=None):
+    def plot_booking_day_preferences(self, save_file, policy_order=BOOKING_POLICY_ORDER, types=None,
+                                     share_cap=60):
         import matplotlib
         matplotlib.use('Agg')
         import matplotlib.pyplot as plt
+        from matplotlib.colors import LinearSegmentedColormap
         shares = self.booking_day_preferences()
         policies = [(pid, label, color) for pid, label, color in policy_order if pid in shares]
         days = next(iter(shares.values())).shape[0]
         types = list(range(1, next(iter(shares.values())).shape[1] + 1)) if types is None else list(types)
-        n_paths = max(stats.n for stats in self.policy_costs.values())
-        stem, extension = os.path.splitext(save_file)
+        deadlines = [int(self.waiting_time_targets[type_id - 1]) + 1 for type_id in types]
+        stem, _ = os.path.splitext(save_file)
         os.makedirs(os.path.dirname(save_file) or '.', exist_ok=True)
-        saved = []
-        for pid, label, color in policies:
-            fig, ax = plt.subplots(figsize=(0.7 * days + 1.6, 0.5 * len(types) + 1.6))
-            ranks = booking_day_ranks(shares[pid])
-            for row, type_id in enumerate(types):
-                share = shares[pid][:, type_id - 1]
-                rank = ranks[:, type_id - 1]
+        fig, axes = plt.subplots(len(policies), 1, sharex=True,
+                                 figsize=(0.34 * days + 0.5, len(policies) * (0.16 * len(types) + 0.22)))
+        axes = np.atleast_1d(axes)
+        for ax, (pid, label, color) in zip(axes, policies):
+            grid = np.column_stack([shares[pid][:, type_id - 1] for type_id in types])
+            ranks = np.column_stack([booking_day_ranks(shares[pid])[:, type_id - 1] for type_id in types])
+            ax.imshow(grid.T, aspect='auto', origin='lower', interpolation='nearest',
+                      cmap=LinearSegmentedColormap.from_list(pid, ['#ffffff', color]),
+                      vmin=0, vmax=share_cap, extent=(0.5, days + 0.5, -0.5, len(types) - 0.5))
+            for row, deadline in enumerate(deadlines):
+                ax.plot([deadline + 0.5, deadline + 0.5], [row - 0.5, row + 0.5],
+                        color='#1a1a1a', linewidth=1.6, solid_capstyle='butt')
                 for day in range(days):
-                    if rank[day] == 0:
-                        ax.text(day + 1, row, '\u00b7', ha='center', va='center', fontsize=13, color='#b5b3aa')
+                    rank = int(ranks[day, row])
+                    if rank == 0:
+                        ax.text(day + 1, row, '·', ha='center', va='center',
+                                fontsize=7.5, color='#cdcbc5')
                         continue
-                    ax.add_patch(plt.Rectangle((day + 0.5, row - 0.5), 1, 1, color=color, alpha=0.55 * share[day] / share.max(), linewidth=0))
-                    circled = dict(boxstyle='circle,pad=0.2', facecolor='white', edgecolor='black', linewidth=1.2) if rank[day] == 1 else None
-                    ax.text(day + 1, row, str(rank[day]), ha='center', va='center', fontsize=13,
-                            fontweight='bold' if rank[day] == 1 else 'normal', bbox=circled)
-                for run_start, run_end in preference_runs(rank):
-                    ax.annotate('', xy=(run_end + 1, row - 0.4), xytext=(run_start + 1, row - 0.4),
-                                arrowprops=dict(arrowstyle='-|>', color='black', linewidth=1.1, shrinkA=0, shrinkB=0))
-                    ax.plot(run_start + 1, row - 0.4, 'o', color='black', markersize=3.5)
-            ax.set_xlim(0.5, days + 0.5)
-            ax.set_ylim(-0.7, len(types) - 0.4)
-            ax.set_xticks(range(1, days + 1))
+                    ax.text(day + 1, row, str(rank), ha='center', va='center', fontsize=7.5,
+                            color='white' if grid[day, row] > 0.55 * share_cap else '#1a1a1a',
+                            fontweight='bold' if rank == 1 else 'normal')
+            ax.set_xticks(range(2, days + 1, 2))
             ax.set_yticks(range(len(types)))
             ax.set_yticklabels(types)
-            ax.tick_params(labelsize=13, length=0)
-            ax.set_xlabel('booking day (first appointment)', fontsize=15)
-            ax.set_ylabel('treatment type', fontsize=15)
-            ax.set_title(f'{label}: booking day preferences by treatment type ({n_paths:,} evaluation paths)', fontsize=16, loc='left', pad=14)
+            ax.tick_params(labelsize=8, length=0)
+            ax.set_ylabel('treatment type', fontsize=12)
+            ax.set_title(label, fontsize=14, loc='left', pad=6)
             for side in ('top', 'right'):
                 ax.spines[side].set_visible(False)
-            fig.text(0.01, 0.005, 'Cell = rank of the day by scheduling frequency (1 = most frequent, circled; \u00b7 = never used); '
-                     'shading = frequency; arrows = runs of consecutive ranks.', fontsize=12, color='#555555')
-            fig.tight_layout(rect=(0, 0.03, 1, 1))
-            policy_file = f'{stem}_{pid}{extension}'
-            fig.savefig(policy_file, dpi=150, bbox_inches='tight')
-            fig.savefig(f'{stem}_{pid}.png', dpi=150, bbox_inches='tight')
-            plt.close(fig)
-            saved.append(policy_file)
+        axes[-1].set_xlabel('booking day (first appointment)', fontsize=13)
+        fig.tight_layout()
+        fig.savefig(save_file, dpi=200, bbox_inches='tight')
+        fig.savefig(f'{stem}.png', dpi=200, bbox_inches='tight')
+        plt.close(fig)
+        saved = [save_file]
         return saved
 
     def performance_summary_table(self):
@@ -899,8 +898,8 @@ def saure_ejor_steady_state_table(
         costs = {pid: ser.policy_costs[(group_id, pid)] for pid, _ in policies}
         violations = {pid: ser.waiting_time_violation[(group_id, pid)] for pid, _ in policies}
         overtimes = {pid: ser.overtime_utilization[(group_id, pid)] for pid, _ in policies}
-        zero_gaps = {pid: ser.zero_penalized_gap[(group_id, pid)] for pid, _ in policies}
-        penalized_gaps = {pid: ser.penalized_gap[(group_id, pid)] for pid, _ in policies}
+        zero_gaps = {pid: ser.zero_penalized_improvement[(group_id, pid)] for pid, _ in policies}
+        penalized_gaps = {pid: ser.penalized_improvement[(group_id, pid)] for pid, _ in policies}
         improvements = {
             pid: ser.improvement_over_baseline(group_id, pid, baseline_id, confidence,
                                                cost_by_uid=ser.cost_by_uid)
@@ -928,8 +927,8 @@ def saure_ejor_steady_state_table(
                 f' & {improvement_cell}'
                 f' & {_metric_cell(violations[pid], confidence, bold=pid == best_violation)}'
                 f' & {_metric_cell(overtimes[pid], confidence, bold=pid == best_overtime)}'
-                f' & {_metric_cell(zero_gaps[pid], confidence, bold=pid == best_zero_gap)}'
-                f' & {_metric_cell(penalized_gaps[pid], confidence, bold=pid == best_penalized_gap)} \\\\'
+                f' & {_metric_cell(zero_gaps[pid], confidence, mean_decimals=1, bold=pid == best_zero_gap)}'
+                f' & {_metric_cell(penalized_gaps[pid], confidence, mean_decimals=1, bold=pid == best_penalized_gap)} \\\\'
             )
     body = '\n'.join(rows)
 
@@ -951,8 +950,8 @@ Policy
 & \\makecell{{Improvement over\\\\Myopic (\\%)}}
 & \\makecell{{Wait-time\\\\violations}}
 & \\makecell{{Overtime\\\\utilization}}
-& \\makecell{{Gap to\\\\zero-penalty LB}}
-& \\makecell{{Gap to\\\\penalized LB}}\\\\
+& \\makecell{{\\% gap to\\\\zero-penalty LB}}
+& \\makecell{{\\% gap to\\\\penalized LB}}\\\\
 \\midrule
 {body}
 \\bottomrule
@@ -961,7 +960,7 @@ Policy
 
 \\begin{{tablenotes}}[flushleft]
 \\footnotesize
-\\item \\textit{{Note.}} Values are sample means \\(\\pm\\) {round(confidence * 100)}\\% confidence-interval half-widths over \\({_fmt_latex_number(n_paths)}\\) evaluation sample paths. Discounted total cost is the importance-weighted discounted cost of the post-warm-up evaluation periods. Improvement over Myopic is the paired relative reduction in discounted total cost on common sample paths, with a delta-method {round(confidence * 100)}\\% confidence interval. Wait-time violations and overtime utilization are percentages computed over the evaluation periods only. The last two columns report the policy's suboptimality gap (in cost units) to the zero-penalty and penalized perfect-information relaxation lower bounds. Bold entries are the best value in each metric.
+\\item \\textit{{Note.}} Values are sample means \\(\\pm\\) {round(confidence * 100)}\\% confidence-interval half-widths over \\({_fmt_latex_number(n_paths)}\\) evaluation sample paths. Discounted total cost is the importance-weighted discounted cost of the post-warm-up evaluation periods. Improvement over Myopic is the paired relative reduction in discounted total cost on common sample paths, with a delta-method {round(confidence * 100)}\\% confidence interval. Wait-time violations and overtime utilization are percentages computed over the evaluation periods only. The last two columns report the policy's suboptimality gap to the zero-penalty and penalized perfect-information relaxation lower bounds, expressed as a percentage of the corresponding bound. Bold entries are the best value in each metric.
 \\end{{tablenotes}}
 \\end{{threeparttable}}
 \\end{{table}}"""

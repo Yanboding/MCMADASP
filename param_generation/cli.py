@@ -20,6 +20,7 @@ from param_generation.datasets import (
 from param_generation.experiment_specs import build_variation_test_env
 from param_generation.generating_functions import GENERATING_FUNCTION_CLASSES, build_generating_function, normalize_generating_function_spec
 from param_generation.mutators import mutate_initial_state_congestion
+from param_generation.potential_improvement import generate_potential_improvement_records
 from param_generation.registry import EXPERIMENT_SPECS
 from param_generation.training import train_alp_coefficients
 from decision_maker.alp_rg_agent import alp_expected_initial_state
@@ -411,6 +412,20 @@ def build_parser():
     comparison.add_argument('--paths', type=int, default=4096)
     comparison.add_argument('--groups', type=int, default=500)
     comparison.add_argument('--dat', default='table.dat')
+
+    improvement = sub.add_parser(
+        'improvement', help='Upper bound on the potential penalty improvement over theta_ALP.')
+    improvement.add_argument('experiment', choices=sorted(EXPERIMENT_SPECS))
+    improvement.add_argument('--variants', default=None)
+    improvement.add_argument('--paths', type=int, default=2048)
+    improvement.add_argument('--groups', type=int, default=2048)
+    improvement.add_argument('--dat', default='table.dat')
+    improvement.add_argument('--random-init', action='store_true')
+    improvement.add_argument('--penalty-dir', required=True)
+    improvement.add_argument('--eval-proposal', required=True, metavar='JSON')
+    improvement.add_argument('--prefix-periods', type=int, default=None, metavar='T')
+    improvement.add_argument('--seed-offset', type=int, default=4004)
+    improvement.add_argument('--name', required=True)
     return parser
 
 
@@ -828,6 +843,19 @@ def _run_eval(args, policy_ids):
     return records
 
 
+def _run_improvement(args):
+    test_envs = _select_variants(
+        build_variation_test_env(EXPERIMENT_SPECS[args.experiment]), args.variants)
+    if len(test_envs) != 1:
+        raise ValueError(f'--name needs exactly one variant; got {len(test_envs)}')
+    records = generate_potential_improvement_records(
+        test_envs=test_envs, size=args.paths, proposal_spec=json.loads(args.eval_proposal),
+        penalty_dir=args.penalty_dir, seed_offset=args.seed_offset, is_random_initial_state=args.random_init,
+        experiment_name=args.name, prefix_periods=args.prefix_periods)
+    write_grouped_command_file(results=records, num_groups=args.groups, dat_file=args.dat)
+    return records
+
+
 def main(argv=None):
     args = build_parser().parse_args(argv)
     if args.command == 'train':
@@ -846,4 +874,6 @@ def main(argv=None):
         return recipe_toy_eval_proposal_comparison(
             test_sample_path_num=args.paths, num_groups=args.groups,
             dat_file=args.dat)
+    if args.command == 'improvement':
+        return _run_improvement(args)
     raise ValueError(f'Unknown command: {args.command}')
