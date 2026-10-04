@@ -421,6 +421,9 @@ def build_parser():
     improvement.add_argument('--groups', type=int, default=2048)
     improvement.add_argument('--dat', default='table.dat')
     improvement.add_argument('--random-init', action='store_true')
+    improvement.add_argument('--init-occupancy', type=float, default=None, metavar='FRACTION',
+                             help='start every replication from the fixed state with this fraction of '
+                                  'total capacity booked on every day (mutate_initial_state_congestion)')
     improvement.add_argument('--penalty-dir', required=True)
     improvement.add_argument('--eval-proposal', required=True, metavar='JSON')
     improvement.add_argument('--prefix-periods', type=int, default=None, metavar='T')
@@ -848,6 +851,10 @@ def _run_improvement(args):
         build_variation_test_env(EXPERIMENT_SPECS[args.experiment]), args.variants)
     if len(test_envs) != 1:
         raise ValueError(f'--name needs exactly one variant; got {len(test_envs)}')
+    if args.init_occupancy is not None:
+        if args.random_init:
+            raise ValueError('--init-occupancy and --random-init are mutually exclusive')
+        test_envs = _apply_init_occupancy(test_envs, args.init_occupancy)
     records = generate_potential_improvement_records(
         test_envs=test_envs, size=args.paths, proposal_spec=json.loads(args.eval_proposal),
         penalty_dir=args.penalty_dir, seed_offset=args.seed_offset, is_random_initial_state=args.random_init,

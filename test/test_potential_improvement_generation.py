@@ -1,3 +1,4 @@
+import json
 import numpy as np
 
 from experiments import get_config_by_type
@@ -48,3 +49,13 @@ def test_continuation_lengths_are_shuffled_away_from_the_stratum_order():
     for k in range(3):
         assert baseline[strata == k].max() <= baseline[strata == k + 1].min()
     assert any(continuation[strata == k].max() > continuation[strata == k + 1].min() for k in range(3))
+
+
+def test_init_occupancy_fixes_every_initial_state(tmp_path):
+    from param_generation.cli import main
+    records = main(['improvement', 'toy_stratified_099_scenario_1024', '--variants', '0.5', '--paths', '4',
+                    '--groups', '4', '--init-occupancy', '0.9', '--penalty-dir',
+                    'experiments/results/toy_alp_train', '--eval-proposal', json.dumps(GEOMETRIC),
+                    '--prefix-periods', '5', '--name', 'occupancy_test', '--dat', str(tmp_path / 'x.dat')])
+    expected = [[7, 7, 7, 7, 7, 7, 0], [2, 2, 2, 2, 2, 2, 0], [1, 2]]
+    assert all(record['init_state'] == expected for record in records)
