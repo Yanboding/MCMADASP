@@ -50,3 +50,14 @@ def test_pathwise_violations_are_counted():
     records[1]['schedule_penalized_information_relaxation_cost'] = 9.0
     summary = summarize(records)
     assert summary['pathwise_violations'] == 1 and summary['min_pathwise_slack'] == -1.0
+
+
+def test_improvement_percentage_is_the_ratio_of_means_with_delta_method_error():
+    records = [_record('a', 2.0, 0.5, 0), _record('b', 6.0, 0.5, 0)]
+    records[1]['penalized_information_relaxation_cost'] = 30.0
+    summary = summarize(records)
+    ratio = 4.0 / 20.0
+    residuals = np.array([(2.0 - ratio * 10.0) / 20.0, (6.0 - ratio * 30.0) / 20.0])
+    np.testing.assert_allclose(summary['improvement_percentage'], 100 * ratio)
+    np.testing.assert_allclose(summary['improvement_percentage_standard_error'],
+                               100 * np.sqrt(residuals.var(ddof=1) / 2))

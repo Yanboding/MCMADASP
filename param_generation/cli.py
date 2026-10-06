@@ -306,6 +306,19 @@ def build_parser():
         help='pin a whole block of coefficients (intercept, regular, overtime, waitlist) at its '
              '--init-coefficients value, so training only moves the identified ones; repeatable')
     train.add_argument(
+        '--init-occupancy', type=float, default=None, metavar='FRACTION',
+        help='set the training initial state to this occupancy of total capacity; use with --reset-init-state')
+    train.add_argument(
+        '--cap-policy', choices=('alp', 'penalized_hindsight'), default='penalized_hindsight',
+        help='feasible policy whose penalized cost caps each scenario epigraph')
+    train.add_argument(
+        '--policy-cap-scenarios', type=int, default=64, metavar='N',
+        help='scenarios the penalized hindsight policy samples at each decision epoch when evaluating the caps')
+    train.add_argument(
+        '--policy-cost-cap', action='store_true',
+        help='cap each scenario epigraph at the penalized cost of the ALP policy on that path; '
+             'needs --init-coefficients')
+    train.add_argument(
         '--min-norm-slack', type=float, default=0.0, metavar='EPS',
         help='after the cutting plane converges, return the smallest-norm coefficients whose '
              'sample-average objective is within EPS of the converged one, verified on the '
@@ -596,7 +609,9 @@ def _check_warm_start_inside_box(initial_coefficients, inner, intercept_index, i
 def _apply_training_objective(test_envs, objective, initial_coefficients, source, fix_intercept=False,
                               noise_removal=None, intercept_bound=None, paths_per_state=None,
                               min_norm_slack=0.0, fix_blocks=None,
-                              worst_case_scope='per_state', worst_case_alpha=None):
+                              worst_case_scope='per_state', worst_case_alpha=None,
+                              policy_cost_cap=False, policy_cap_scenarios=64,
+                              cap_policy='penalized_hindsight'):
     if fix_intercept and intercept_bound is not None:
         raise ValueError('--fix-intercept and --intercept-bound are mutually exclusive')
     if paths_per_state is not None and paths_per_state < 2:
@@ -665,6 +680,11 @@ def _apply_training_objective(test_envs, objective, initial_coefficients, source
             inner['noise_removal'] = noise_removal
         if min_norm_slack:
             inner['min_norm_slack'] = float(min_norm_slack)
+        if policy_cost_cap:
+            inner['policy_cost_cap'] = True
+            inner['cap_policy'] = cap_policy
+            if cap_policy != 'alp':
+                inner['policy_cap_scenarios'] = int(policy_cap_scenarios)
         uid = get_uid({'env_args': variant['env_args'], 'agent_args': variant['agent_args']})
         updated[(uid, experiment_name, mutate_val)] = variant
     return updated
@@ -674,6 +694,19 @@ def _run_train(args):
     test_envs = _select_variants(
         build_variation_test_env(EXPERIMENT_SPECS[args.experiment]), args.variants)
     test_envs = _apply_penalty_function(test_envs, args.penalty_function)
+    if args.policy_cost_cap:
+        if args.init_coefficients is None:
+            raise ValueError('--policy-cost-cap needs --init-coefficients: the caps are evaluated under the ALP policy')
+        if args.penalty_function != 'absorption_alp_penalty':
+            raise ValueError('--policy-cost-cap needs --penalty-function absorption_alp_penalty')
+        if args.objective != 'mean':
+            raise ValueError('--policy-cost-cap needs --objective mean')
+    if args.init_occupancy is not None:
+        if not 0.0 < args.init_occupancy <= 1.0:
+            raise ValueError(f'--init-occupancy must lie in (0, 1]; got {args.init_occupancy}')
+        if not args.reset_init_state:
+            raise ValueError('--init-occupancy only takes effect with --reset-init-state')
+        test_envs = _apply_init_occupancy(test_envs, args.init_occupancy)
     test_envs = _apply_coefficient_bound(test_envs, args.coefficient_bound)
     reg_type, lambdas = _parse_regularization(args)
     if reg_type is not None:
@@ -682,7 +715,8 @@ def _run_train(args):
     test_envs = _apply_training_objective(
         test_envs, args.objective, initial_coefficients, initial_coefficients_source, args.fix_intercept,
         args.noise_removal, args.intercept_bound, args.paths_per_state, args.min_norm_slack,
-        args.fix_block, args.worst_case_scope, args.worst_case_alpha)
+        args.fix_block, args.worst_case_scope, args.worst_case_alpha, args.policy_cost_cap,
+        args.policy_cap_scenarios, args.cap_policy)
     if args.name is not None:
         if len(test_envs) != 1:
             raise ValueError(f'--name needs exactly one variant; got {len(test_envs)}')

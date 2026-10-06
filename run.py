@@ -840,6 +840,11 @@ def train_penalty_coefficients_for_env(
     worst_case_scope = inner.pop('worst_case_scope', None) or 'per_state'
     worst_case_alpha = inner.pop('worst_case_alpha', None)
     worst_case_alpha = None if worst_case_alpha is None else float(worst_case_alpha)
+    policy_cost_cap = bool(inner.pop('policy_cost_cap', False))
+    policy_cap_scenarios = int(inner.pop('policy_cap_scenarios', 64) or 64)
+    cap_policy = inner.pop('cap_policy', None) or 'penalized_hindsight'
+    if cap_policy not in ('alp', 'penalized_hindsight'):
+        raise ValueError(f"cap_policy must be 'alp' or 'penalized_hindsight'; got {cap_policy!r}")
     if paths_per_state is not None and init_state_mode != 'generate':
         raise ValueError(f"paths_per_state applies to init_state_mode 'generate' only; got {init_state_mode!r}")
     if initial_coefficients is not None and len(initial_coefficients) != generating_function.number_of_coefficients:
@@ -876,6 +881,40 @@ def train_penalty_coefficients_for_env(
     # paths (the pinned arrival/env seeds in env_args make them identical).
     env.reset_random_seeds()
 
+    policy_cost_caps = None
+    if policy_cost_cap:
+        if initial_coefficients is None:
+            raise ValueError('policy_cost_cap needs initial_coefficients: the caps are evaluated under the ALP policy')
+        cap_start = time.time()
+        if training_generating_function_spec['name'] != 'absorption_alp_penalty':
+            raise ValueError(
+                "policy_cost_cap needs --penalty-function absorption_alp_penalty: ALPRowGenerationAgent reads the "
+                f"coefficient vector as [W_0, U, V, W], which does not match "
+                f"{training_generating_function_spec['name']!r}")
+        if training_objective != 'mean':
+            raise ValueError(
+                f"policy_cost_cap needs the mean objective: {training_objective!r} subtracts the initial-state value "
+                "from each scenario, so absolute policy costs would cap a residual")
+        if cap_policy == 'alp':
+            policy_agent = ALPRowGenerationAgent(
+                env, discount_factor=env.discount_factor, grb_env=grb_env,
+                coefficients=initial_coefficients)
+        else:
+            policy_args = dict(inner)
+            policy_args['sample_path_number'] = int(policy_cap_scenarios)
+            policy_args['generating_function'] = _build_generating_function(
+                env=env, spec=dict(training_generating_function_spec), coefficients=initial_coefficients)
+            policy_args['solver_name'] = 'approx_penalized_hindsight'
+            policy_agent = ApproxQAgent(
+                env=env, discount_factor=env.discount_factor, grb_env=grb_env,
+                subproblem_grb_envs=grb_sub_envs, **policy_args)
+        policy_cost_caps = agent.policy_cost_caps(
+            policy_agent, init_state=resolved_init_state, coefficients=initial_coefficients,
+            noise_removal=noise_removal)
+        env.reset_random_seeds()
+        print(f"  policy cost caps computed in {time.time() - cap_start:.1f}s: "
+              f"mean {float(np.mean(policy_cost_caps)):.4f}, min {float(np.min(policy_cost_caps)):.4f}")
+
     print(
         f"Training penalty coefficients for uid={uid}, mode={init_state_mode}, "
         f"sample_path_number={sample_path_number}"
@@ -902,6 +941,7 @@ def train_penalty_coefficients_for_env(
         coefficient_bound_overrides=_by_coefficient_index(coefficient_bound_overrides),
         worst_case_scope=worst_case_scope,
         worst_case_alpha=worst_case_alpha,
+        policy_cost_caps=policy_cost_caps,
     )
     elapsed = time.time() - start
     print(f"  solver={solver_choice}, obj={obj}, elapsed={elapsed:.1f}s")
@@ -925,6 +965,10 @@ def train_penalty_coefficients_for_env(
         'coefficient_bound': None if coefficient_bound == GRB.INFINITY else coefficient_bound,
         'coefficient_bound_overrides': coefficient_bound_overrides,
         'training_objective': training_objective,
+        'policy_cost_cap': policy_cost_cap,
+        'cap_policy': cap_policy if policy_cost_cap else None,
+        'policy_cap_scenarios': policy_cap_scenarios if policy_cost_cap and cap_policy != 'alp' else None,
+        'policy_cost_cap_info': info.get('policy_cost_cap'),
         'paths_per_state': paths_per_state,
         'noise_removal': noise_removal,
         'min_norm': info.get('min_norm'),

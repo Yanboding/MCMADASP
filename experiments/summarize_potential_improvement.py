@@ -33,6 +33,13 @@ def summarize(records, alpha=0.05):
             stat.record(record[key], record['path_weight'], record['path_stratum'])
     gap = stats['potential_gap']
     standard_error = float(np.sqrt(gap.variance_of_mean()))
+    bound = stats['penalized_information_relaxation_cost'].mean
+    ratio = gap.mean / bound
+    linearized = StratifiedRunningStats()
+    for record in records:
+        linearized.record((record['potential_gap'] - ratio * record['penalized_information_relaxation_cost']) / bound,
+                          record['path_weight'], record['path_stratum'])
+    ratio_standard_error = float(np.sqrt(linearized.variance_of_mean()))
     weights = np.array([record['path_weight'] for record in records], dtype=float)
     negative = np.array([record['potential_gap'] < 0 for record in records], dtype=float)
     return {
@@ -40,6 +47,10 @@ def summarize(records, alpha=0.05):
         **{key: stats[key].mean for key in SUMMARIZED_COSTS},
         'standard_error': standard_error,
         'upper_confidence_limit': max(0.0, gap.mean + norm.ppf(1 - alpha) * standard_error),
+        'improvement_percentage': 100 * ratio,
+        'improvement_percentage_standard_error': 100 * ratio_standard_error,
+        'improvement_percentage_upper_confidence_limit': max(
+            0.0, 100 * (ratio + norm.ppf(1 - alpha) * ratio_standard_error)),
         'alpha': alpha,
         'negative_fraction': float(weights @ negative / weights.sum()),
         'pathwise_violations': sum(
