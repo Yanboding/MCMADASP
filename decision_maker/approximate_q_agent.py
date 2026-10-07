@@ -427,6 +427,7 @@ class ApproxQAgent(InfiniteRTAgent):
                                     initial_coefficients=None,
                                     fixed_coefficients=None,
                                     min_norm_slack=0.0,
+                                    min_norm_every_iteration=False,
                                     coefficient_bound_overrides=None,
                                     policy_centering=None):
         overall_start = time.time()
@@ -486,7 +487,8 @@ class ApproxQAgent(InfiniteRTAgent):
                 self._add_centered_level(initial_in_sample['in_sample'], initial_in_sample['costs'],
                                          init_solution, policy_centering)
         solver_start = time.time()
-        upper_bound, info = self.coefficient_model.solve(init_solution=init_solution, is_hard_bound=True, max_iter=3000, parallel=parallel, verbose=verbose, checkpoint_path=checkpoint_path, resume_checkpoint_path=resume_checkpoint_path, min_norm_action=True, min_norm_slack=min_norm_slack, purge_after=purge_after)
+        upper_bound, info = self.coefficient_model.solve(init_solution=init_solution, is_hard_bound=True, max_iter=3000, parallel=parallel, verbose=verbose, checkpoint_path=checkpoint_path, resume_checkpoint_path=resume_checkpoint_path, min_norm_action=True, min_norm_slack=min_norm_slack,
+            min_norm_every_iteration=min_norm_every_iteration, purge_after=purge_after)
         solver_time = time.time() - solver_start
         if verbose:
             print(f"[TIMING] Solver execution (parallel={parallel}): {solver_time:.2f}s")

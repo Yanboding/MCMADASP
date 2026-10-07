@@ -294,6 +294,11 @@ def build_parser():
              'sample-average objective is within EPS of the converged one, verified on the '
              'subproblems; 0 keeps the converged coefficients')
     train.add_argument(
+        '--min-norm-every-iteration', action='store_true',
+        help='run the minimum-norm master re-solve after every master solve instead of only '
+             'when the action pins to the coefficient box or exceeds 1e6; the gap stays valid '
+             'because the scenario values are evaluated at the re-solved action')
+    train.add_argument(
         '--paths-per-state', type=int, default=None, metavar='K',
         help='generate mode only: draw sample_path_number / K initial states and give '
              'each of them K sample paths; mutually exclusive with the shared-state options')
@@ -535,7 +540,7 @@ def _check_warm_start_inside_box(initial_coefficients, inner, intercept_index, i
 
 def _apply_training_settings(test_envs, initial_coefficients, source, fix_intercept=False,
                              intercept_bound=None, paths_per_state=None,
-                             min_norm_slack=0.0, fix_blocks=None,
+                             min_norm_slack=0.0, min_norm_every_iteration=False, fix_blocks=None,
                              policy_centering=False, policy_cap_scenarios=64,
                              cap_policy='penalized_hindsight'):
     if fix_intercept and intercept_bound is not None:
@@ -592,6 +597,8 @@ def _apply_training_settings(test_envs, initial_coefficients, source, fix_interc
             inner['fixed_coefficients'] = {str(_intercept_index(generating_function, '--fix-intercept')): 0.0}
         if min_norm_slack:
             inner['min_norm_slack'] = float(min_norm_slack)
+        if min_norm_every_iteration:
+            inner['min_norm_every_iteration'] = True
         if policy_centering:
             inner['policy_centering'] = True
             inner['cap_policy'] = cap_policy
@@ -622,7 +629,7 @@ def _run_train(args):
     test_envs = _apply_training_settings(
         test_envs, initial_coefficients, initial_coefficients_source, args.fix_intercept,
         args.intercept_bound, args.paths_per_state, args.min_norm_slack,
-        args.fix_block, args.policy_centering, args.policy_cap_scenarios, args.cap_policy)
+        args.min_norm_every_iteration, args.fix_block, args.policy_centering, args.policy_cap_scenarios, args.cap_policy)
     if args.name is not None:
         if len(test_envs) != 1:
             raise ValueError(f'--name needs exactly one variant; got {len(test_envs)}')

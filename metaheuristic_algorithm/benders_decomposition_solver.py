@@ -420,6 +420,7 @@ class BendersDecompositionSolver:
               resume_checkpoint_path=None,
               min_norm_action=False,
               min_norm_slack=0.0,
+              min_norm_every_iteration=False,
               purge_after=None,
               purge_slack_tol=1e-6):
         info = {}
@@ -485,7 +486,8 @@ class BendersDecompositionSolver:
                     print(f"Iteration {global_iteration}, action pinned at init_solution")
                 else:
                     action, master_obj, theta_values = self._solve_master_step(
-                        global_iteration, purge_slack_tol, min_norm_action, verbose)
+                        global_iteration, purge_slack_tol, min_norm_action, verbose,
+                        min_norm_every_iteration)
                 if is_min:
                     lower_bound = master_obj
                 else:
@@ -692,7 +694,8 @@ class BendersDecompositionSolver:
         values = np.array([v for (_, v, _) in results], dtype=float)
         return values, self.objective_value(action, values, [w.subproblem_id for w in active_workers])
 
-    def _solve_master_step(self, global_iteration, purge_slack_tol, min_norm_action, verbose):
+    def _solve_master_step(self, global_iteration, purge_slack_tol, min_norm_action, verbose,
+                           min_norm_every_iteration=False):
         start = time.time()
         solved = solve_and_handle_errors(self.master_model, verbose=verbose)
         retry_cold = not solved and self.master_model.Status in (
@@ -732,11 +735,18 @@ class BendersDecompositionSolver:
             self._update_cut_activity(global_iteration, purge_slack_tol)
         master_obj = self.master_model.ObjVal
         at_bound = self._at_bound_mask(action) if min_norm_action else None
-        if min_norm_action and (np.max(np.abs(action)) > 1e6 or at_bound.any()):
+        # The gap stays self-consistent: theta_values comes back from the min-norm solve and the
+        # subproblems are evaluated at the min-norm action, while the guard keeps the master
+        # objective within slack of master_obj.
+        if min_norm_action and (min_norm_every_iteration
+                                or np.max(np.abs(action)) > 1e6 or at_bound.any()):
+            before_sum = float(np.abs(action).sum())
             action, theta_values = self._min_norm_master_action(
                 action, theta_values, verbose=verbose)
-            print(f"Iteration {global_iteration}, min-norm re-solve: coefficients at bound {int(at_bound.sum())} -> "
-                  f"{int(self._at_bound_mask(action).sum())}, max|a| {float(np.abs(action).max()):.6g}")
+            print(f"Iteration {global_iteration}, min-norm re-solve: sum|a| {before_sum:.6g} -> "
+                  f"{float(np.abs(action).sum()):.6g}, max|a| {float(np.abs(action).max()):.6g}, "
+                  f"coefficients at bound {int(at_bound.sum())} -> "
+                  f"{int(self._at_bound_mask(action).sum())}")
         return action, master_obj, theta_values
 
     def _at_bound_mask(self, action, tol=1e-6):

@@ -38,11 +38,11 @@ def weighted_mean_fn(weights):
     return lambda action, values, ids: float(np.asarray(weights)[np.asarray(ids)] @ np.asarray(values))
 
 
-def build_solver(objective='mean', weights=None):
+def build_solver(objective='mean', weights=None, coefficient_bound=5.0):
     master = gp.Model("toy_master")
     master.Params.OutputFlag = 0
     theta = master.addMVar(len(SCENARIO_COSTS), lb=-GRB.INFINITY, ub=1e8, name="theta")
-    coeff = master.addMVar(N_COEFF, lb=-5.0, ub=5.0, name="coeff")
+    coeff = master.addMVar(N_COEFF, lb=-coefficient_bound, ub=coefficient_bound, name="coeff")
     kappa = np.full(len(SCENARIO_COSTS), 1.0 / len(SCENARIO_COSTS)) if weights is None else weights
     master.setObjective(theta @ kappa, GRB.MAXIMIZE)
     master.update()
@@ -205,3 +205,24 @@ def test_min_norm_re_solve_can_run_repeatedly():
     first, _ = solver._min_norm_master_action(np.zeros(N_COEFF), None, slack=0.05, reference_value=reference)
     second, _ = solver._min_norm_master_action(np.zeros(N_COEFF), None, slack=0.01, reference_value=reference)
     assert np.abs(first).sum() <= np.abs(second).sum() + 1e-9
+
+
+def _count_min_norm_calls(solver, **solve_kwargs):
+    calls = []
+    original = solver._min_norm_master_action
+
+    def spy(*args, **kwargs):
+        calls.append(1)
+        return original(*args, **kwargs)
+
+    solver._min_norm_master_action = spy
+    _, info = solver.solve(parallel=False, max_iter=20, min_norm_action=True, **solve_kwargs)
+    return len(calls), info
+
+
+def test_min_norm_every_iteration_fires_on_every_master_solve():
+    # A box wide enough that no action ever pins to it, so only the new switch can fire it.
+    fired, info = _count_min_norm_calls(build_solver('mean', coefficient_bound=1e5),
+                                        min_norm_every_iteration=True)
+    assert info['gap'] < 1e-6
+    assert fired == info['iterations'], (fired, info['iterations'])
