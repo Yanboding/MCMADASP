@@ -497,7 +497,9 @@ def test_train_paths_per_state_flag_and_conflicts():
 
 
 def test_toy_stratified_specs_carry_the_geometric_099_proposal():
-    for scenario_number in (512, 1024):
+    from param_generation.registry import TOY_STRATIFIED_SCENARIO_NUMBERS
+    assert 4096 in TOY_STRATIFIED_SCENARIO_NUMBERS
+    for scenario_number in TOY_STRATIFIED_SCENARIO_NUMBERS:
         with mock.patch.object(cli, 'write_command_file'):
             (record,) = cli.main(['train', f'toy_stratified_099_scenario_{scenario_number}',
                                   '--variants', '0.5', '--dat', 'unused.dat'])

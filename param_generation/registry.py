@@ -39,7 +39,7 @@ def _occupancy_experiment_specs():
     ]
 
 
-TOY_STRATIFIED_SCENARIO_NUMBERS = [512, 1024]
+TOY_STRATIFIED_SCENARIO_NUMBERS = [512, 1024, 4096]
 
 
 def _toy_stratified_experiment_specs():
