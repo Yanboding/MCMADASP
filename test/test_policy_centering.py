@@ -57,44 +57,31 @@ class TestPolicyCentering(unittest.TestCase):
         self.assertAlmostEqual(value_second, value_first + gradient @ (second - first), places=6)
         np.testing.assert_allclose(gradient, gradient_second, rtol=1e-9, atol=1e-9)
 
-    def test_centering_vanishes_at_the_anchor(self):
+    def test_the_aggregate_objective_takes_the_subproblem_values_as_given(self):
+        # The subproblems now report the centered value, so the aggregation must not
+        # subtract the policy term a second time.
         agent = self.make_agent()
         anchor = np.full(agent.generating_function.number_of_coefficients, 0.5)
-        gradients = np.arange(3 * anchor.size, dtype=float).reshape(3, anchor.size)
-        objective_fn = agent.training_objective_fn(
-            'mean', policy_centering=(np.zeros(3), gradients, anchor))
+        objective_fn = agent.training_objective_fn()
         values = np.array([10.0, 20.0, 30.0])
         kappa = np.asarray(agent.sample_path_weights, dtype=float)
-        self.assertAlmostEqual(objective_fn(anchor, values, np.arange(3)), float(kappa @ values))
+        for action in (anchor, anchor + 4.0):
+            self.assertAlmostEqual(objective_fn(action, values, np.arange(3)), float(kappa @ values))
 
-    def test_centering_subtracts_the_policy_gradient_term(self):
+    def test_master_caps_each_scenario_at_its_policy_cost(self):
         agent = self.make_agent()
         size = agent.generating_function.number_of_coefficients
-        anchor = np.zeros(size)
-        gradients = np.tile(np.arange(size, dtype=float), (3, 1))
-        objective_fn = agent.training_objective_fn(
-            'mean', policy_centering=(np.zeros(3), gradients, anchor))
-        values = np.array([10.0, 20.0, 30.0])
-        action = np.full(size, 2.0)
-        kappa = np.asarray(agent.sample_path_weights, dtype=float)
-        expected = float(kappa @ (values - gradients @ action))
-        self.assertAlmostEqual(objective_fn(action, values, np.arange(3)), expected)
-
-    def test_master_adds_one_policy_cut_per_scenario(self):
-        agent = self.make_agent()
-        size = agent.generating_function.number_of_coefficients
-        centering = (np.array([1.0, 2.0, 3.0]), np.zeros((3, size)), np.zeros(size))
+        costs = np.array([1.0, 2.0, 3.0])
+        centering = (costs, np.zeros((3, size)), np.zeros(size))
         master_model, _, theta_vars = agent.train_master_builder_fn(policy_centering=centering)
-        rows = [c for c in master_model.getConstrs() if c.ConstrName.startswith('policy_cut')]
-        self.assertEqual(len(rows), 3)
-        np.testing.assert_allclose(theta_vars.UB, np.full(3, 1e8))
+        np.testing.assert_allclose(theta_vars.UB, costs)
         master_model.dispose()
 
-    def test_master_without_centering_has_no_policy_cut(self):
+    def test_master_without_centering_leaves_the_scenario_cap(self):
         agent = self.make_agent()
-        master_model, _, _ = agent.train_master_builder_fn()
-        self.assertFalse([c for c in master_model.getConstrs()
-                          if c.ConstrName.startswith('policy_cut')])
+        master_model, _, theta_vars = agent.train_master_builder_fn()
+        master_model.update()
+        np.testing.assert_allclose(theta_vars.UB, np.full(3, 1e8))
         master_model.dispose()
 
     def test_centering_triple_predicts_the_policy_cost_at_other_coefficients(self):
@@ -136,6 +123,26 @@ class TestPolicyCentering(unittest.TestCase):
         dispose_agent_models(agent)
         with self.assertRaises(Exception):
             agent.workers[0].model.getVars()
+
+    def test_the_information_relaxation_solves_release_their_model(self):
+        agent = self.make_agent(sample_path_number=1)
+        path = agent.sample_paths[0]
+        args = dict(period_weights=path.survival_weights, terminal=path.terminal)
+        built = []
+        original = agent._information_relaxation_model
+
+        def spy(*call_args, **call_kwargs):
+            result = original(*call_args, **call_kwargs)
+            built.append(result[0])
+            return result
+
+        agent._information_relaxation_model = spy
+        agent.calculate_information_relaxation_cost(self.state, path.arrivals, **args)
+        agent.policy_cost_and_gradient(self.state, path.arrivals, **args)
+        self.assertEqual(len(built), 2)
+        for model in built:
+            with self.assertRaises(Exception):
+                model.getVars()
 
     def test_dispose_agent_models_tolerates_an_agent_without_models(self):
         from decision_maker.approximate_q_agent import dispose_agent_models

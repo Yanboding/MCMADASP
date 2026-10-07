@@ -24,7 +24,6 @@ from param_generation.potential_improvement import generate_potential_improvemen
 from param_generation.registry import EXPERIMENT_SPECS
 from param_generation.training import train_alp_coefficients
 from decision_maker.alp_rg_agent import alp_expected_initial_state
-from decision_maker.approximate_q_agent import NOISE_REMOVALS, TRAINING_OBJECTIVES, WORST_CASE_SCOPES
 from utils import get_uid
 
 
@@ -268,39 +267,10 @@ def build_parser():
              'Benders master (default: unbounded); suffixes policy_id / '
              'experiment_name with _cb<B> so bounded runs train and store separately')
     train.add_argument(
-        '--regularization', choices=['l1', 'l2'], default=None,
-        help='add an L1 or L2 penalty on the coefficient vector to the Benders '
-             'master (requires --regularization-lambda); one command per lambda, '
-             "results land in experiments/results/<experiment>_<type>_<lambda>/")
-    train.add_argument(
-        '--regularization-lambda', default=None, metavar='L1[,L2,...]',
-        help='comma-separated regularization weights (>= 0), one command each')
-    train.add_argument(
-        '--regularization-scale', choices=['feature_std', 'none'], default='feature_std',
-        help='per-coefficient scale inside the penalty: feature_std (default) = '
-             'scenario-weighted std of the build-time penalty features; none = raw')
-    train.add_argument(
         '--expected-init-state', action='store_true',
         help='train from the ALP relevance-weighted expected initial state '
              '(E_u_alpha, E_v_alpha, E_w_alpha) shared by all scenarios; mutually '
              'exclusive with --reset-init-state and --num-init-states')
-    train.add_argument(
-        '--objective', choices=TRAINING_OBJECTIVES, default='mean',
-        help='training criterion over the scenarios: mean (kappa-weighted sample '
-             'average, default) or worst_case (kappa-weighted average over the initial '
-             'states of the minimum pathwise value over that state\'s sample paths)')
-    train.add_argument(
-        '--worst-case-scope', choices=WORST_CASE_SCOPES, default='per_state',
-        help='where the worst_case objective takes its minimum: per_state (default) = '
-             'one minimum per initial state, averaged with the state-relevance weights; '
-             'joint = one minimum across every state and path, over the pathwise value '
-             'minus the value-function approximation at that scenario\'s initial state')
-    train.add_argument(
-        '--worst-case-alpha', type=float, default=None, metavar='ALPHA',
-        help='replace the minimum in the worst_case objective by the lower-tail conditional '
-             'value at risk at level ALPHA in (0, 1]: a level below the smallest scenario '
-             'weight reproduces the minimum, ALPHA = 1 reproduces the mean criterion, and '
-             'anything between trades robustness for the average bound')
     train.add_argument(
         '--fix-block', action='append', default=None, metavar='BLOCK',
         help='pin a whole block of coefficients (intercept, regular, overtime, waitlist) at its '
@@ -326,8 +296,7 @@ def build_parser():
     train.add_argument(
         '--paths-per-state', type=int, default=None, metavar='K',
         help='generate mode only: draw sample_path_number / K initial states and give '
-             'each of them K sample paths (the worst_case objective takes the minimum '
-             'over those K paths); mutually exclusive with the shared-state options')
+             'each of them K sample paths; mutually exclusive with the shared-state options')
     train.add_argument(
         '--init-coefficients', default=None, metavar='JSONL',
         help='warm-start the Benders master at the coefficients of the first record '
@@ -335,15 +304,6 @@ def build_parser():
     train.add_argument(
         '--name', default=None,
         help='experiment name for the generated command (requires a single variant)')
-    train.add_argument(
-        '--noise-removal', choices=NOISE_REMOVALS, default=None,
-        help='remove the zero-mean, action-independent part of the penalty features (the '
-             'constants of the feature expressions) inside every training subproblem: '
-             'mean subtracts their scenario-weighted sample mean, so the sample-average '
-             'objective has no slope along those directions and the reported bound is '
-             'still the original penalty; pathwise subtracts each path own constant, '
-             'which leaves the population problem unchanged and removes that noise '
-             'entirely, and then the reported bound is the modified penalty')
     train.add_argument(
         '--intercept-bound', type=float, default=None, metavar='B',
         help='box |W_0| <= B for the intercept coefficient instead of --coefficient-bound '
@@ -412,6 +372,13 @@ def build_parser():
              'grid (0 and 1 are always included) on the evaluation paths; the '
              'coefficients must already exist under --penalty-dir (no training). '
              'See report_penalty_shrinkage for the overfitting diagnostic.')
+    lower.add_argument(
+        '--alp-coefficients', default=None, metavar='PATH',
+        help='jsonl file holding theta_ALP (e.g. '
+             'experiments/results/toy_alp_train/alp_penalty.jsonl); every record then also '
+             'reports centered_fitted_information_relaxation_cost, '
+             'centered_alp_information_relaxation_cost and center_potential_gap, the '
+             'policy-cost-centered bounds around that anchor')
 
     saure = sub.add_parser('saure-ejor', help='Saure EJOR case-study pair.')
     saure.add_argument('--paths', type=int, default=4096)
@@ -470,53 +437,13 @@ def _draw_fixed_init_states(env_args, init_state_seed, count):
     ]
 
 
-def _regularization_tag(reg_type, lam):
-    return f"{reg_type}_{lam:g}".replace('.', '_').replace('-', 'm')
-
-
-def _parse_regularization(args):
-    reg_type = getattr(args, 'regularization', None)
-    lambdas_text = getattr(args, 'regularization_lambda', None)
-    if reg_type is None and lambdas_text is None:
-        return None, []
-    if reg_type is None or lambdas_text is None:
-        raise ValueError('--regularization and --regularization-lambda must be given together')
-    lambdas = set()
-    for item in lambdas_text.split(','):
-        item = item.strip()
-        if not item:
-            raise ValueError(f"--regularization-lambda has an empty entry: {lambdas_text!r}")
-        try:
-            value = float(item)
-        except ValueError as exc:
-            raise ValueError(f"--regularization-lambda entry is not a number: {item!r}") from exc
-        if value < 0:
-            raise ValueError(f"--regularization-lambda must be >= 0; got {item!r}")
-        lambdas.add(value)
-    return reg_type, sorted(lambdas)
-
-
-def _apply_regularization(test_envs, reg_type, lambdas, scale):
-    updated = {}
-    for (_, experiment_name, mutate_val), variant in test_envs.items():
-        for lam in lambdas:
-            copy_variant = copy.deepcopy(variant)
-            agent_args = copy_variant.setdefault('agent_args', {})
-            agent_args.setdefault('agent_args', {})['regularization'] = {
-                'type': reg_type, 'lambda': float(lam), 'scale': scale}
-            tag = _regularization_tag(reg_type, lam)
-            agent_args['policy_id'] = agent_args.get('policy_id', '') + '_' + tag
-            uid = get_uid({'env_args': copy_variant['env_args'], 'agent_args': agent_args})
-            updated[(uid, f"{experiment_name}_{tag}", mutate_val)] = copy_variant
-    return updated
-
-
 _PENALTY_SPEC_KEYS = (
     'generating_function_spec',
     'policy_generating_function_spec',
     'penalized_lowerbound_generating_function_spec',
     'training_generating_function_spec',
 )
+
 _PENALTY_FUNCTION_TAGS = {'absorption_linear_penalty': 'bh', 'absorption_alp_penalty': 'alp'}
 
 
@@ -606,34 +533,21 @@ def _check_warm_start_inside_box(initial_coefficients, inner, intercept_index, i
                 'raise --coefficient-bound or use --intercept-bound')
 
 
-def _apply_training_objective(test_envs, objective, initial_coefficients, source, fix_intercept=False,
-                              noise_removal=None, intercept_bound=None, paths_per_state=None,
-                              min_norm_slack=0.0, fix_blocks=None,
-                              worst_case_scope='per_state', worst_case_alpha=None,
-                              policy_centering=False, policy_cap_scenarios=64,
-                              cap_policy='penalized_hindsight'):
+def _apply_training_settings(test_envs, initial_coefficients, source, fix_intercept=False,
+                             intercept_bound=None, paths_per_state=None,
+                             min_norm_slack=0.0, fix_blocks=None,
+                             policy_centering=False, policy_cap_scenarios=64,
+                             cap_policy='penalized_hindsight'):
     if fix_intercept and intercept_bound is not None:
         raise ValueError('--fix-intercept and --intercept-bound are mutually exclusive')
     if paths_per_state is not None and paths_per_state < 2:
         raise ValueError(f'--paths-per-state must be at least 2; got {paths_per_state}')
-    if worst_case_scope != 'per_state' and objective != 'worst_case':
-        raise ValueError('--worst-case-scope needs --objective worst_case')
-    if worst_case_alpha is not None and objective != 'worst_case':
-        raise ValueError('--worst-case-alpha needs --objective worst_case')
-    if worst_case_alpha is not None and not 0.0 < worst_case_alpha <= 1.0:
-        raise ValueError(f'--worst-case-alpha must lie in (0, 1]; got {worst_case_alpha}')
     if intercept_bound is not None and not intercept_bound > 0:
         raise ValueError(f'--intercept-bound must be positive; got {intercept_bound}')
     updated = {}
     for (_, experiment_name, mutate_val), variant in test_envs.items():
         variant = copy.deepcopy(variant)
         inner = variant.setdefault('agent_args', {}).setdefault('agent_args', {})
-        if objective != 'mean':
-            inner['training_objective'] = objective
-        if worst_case_scope != 'per_state':
-            inner['worst_case_scope'] = worst_case_scope
-        if worst_case_alpha is not None:
-            inner['worst_case_alpha'] = float(worst_case_alpha)
         if paths_per_state is not None:
             sample_path_number = inner.get('sample_path_number', 256)
             if sample_path_number % paths_per_state:
@@ -676,8 +590,6 @@ def _apply_training_objective(test_envs, objective, initial_coefficients, source
             inner['initial_coefficients_source'] = source
         if fix_intercept:
             inner['fixed_coefficients'] = {str(_intercept_index(generating_function, '--fix-intercept')): 0.0}
-        if noise_removal is not None:
-            inner['noise_removal'] = noise_removal
         if min_norm_slack:
             inner['min_norm_slack'] = float(min_norm_slack)
         if policy_centering:
@@ -699,8 +611,6 @@ def _run_train(args):
             raise ValueError('--policy-centering needs --init-coefficients: they anchor the policy and penalty')
         if args.penalty_function != 'absorption_alp_penalty':
             raise ValueError('--policy-centering needs --penalty-function absorption_alp_penalty')
-        if args.objective != 'mean':
-            raise ValueError('--policy-centering needs --objective mean')
     if args.init_occupancy is not None:
         if not 0.0 < args.init_occupancy <= 1.0:
             raise ValueError(f'--init-occupancy must lie in (0, 1]; got {args.init_occupancy}')
@@ -708,15 +618,11 @@ def _run_train(args):
             raise ValueError('--init-occupancy only takes effect with --reset-init-state')
         test_envs = _apply_init_occupancy(test_envs, args.init_occupancy)
     test_envs = _apply_coefficient_bound(test_envs, args.coefficient_bound)
-    reg_type, lambdas = _parse_regularization(args)
-    if reg_type is not None:
-        test_envs = _apply_regularization(test_envs, reg_type, lambdas, args.regularization_scale)
     initial_coefficients, initial_coefficients_source = _load_initial_coefficients(args.init_coefficients)
-    test_envs = _apply_training_objective(
-        test_envs, args.objective, initial_coefficients, initial_coefficients_source, args.fix_intercept,
-        args.noise_removal, args.intercept_bound, args.paths_per_state, args.min_norm_slack,
-        args.fix_block, args.worst_case_scope, args.worst_case_alpha, args.policy_centering,
-        args.policy_cap_scenarios, args.cap_policy)
+    test_envs = _apply_training_settings(
+        test_envs, initial_coefficients, initial_coefficients_source, args.fix_intercept,
+        args.intercept_bound, args.paths_per_state, args.min_norm_slack,
+        args.fix_block, args.policy_centering, args.policy_cap_scenarios, args.cap_policy)
     if args.name is not None:
         if len(test_envs) != 1:
             raise ValueError(f'--name needs exactly one variant; got {len(test_envs)}')
@@ -847,6 +753,7 @@ def _parse_penalty_ratios(text):
 
 def _run_eval(args, policy_ids):
     penalty_ratios = _parse_penalty_ratios(getattr(args, 'penalty_ratios', None))
+    alp_coefficients, _ = _load_initial_coefficients(getattr(args, 'alp_coefficients', None))
     test_envs = _select_variants(
         build_variation_test_env(EXPERIMENT_SPECS[args.experiment]), args.variants)
     if args.init_occupancy is not None:
@@ -871,6 +778,7 @@ def _run_eval(args, policy_ids):
         evaluation_proposal_spec=(
             json.loads(args.eval_proposal) if args.eval_proposal else None),
         penalty_ratios=penalty_ratios,
+        alp_coefficients=alp_coefficients,
     )
     if args.skip_ir:
         for record in records:

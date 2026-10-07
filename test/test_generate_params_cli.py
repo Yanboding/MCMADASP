@@ -270,50 +270,6 @@ def test_lowerbound_penalty_ratios_flag():
         raise AssertionError('eval must reject --penalty-ratios')
 
 
-def test_train_regularization_flags():
-    captured = []
-
-    def fake_generate(test_envs, **kwargs):
-        captured.append(test_envs)
-        return [{'stub': True}]
-
-    base = ['train', 'case_study_099_scenario_number', '--variants', '256', '--dat', 'unused.dat']
-    with mock.patch.object(cli, 'generate_penalty_coefficient_training_env',
-                           side_effect=fake_generate), \
-         mock.patch.object(cli, 'write_command_file'):
-        cli.main(base + ['--regularization', 'l2', '--regularization-lambda', '1e-2,1e-3'])
-    names = sorted(key[1] for envs in captured for key in envs)
-    assert names == ['case_study_099_scenario_number_l2_0_001',
-                     'case_study_099_scenario_number_l2_0_01'], names
-    for envs in captured:
-        for (uid, name, mutate_val), variant in envs.items():
-            reg = variant['agent_args']['agent_args']['regularization']
-            assert reg['type'] == 'l2' and reg['scale'] == 'feature_std'
-            assert reg['lambda'] in (0.001, 0.01) and mutate_val == 256
-            tag = name[len('case_study_099_scenario_number_'):]
-            assert variant['agent_args']['policy_id'].endswith('_' + tag)
-    assert cli._regularization_tag('l1', 1e-5) == 'l1_1em05'
-
-    for extra in (['--regularization', 'l1'], ['--regularization-lambda', '0.1'],
-                  ['--regularization', 'l1', '--regularization-lambda', '-1']):
-        try:
-            cli.main(base + extra)
-        except ValueError:
-            pass
-        else:
-            raise AssertionError(f'expected ValueError for {extra}')
-
-    captured.clear()
-    with mock.patch.object(cli, 'generate_penalty_coefficient_training_env',
-                           side_effect=fake_generate), \
-         mock.patch.object(cli, 'write_command_file'):
-        cli.main(base)
-    for envs in captured:
-        for (uid, name, mutate_val), variant in envs.items():
-            assert name == 'case_study_099_scenario_number'
-            assert 'regularization' not in variant['agent_args']['agent_args']
-
-
 def test_penalty_function_flag_stamps_specs_and_suffixes_names():
     captured = {}
 
@@ -352,7 +308,7 @@ def test_penalty_function_flag_stamps_specs_and_suffixes_names():
     assert generator.call_args.kwargs['policy_ids'] == ['approx_penalized_hindsight', 'myopic']
 
 
-def test_train_penalty_function_flag_composes_with_regularization():
+def test_train_penalty_function_flag():
     captured = []
 
     def fake_generate(test_envs, **kwargs):
@@ -369,12 +325,6 @@ def test_train_penalty_function_flag_composes_with_regularization():
         for _, variant in envs.items():
             assert variant['agent_args']['agent_args']['training_generating_function_spec'] == {'name': 'absorption_linear_penalty'}
             assert variant['agent_args']['agent_args']['generating_function_spec']['name'] == 'absorption_linear_penalty'
-    captured.clear()
-    with mock.patch.object(cli, 'generate_penalty_coefficient_training_env', side_effect=fake_generate), \
-         mock.patch.object(cli, 'write_command_file'):
-        cli.main(base + ['--regularization', 'l1', '--regularization-lambda', '1e-3'])
-    names = sorted(key[1] for envs in captured for key in envs)
-    assert names == ['base_toy_study_bh_l1_0_001'], names
 
 
 def test_absorption_records_need_a_length_proposal():
@@ -411,7 +361,7 @@ def test_absorption_records_need_a_length_proposal():
     assert all(record['terminal'] is None and record['period_weights'] is None for record in legacy)
 
 
-def test_train_expected_init_state_objective_and_warm_start(tmp_path):
+def test_train_expected_init_state_and_warm_start(tmp_path):
     import json
     coefficients_file = tmp_path / 'alp_penalty.jsonl'
     (variant,) = cli._apply_penalty_function(
@@ -428,7 +378,7 @@ def test_train_expected_init_state_objective_and_warm_start(tmp_path):
 
     with mock.patch.object(cli, 'generate_penalty_coefficient_training_env', side_effect=fake_generate), \
          mock.patch.object(cli, 'write_command_file'):
-        cli.main(['train', 'base_toy_study', '--expected-init-state', '--objective', 'worst_case',
+        cli.main(['train', 'base_toy_study', '--expected-init-state',
                   '--penalty-function', 'absorption_alp_penalty', '--init-coefficients', str(coefficients_file),
                   '--name', 'toy_minmax', '--dat', 'unused.dat'])
     ((key, init_state, variant),) = captured
@@ -437,7 +387,6 @@ def test_train_expected_init_state_objective_and_warm_start(tmp_path):
     assert regular[-1] == 0 and overtime[-1] == 0
     assert any(value % 1 != 0 for value in [*regular, *overtime, *waitlist])
     inner = variant['agent_args']['agent_args']
-    assert inner['training_objective'] == 'worst_case'
     assert inner['initial_coefficients'] == coefficients
     assert inner['initial_coefficients_source'] == {'file': str(coefficients_file), 'uid': 'abc'}
     for flags in (['--expected-init-state', '--reset-init-state'], ['--expected-init-state', '--num-init-states', '2']):
@@ -447,16 +396,6 @@ def test_train_expected_init_state_objective_and_warm_start(tmp_path):
             assert 'mutually exclusive' in str(exc)
         else:
             raise AssertionError('conflicting init-state flags must be rejected')
-
-
-def test_train_objective_changes_uid_and_defaults_to_mean():
-    with mock.patch.object(cli, 'write_command_file'):
-        (mean_record,) = cli.main(['train', 'base_toy_study', '--dat', 'unused.dat'])
-        (min_record,) = cli.main(['train', 'base_toy_study', '--objective', 'worst_case', '--dat', 'unused.dat'])
-    assert 'training_objective' not in mean_record['agent_args']['agent_args']
-    assert min_record['agent_args']['agent_args']['training_objective'] == 'worst_case'
-    assert mean_record['uid'] != min_record['uid']
-    assert mean_record['init_state_mode'] == 'generate'
 
 
 def test_train_fix_intercept_flag_pins_coefficient_zero():
@@ -530,30 +469,20 @@ if __name__ == '__main__':
     test_train_expands_init_states_and_path_seeds()
     test_variants_filter_selects_mutate_vals()
     test_lowerbound_penalty_ratios_flag()
-    test_train_regularization_flags()
     test_penalty_function_flag_stamps_specs_and_suffixes_names()
-    test_train_penalty_function_flag_composes_with_regularization()
+    test_train_penalty_function_flag()
     test_absorption_records_need_a_length_proposal()
     print('All generate_params CLI tests passed.')
     test_train_expected_init_state_objective_and_warm_start(__import__('pathlib').Path(tempfile.mkdtemp()))
     test_train_objective_changes_uid_and_defaults_to_mean()
     test_train_fix_intercept_flag_pins_coefficient_zero()
     test_train_fix_intercept_and_bad_init_coefficients_are_rejected(__import__('pathlib').Path(tempfile.mkdtemp()))
-    test_train_noise_removal_flag_changes_uid()
     test_train_intercept_bound_flag_and_conflicts(__import__('pathlib').Path(tempfile.mkdtemp()))
-
-
-def test_train_worst_case_objective_is_accepted():
-    with mock.patch.object(cli, 'write_command_file'):
-        (record,) = cli.main(['train', 'base_toy_study', '--penalty-function', 'absorption_alp_penalty',
-                              '--objective', 'worst_case', '--dat', 'unused.dat'])
-    assert record['agent_args']['agent_args']['training_objective'] == 'worst_case'
-    assert record['init_state_mode'] == 'generate'
 
 
 def test_train_paths_per_state_flag_and_conflicts():
     with mock.patch.object(cli, 'write_command_file'):
-        (record,) = cli.main(['train', 'base_toy_study', '--objective', 'worst_case', '--paths-per-state', '2', '--dat', 'unused.dat'])
+        (record,) = cli.main(['train', 'base_toy_study', '--paths-per-state', '2', '--dat', 'unused.dat'])
     assert record['agent_args']['agent_args']['paths_per_state'] == 2
     assert record['init_state_mode'] == 'generate' and record['sample_path_number'] % 2 == 0
     for flags in (['--paths-per-state', '3'], ['--paths-per-state', '1'],
@@ -565,22 +494,6 @@ def test_train_paths_per_state_flag_and_conflicts():
             pass
         else:
             raise AssertionError(f'{flags} must be rejected')
-
-
-def test_train_worst_case_scope_flag():
-    with mock.patch.object(cli, 'write_command_file'):
-        (per_state,) = cli.main(['train', 'base_toy_study', '--objective', 'worst_case', '--paths-per-state', '2', '--dat', 'unused.dat'])
-        (joint,) = cli.main(['train', 'base_toy_study', '--objective', 'worst_case', '--worst-case-scope', 'joint', '--dat', 'unused.dat'])
-    assert per_state['agent_args']['agent_args'].get('worst_case_scope') is None
-    assert joint['agent_args']['agent_args']['worst_case_scope'] == 'joint'
-    assert per_state['uid'] != joint['uid']
-    try:
-        with mock.patch.object(cli, 'write_command_file'):
-            cli.main(['train', 'base_toy_study', '--worst-case-scope', 'joint', '--dat', 'unused.dat'])
-    except ValueError:
-        pass
-    else:
-        raise AssertionError('--worst-case-scope needs --objective worst_case')
 
 
 def test_toy_stratified_specs_carry_the_geometric_099_proposal():
@@ -595,17 +508,6 @@ def test_toy_stratified_specs_carry_the_geometric_099_proposal():
             'type': 'stratified_geometric', 'discount_factor_proposal': 0.99,
             'num_strata': scenario_number // 2}
         assert record['init_state_mode'] == 'generate'
-
-
-def test_train_noise_removal_flag_changes_uid():
-    with mock.patch.object(cli, 'write_command_file'):
-        (plain,) = cli.main(['train', 'base_toy_study', '--dat', 'unused.dat'])
-        (mean,) = cli.main(['train', 'base_toy_study', '--noise-removal', 'mean', '--dat', 'unused.dat'])
-        (pathwise,) = cli.main(['train', 'base_toy_study', '--noise-removal', 'pathwise', '--dat', 'unused.dat'])
-    assert 'noise_removal' not in plain['agent_args']['agent_args']
-    assert mean['agent_args']['agent_args']['noise_removal'] == 'mean'
-    assert pathwise['agent_args']['agent_args']['noise_removal'] == 'pathwise'
-    assert len({plain['uid'], mean['uid'], pathwise['uid']}) == 3
 
 
 def test_train_fix_block_pins_the_named_blocks_at_the_warm_start(tmp_path):

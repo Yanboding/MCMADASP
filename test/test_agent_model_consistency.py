@@ -128,17 +128,14 @@ class TestAgentModelConsistency(unittest.TestCase):
                                               agent.regular_first_overtime(self.state, returned[0]))
                 self.assertNotIn('raw_objective', info)
 
-    def test_retraining_uses_new_regularizer_bounds_and_initial_state(self):
+    def test_retraining_uses_new_bounds_and_initial_state(self):
         agent = self.make_agent()
-        agent.benders_decomposition_train(init_state=self.state, coefficient_bound=100.,
-                                         regularization={'type': 'l2', 'lambda': 0.001}, parallel=False)
+        agent.benders_decomposition_train(init_state=self.state, coefficient_bound=100., parallel=False)
         state = (*self.state[:2], np.array([50., 50.]))
-        options = dict(init_state=state, coefficient_bound=0., parallel=False,
-                       regularization={'type': 'l1', 'lambda': 1e6, 'scale': 'none'})
-        observed, coefficients, info = agent.benders_decomposition_train(**options)
+        options = dict(init_state=state, coefficient_bound=0., parallel=False)
+        observed, coefficients, _ = agent.benders_decomposition_train(**options)
         expected, _, _ = self.make_agent().benders_decomposition_train(**options)
         np.testing.assert_allclose(coefficients, 0., atol=1e-8)
-        np.testing.assert_array_equal(info['regularization']['scale'], 1.)
         self.assertFalse(agent.coefficient_model.master_model.IsQP)
         self.assertAlmostEqual(observed, expected, places=6)
 
@@ -156,8 +153,7 @@ class TestAgentModelConsistency(unittest.TestCase):
             agent.solve(self.state, 1, parallel=False)
 
     def test_training_checkpoint_resumes_only_the_same_models(self):
-        options = dict(init_state=self.state, coefficient_bound=5., parallel=False,
-                       regularization={'type': 'l2', 'lambda': 0.001, 'scale': 'none'})
+        options = dict(init_state=self.state, coefficient_bound=5., parallel=False)
         with tempfile.TemporaryDirectory() as tmp:
             checkpoint = str(Path(tmp) / 'training.pickle')
             agent = self.make_agent()
@@ -166,16 +162,14 @@ class TestAgentModelConsistency(unittest.TestCase):
                 **options, resume_checkpoint_path=checkpoint)
             self.assertAlmostEqual(resumed, expected, places=6)
             for changes in ({'init_state': (*self.state[:2], np.array([50., 50.]))},
-                            {'coefficient_bound': 0.},
-                            {'regularization': {'type': 'l1', 'lambda': 1e6, 'scale': 'none'}}):
+                            {'coefficient_bound': 0.}):
                 with self.subTest(changes=changes):
                     with self.assertRaisesRegex(ValueError, 'checkpoint.*incompatible'):
                         agent.benders_decomposition_train(
                             **{**options, **changes}, resume_checkpoint_path=checkpoint)
 
     def test_unidentified_training_checkpoint_is_rejected(self):
-        options = dict(init_state=self.state, coefficient_bound=5., parallel=False,
-                       regularization={'type': 'l2', 'lambda': 0.001, 'scale': 'none'})
+        options = dict(init_state=self.state, coefficient_bound=5., parallel=False)
         with tempfile.TemporaryDirectory() as tmp:
             checkpoint = str(Path(tmp) / 'training.pickle')
             agent = self.make_agent()

@@ -17,6 +17,7 @@ from scipy.stats import geom
 
 from experiments.experiment_config import get_config_by_type
 from importance_sampling import build_proposal
+from importance_sampling.sample_path import SamplePath
 from utils import iter_to_tuple, get_uid, safe_open, RunningStats, encode, decode, get_solution_value, acquire_grb_env, read_lines_with_pattern
 from decision_maker import MyopicAgent, ALPRowGenerationAgent, ApproxQAgent
 from decision_maker.approximate_q_agent import dispose_agent_models
@@ -517,6 +518,41 @@ def _order_policy_specs_for_warm_up(policy_specs, warm_up_policy_id):
     return warm_up_specs + [spec for spec in policy_specs if spec['policy_id'] != warm_up_policy_id]
 
 
+def _centered_relaxation_fields(env, generating_function_spec, alp_coefficients, init_state,
+                                sample_path_tail, period_weights, terminal, uncentered_fitted,
+                                grb_env, grb_sub_envs):
+    # The centering term vanishes at the anchor, so the centered ALP value is the plain ALP
+    # relaxation value. Neither uses remove_path_noise: centering already removes the policy's
+    # sampled penalty variation, and stacking both would subtract the action-independent part
+    # under two different coefficients.
+    anchor = np.asarray(alp_coefficients, dtype=float)
+    fitted = np.asarray(generating_function_spec.get('coefficients', anchor), dtype=float)
+    alp_spec = dict(generating_function_spec)
+    alp_spec['coefficients'] = anchor.tolist()
+    centering_agent = ApproxQAgent(
+        env, discount_factor=env.discount_factor,
+        current_decision_var_type='integer', future_decision_var_type='continuous',
+        generating_function=_build_generating_function(env=env, spec=alp_spec),
+        penalty_ratio=1.0, grb_env=grb_env, subproblem_grb_envs=grb_sub_envs)
+    alp_agent = ALPRowGenerationAgent(env, discount_factor=env.discount_factor,
+                                      coefficients=anchor, grb_env=grb_env)
+    path = SamplePath(sample_path_tail, terminal,
+                      None if period_weights is None else period_weights[:len(sample_path_tail) + 1], None)
+    actions = centering_agent._rollout_actions(alp_agent, init_state, path)
+    _, gradient = centering_agent.policy_cost_and_gradient(
+        init_state, sample_path_tail, period_weights=period_weights, terminal=terminal,
+        fixed_actions=actions)
+    centered_alp = float(information_relaxation_bounds(
+        env, alp_spec, [1.0], init_state, sample_path_tail, period_weights, terminal,
+        grb_env, grb_sub_envs)[1.0])
+    centered_fitted = float(uncentered_fitted) - float(gradient @ (fitted - anchor))
+    return {
+        'centered_fitted_information_relaxation_cost': centered_fitted,
+        'centered_alp_information_relaxation_cost': centered_alp,
+        'center_potential_gap': centered_fitted - centered_alp,
+    }
+
+
 def evaluate_policy_costs_with_information_relaxation(uid,
                                                       experiment_name,
                                                       mutate_val,
@@ -538,6 +574,7 @@ def evaluate_policy_costs_with_information_relaxation(uid,
                                                       penalty_ratios=None,
                                                       coefficients_source=None,
                                                       remove_path_noise=False,
+                                                      alp_coefficients=None,
                                                       terminal=None):
     init_state = tuple(np.array(item) for item in init_state)
     sample_path = np.array(sample_path)
@@ -565,11 +602,20 @@ def evaluate_policy_costs_with_information_relaxation(uid,
         bounds = None if skip_information_relaxation else information_relaxation_bounds(
             env, generating_function_spec, ratios, init_state, sample_path_tail, period_weights, terminal,
             grb_env, grb_sub_envs, remove_path_noise)
+        centered = {}
+        if alp_coefficients is not None and bounds is not None:
+            if remove_path_noise:
+                raise ValueError('alp_coefficients and remove_path_noise cannot be combined: '
+                                 'policy cost centering already removes the sampled penalty')
+            centered = _centered_relaxation_fields(
+                env, generating_function_spec, alp_coefficients, init_state, sample_path_tail,
+                period_weights, terminal, bounds[1.0], grb_env, grb_sub_envs)
         record = {
             **base_record,
             'policy_id': 'information_relaxation_only',
             'agent_name': 'information_relaxation_only',
             **information_relaxation_cost_fields(bounds),
+            **centered,
             'gap_to_zero_information_relaxation': 0.0,
             'gap_to_penalized_information_relaxation': 0.0,
             'warmup_state': tuple(np.array(item).tolist() for item in init_state),
@@ -824,23 +870,15 @@ def train_penalty_coefficients_for_env(
     inner['generating_function'] = generating_function
     _set_sample_path_proposal(inner)
     inner['sample_path_number'] = sample_path_number
-    regularization = inner.pop('regularization', None)
     coefficient_bound = inner.pop('coefficient_bound', None)
     coefficient_bound = GRB.INFINITY if coefficient_bound is None else float(coefficient_bound)
-    training_objective = inner.pop('training_objective', 'mean')
     initial_coefficients = inner.pop('initial_coefficients', None)
     initial_coefficients_source = inner.pop('initial_coefficients_source', None)
     fixed_coefficients = inner.pop('fixed_coefficients', None)
-    noise_removal = inner.pop('noise_removal', None)
     min_norm_slack = float(inner.pop('min_norm_slack', 0.0) or 0.0)
-    if noise_removal is None and inner.pop('center_noise', False):
-        noise_removal = 'mean'
     coefficient_bound_overrides = inner.pop('coefficient_bound_overrides', None)
     paths_per_state = inner.pop('paths_per_state', None)
     paths_per_state = None if paths_per_state is None else int(paths_per_state)
-    worst_case_scope = inner.pop('worst_case_scope', None) or 'per_state'
-    worst_case_alpha = inner.pop('worst_case_alpha', None)
-    worst_case_alpha = None if worst_case_alpha is None else float(worst_case_alpha)
     policy_centering_enabled = bool(inner.pop('policy_centering', False))
     policy_cap_scenarios = int(inner.pop('policy_cap_scenarios', 64) or 64)
     cap_policy = inner.pop('cap_policy', None) or 'penalized_hindsight'
@@ -891,20 +929,12 @@ def train_penalty_coefficients_for_env(
         if initial_coefficients is None:
             raise ValueError(
                 'policy_centering needs initial_coefficients: they anchor both the penalty and the policy')
-        if noise_removal is not None:
-            raise ValueError(
-                f"policy_centering replaces noise removal: it already subtracts the policy's sampled penalty "
-                f"variation, so --noise-removal {noise_removal!r} would subtract the shared part twice")
         cap_start = time.time()
         if training_generating_function_spec['name'] != 'absorption_alp_penalty':
             raise ValueError(
                 "policy_centering needs --penalty-function absorption_alp_penalty: ALPRowGenerationAgent reads the "
                 f"coefficient vector as [W_0, U, V, W], which does not match "
                 f"{training_generating_function_spec['name']!r}")
-        if training_objective != 'mean':
-            raise ValueError(
-                f"policy_centering needs the mean objective: {training_objective!r} subtracts the initial-state value "
-                "from each scenario, so absolute policy costs would cap a residual")
         if cap_policy == 'alp':
             policy_agent = ALPRowGenerationAgent(
                 env, discount_factor=env.discount_factor, grb_env=grb_env,
@@ -958,15 +988,10 @@ def train_penalty_coefficients_for_env(
         init_state=resolved_init_state,
         checkpoint_path=checkpoint_path,
         resume_checkpoint_path=checkpoint_path,
-        regularization=regularization,
-        training_objective=training_objective,
         initial_coefficients=initial_coefficients,
         fixed_coefficients=_by_coefficient_index(fixed_coefficients),
-        noise_removal=noise_removal,
         min_norm_slack=min_norm_slack,
         coefficient_bound_overrides=_by_coefficient_index(coefficient_bound_overrides),
-        worst_case_scope=worst_case_scope,
-        worst_case_alpha=worst_case_alpha,
         policy_centering=policy_centering,
     )
     elapsed = time.time() - start
@@ -987,30 +1012,20 @@ def train_penalty_coefficients_for_env(
         'tight_penalized_lower_bound': float(obj),
         'coefficients': coefficients_jsonable,
         'training_time_seconds': elapsed,
-        'regularization': regularization,
         'coefficient_bound': None if coefficient_bound == GRB.INFINITY else coefficient_bound,
         'coefficient_bound_overrides': coefficient_bound_overrides,
-        'training_objective': training_objective,
         'policy_centering': policy_centering_enabled,
         'cap_policy': cap_policy if policy_centering_enabled else None,
         'policy_cap_scenarios': policy_cap_scenarios if policy_centering_enabled and cap_policy != 'alp' else None,
         'policy_centering_info': info.get('policy_centering'),
         'paths_per_state': paths_per_state,
-        'noise_removal': noise_removal,
         'min_norm': info.get('min_norm'),
-        'worst_case_scope': worst_case_scope if training_objective == 'worst_case' else None,
-        'worst_case_alpha': worst_case_alpha,
         'initial_coefficients_source': initial_coefficients_source,
         'fixed_coefficients': fixed_coefficients,
         'initial_in_sample': info.get('initial_in_sample'),
         'improvement': info.get('improvement'),
         'in_sample': info['in_sample'],
     }
-    if regularization is not None:
-        # ``obj`` is the unregularized SAA value at theta*; keep the solver's
-        # regularized objective alongside for reference.
-        record['regularized_objective'] = float(info['regularization']['regularized_objective'])
-
     with open(output_file, 'a') as f:
         f.write(json.dumps(record) + '\n')
     return record

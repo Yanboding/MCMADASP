@@ -21,7 +21,7 @@ def _capture_train(argv):
     return captured
 
 
-def test_flag_tags_variant_and_composes_with_regularization():
+def test_flag_tags_variant():
     base = ['train', 'case_study_099_occupancy_l01_scenario_256', '--variants', '0.5', '--reset-init-state',
             '--dat', 'unused.dat']
     for envs in _capture_train(base + ['--coefficient-bound', '1000']):
@@ -30,11 +30,6 @@ def test_flag_tags_variant_and_composes_with_regularization():
             assert variant['agent_args']['policy_id'].endswith('_cb1000')
             assert variant['agent_args']['agent_args']['coefficient_bound'] == 1000.0
             assert mutate_val == 0.5
-    names = sorted(key[1] for envs in _capture_train(
-        base + ['--coefficient-bound', '1000', '--regularization', 'l1', '--regularization-lambda', '0.01,0.001'])
-        for key in envs)
-    assert names == ['case_study_099_occupancy_l01_scenario_256_cb1000_l1_0_001',
-                     'case_study_099_occupancy_l01_scenario_256_cb1000_l1_0_01'], names
     for envs in _capture_train(base):
         for (uid, name, _), variant in envs.items():
             assert name == 'case_study_099_occupancy_l01_scenario_256'
@@ -82,7 +77,7 @@ def test_runner_enforces_the_bound_and_records_it():
 
 
 if __name__ == '__main__':
-    test_flag_tags_variant_and_composes_with_regularization()
+    test_flag_tags_variant()
     test_new_grid_points_are_registered()
     test_runner_enforces_the_bound_and_records_it()
     print('All coefficient-bound tests passed.')
