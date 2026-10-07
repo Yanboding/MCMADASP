@@ -17,6 +17,20 @@ from metaheuristic_algorithm import CutPool, SubproblemWorker, BendersDecomposit
 from metaheuristic_algorithm.benders_decomposition_solver import objective_confidence_interval
 from utils import solve_and_handle_errors, flatten, set_link_rhs, acquire_grb_env, encode, get_status_string, is_single_init_state
 
+def dispose_agent_models(agent):
+    if agent is None:
+        return
+    for worker in getattr(agent, 'workers', None) or []:
+        model = getattr(worker, 'model', None)
+        if model is not None:
+            model.dispose()
+    coefficient_model = getattr(agent, 'coefficient_model', None)
+    if coefficient_model is not None:
+        coefficient_model.master_model.dispose()
+        for worker in coefficient_model.workers:
+            worker.model.dispose()
+
+
 TRAINING_OBJECTIVES = ('mean', 'worst_case')
 WORST_CASE_SCOPES = ('per_state', 'joint')
 NOISE_REMOVALS = ('mean', 'pathwise')
@@ -197,42 +211,31 @@ class ApproxQAgent(InfiniteRTAgent):
             cost = cost + W[s + 1] * self.env.cost_fn(state_var, action_var, is_var=True)
         return cost, Phi, state_var, action_var
 
-    def policy_cost_caps(self, policy_agent, init_state=None, coefficients=None, noise_removal=None,
-                         verbose=False):
-        if noise_removal is not None and noise_removal not in NOISE_REMOVALS:
-            raise ValueError(f"noise_removal must be one of {NOISE_REMOVALS} or None; got {noise_removal!r}")
-        if noise_removal is not None and self.penalty_ratio != 1:
+    def policy_cost_centering(self, policy_agent, init_state=None, coefficients=None, verbose=False):
+        if self.penalty_ratio != 1:
             raise ValueError(
-                "noise-removed caps need penalty_ratio 1: the training subproblem shifts its feature link by the "
-                f"raw constants while the relaxation scales them by penalty_ratio {self.penalty_ratio}")
+                "policy centering needs penalty_ratio 1: the policy cut scales the penalty by penalty_ratio "
+                f"{self.penalty_ratio} while the training subproblem does not, so the cut would be invalid")
         generating_function = self._require_generating_function()
         restore = np.array(generating_function.coefficient_vector(), dtype=float)
-        if coefficients is not None:
-            generating_function.set_coefficients(np.asarray(coefficients, dtype=float))
+        anchor = restore if coefficients is None else np.asarray(coefficients, dtype=float)
+        generating_function.set_coefficients(anchor)
         init_state_for = self._resolve_init_state_per_scenario(init_state)
-        caps = np.empty(self.sample_path_number, dtype=float)
-        shifts = np.zeros(self.sample_path_number, dtype=float)
+        costs = np.empty(self.sample_path_number, dtype=float)
+        gradients = np.empty((self.sample_path_number, anchor.size), dtype=float)
         try:
             for sid in range(self.sample_path_number):
                 path = self.sample_paths[sid]
                 state = init_state_for(sid)
                 actions = self._rollout_actions(policy_agent, state, path)
-                relaxation_args = dict(period_weights=path.survival_weights, terminal=path.terminal,
-                                       fixed_actions=actions, verbose=verbose)
-                caps[sid] = self.calculate_information_relaxation_cost(
-                    state, path.arrivals, **relaxation_args)
-                if noise_removal is not None:
-                    shifts[sid] = caps[sid] - self.calculate_information_relaxation_cost(
-                        state, path.arrivals, remove_path_noise=True, **relaxation_args)
+                costs[sid], gradients[sid] = self.policy_cost_and_gradient(
+                    state, path.arrivals, period_weights=path.survival_weights,
+                    terminal=path.terminal, fixed_actions=actions, verbose=verbose)
                 if verbose:
-                    print(f'policy cost cap for scenario {sid}: {caps[sid]:.6f}')
+                    print(f'policy cost for scenario {sid}: {costs[sid]:.6f}')
         finally:
             generating_function.set_coefficients(restore)
-        if noise_removal == 'pathwise':
-            return caps - shifts
-        if noise_removal == 'mean':
-            return caps - np.asarray(self.sample_path_weights, dtype=float) @ shifts
-        return caps
+        return costs, gradients, anchor
 
     def _rollout_actions(self, policy_agent, state, path):
         current, _ = self.env.reset(init_state=state, t=1, new_arrivals=path.arrivals)
@@ -246,7 +249,7 @@ class ApproxQAgent(InfiniteRTAgent):
     def train_master_builder_fn(self, coefficient_bound=GRB.INFINITY, regularization=None,
                                 regularization_scale=None, objective='mean', fixed_coefficients=None,
                                 coefficient_bound_overrides=None, xi_blocks=None, relevance_state=None,
-                                worst_case_alpha=None, policy_cost_caps=None):
+                                worst_case_alpha=None, policy_centering=None):
         if objective not in TRAINING_OBJECTIVES:
             raise ValueError(f"training objective must be one of {TRAINING_OBJECTIVES}; got {objective!r}")
         master_model = gp.Model(f"SAA_train_Master", env=self.grb_env)
@@ -256,8 +259,6 @@ class ApproxQAgent(InfiniteRTAgent):
         master_model.setParam("FeasibilityTol", 1e-9)
         master_model.setParam("OptimalityTol", 1e-9)
         theta_vars = master_model.addMVar(shape=self.sample_path_number, vtype=GRB.CONTINUOUS, lb=-GRB.INFINITY, ub=1e8, name="theta")
-        if policy_cost_caps is not None:
-            theta_vars.UB = policy_cost_caps
         z = theta_vars @ self.sample_path_weights
         coefficient_vars = self.generating_function.get_coefficient_var(model=master_model, coefficient_bound=coefficient_bound)
         if objective == 'worst_case':
@@ -282,6 +283,17 @@ class ApproxQAgent(InfiniteRTAgent):
             coefficient_vars[index].lb = value
             coefficient_vars[index].ub = value
         master_objective = z
+        if policy_centering is not None:
+            # The policy cost is affine in theta with gradient g_pi, so the cut bounds the
+            # scenario value at every candidate, and the centering term has zero expectation.
+            costs, gradients, anchor = policy_centering
+            offset = coefficient_vars - np.asarray(anchor, dtype=float)
+            master_model.addConstr(
+                theta_vars <= np.asarray(costs, dtype=float) + np.asarray(gradients, dtype=float) @ offset,
+                name="policy_cut")
+            z = z - (np.asarray(self.sample_path_weights, dtype=float)
+                     @ np.asarray(gradients, dtype=float)) @ offset
+            master_objective = z
         if regularization is not None:
             kind = str(regularization.get('type', '')).lower()
             lam = float(regularization.get('lambda', 0.0))
@@ -525,10 +537,13 @@ class ApproxQAgent(InfiniteRTAgent):
                                     coefficient_bound_overrides=None,
                                     worst_case_scope='per_state',
                                     worst_case_alpha=None,
-                                    policy_cost_caps=None):
+                                    policy_centering=None):
         overall_start = time.time()
         fixed_coefficients = dict(fixed_coefficients or {})
-        policy_cost_caps = None if policy_cost_caps is None else np.asarray(policy_cost_caps, dtype=float)
+        if policy_centering is not None and noise_removal is not None:
+            raise ValueError(
+                "policy_centering replaces noise removal: it already subtracts the policy's sampled penalty "
+                f"variation, so --noise-removal {noise_removal!r} would subtract the shared part twice")
         if noise_removal is not None and noise_removal not in NOISE_REMOVALS:
             raise ValueError(f"noise_removal must be one of {NOISE_REMOVALS} or None; got {noise_removal!r}")
         self.noise_removal = noise_removal
@@ -580,7 +595,7 @@ class ApproxQAgent(InfiniteRTAgent):
             objective=training_objective, fixed_coefficients=fixed_coefficients,
             coefficient_bound_overrides=coefficient_bound_overrides, xi_blocks=xi_blocks,
             relevance_state=relevance_state, worst_case_alpha=worst_case_alpha,
-            policy_cost_caps=policy_cost_caps)
+            policy_centering=policy_centering)
         master_time = time.time() - master_start
         if verbose:
             print(f"[TIMING] Master model building: {master_time:.2f}s")
@@ -589,13 +604,12 @@ class ApproxQAgent(InfiniteRTAgent):
             master_model=master_model, workers=workers, imm_cost=None,
             theta_vars=theta_vars, action_vars=coefficient_vars,
             objective_fn=self.training_objective_fn(training_objective, xi_blocks, relevance_state,
-                                                    worst_case_alpha, policy_cost_caps),
+                                                    worst_case_alpha, policy_centering),
             report_fn=self.training_report_fn())
         self._prepare_training_checkpoint(checkpoint_path, resume_checkpoint_path)
-        in_sample_objectives = {'mean': self.training_objective_fn('mean', relevance_state=relevance_state)}
-        if policy_cost_caps is not None:
-            in_sample_objectives['capped_mean'] = self.training_objective_fn(
-                'mean', relevance_state=relevance_state, policy_cost_caps=policy_cost_caps)
+        # 'mean' is not listed: _aggregate_in_sample always overwrites it with the
+        # kappa-weighted mean of the pathwise costs.
+        in_sample_objectives = {}
         if xi_blocks is not None:
             in_sample_objectives['worst_case'] = self.training_objective_fn(
                 'worst_case', xi_blocks, relevance_state, worst_case_alpha)
@@ -608,6 +622,9 @@ class ApproxQAgent(InfiniteRTAgent):
                     in_sample_objectives, scenario_states)
             else:
                 initial_in_sample = self._in_sample_values(init_solution, parallel, in_sample_objectives, scenario_states)
+            if policy_centering is not None:
+                self._add_centered_level(initial_in_sample['in_sample'], initial_in_sample['raw_values'],
+                                         init_solution, policy_centering)
         solver_start = time.time()
         # A regularizer already makes the optimum bounded/unique, so the
         # min-norm tie-break is unnecessary (and its objective guard would turn
@@ -645,18 +662,31 @@ class ApproxQAgent(InfiniteRTAgent):
         final = self._in_sample_values(self.coefficients, parallel, in_sample_objectives, scenario_states)
         final_costs = final.pop('costs')
         final_raw_values = final.pop('raw_values')
+        if policy_centering is not None:
+            self._add_centered_level(final['in_sample'], final_raw_values, self.coefficients, policy_centering)
         info.update(final)
         if initial_in_sample is not None:
-            mean, half_width = objective_confidence_interval(
-                final_costs - initial_in_sample['costs'],
-                weights=np.asarray(self.sample_path_weights, dtype=float),
-                strata=np.asarray(self.sample_path_strata))
+            kappa = np.asarray(self.sample_path_weights, dtype=float)
+            strata = np.asarray(self.sample_path_strata)
+            difference = final_costs - initial_in_sample['costs']
+            if policy_centering is not None:
+                # Report the paired difference of the integrand actually optimized. Both
+                # integrands carry the same -g.(theta - anchor) term, so the anchor cancels
+                # and what remains is the step from the baseline paired against.
+                _, gradients, _ = policy_centering
+                offset = np.asarray(self.coefficients, dtype=float) - np.asarray(init_solution, dtype=float)
+                difference = difference - np.asarray(gradients, dtype=float) @ offset
+            mean, half_width = objective_confidence_interval(difference, weights=kappa, strata=strata)
             info['improvement'] = {'mean': mean, 'half_width': half_width}
-        if policy_cost_caps is not None:
-            info['policy_cost_cap'] = {
-                'caps': policy_cost_caps.tolist(),
-                'binding_scenarios': int(np.sum(final_raw_values >= policy_cost_caps - 1e-9)),
-                'capped_in_sample_mean': info['in_sample'].get('capped_mean'),
+        if policy_centering is not None:
+            costs, gradients, anchor = policy_centering
+            offset = np.asarray(self.coefficients, dtype=float) - np.asarray(anchor, dtype=float)
+            policy_values = np.asarray(costs, dtype=float) + np.asarray(gradients, dtype=float) @ offset
+            info['policy_centering'] = {
+                'policy_costs_at_anchor': np.asarray(costs, dtype=float).tolist(),
+                'binding_scenarios': int(np.sum(final_raw_values >= policy_values - 1e-9)),
+                'mean_policy_relaxation_gap': float(
+                    np.asarray(self.sample_path_weights, dtype=float) @ (policy_values - final_raw_values)),
             }
         objective = info['in_sample']['mean']
         if regularization is not None:
@@ -681,20 +711,24 @@ class ApproxQAgent(InfiniteRTAgent):
         return objective_fn
 
     def training_objective_fn(self, training_objective, xi_blocks=None, relevance_state=None,
-                              worst_case_alpha=None, policy_cost_caps=None):
+                              worst_case_alpha=None, policy_centering=None):
         if training_objective not in TRAINING_OBJECTIVES:
             raise ValueError(f"training objective must be one of {TRAINING_OBJECTIVES}; got {training_objective!r}")
         kappa = np.asarray(self.sample_path_weights, dtype=float)
         generating_function = self.generating_function
-        caps = None if policy_cost_caps is None else np.asarray(policy_cost_caps, dtype=float)
+        centering = None
+        if policy_centering is not None:
+            _, gradients, anchor = policy_centering
+            centering = (np.asarray(gradients, dtype=float), np.asarray(anchor, dtype=float))
         if training_objective == 'worst_case':
             blocks = np.asarray(xi_blocks, dtype=int).reshape(-1)
 
         def objective_fn(action, values, scenario_ids):
             ids = np.asarray(scenario_ids, dtype=int)
             values = np.asarray(values, dtype=float)
-            if caps is not None:
-                values = np.minimum(values, caps[ids])
+            if centering is not None:
+                gradients, anchor = centering
+                values = values - gradients[ids] @ (np.asarray(action, dtype=float) - anchor)
             if training_objective == 'worst_case':
                 # Weigh each block by the scenarios actually supplied, so a partial
                 # evaluation aggregates what it has instead of the whole block.
@@ -754,6 +788,20 @@ class ApproxQAgent(InfiniteRTAgent):
     def _in_sample_values(self, coefficients, parallel, objectives, scenario_states=None):
         values, _ = self.coefficient_model.evaluate_action(np.asarray(coefficients, dtype=float), parallel=parallel)
         return self._aggregate_in_sample(values, coefficients, objectives, scenario_states)
+
+    def _add_centered_level(self, summary, raw_values, coefficients, policy_centering):
+        # The centered level is measured from the anchor, unlike the paired difference where
+        # the anchor cancels. It estimates the same bound with the policy control variate.
+        _, gradients, anchor = policy_centering
+        offset = np.asarray(coefficients, dtype=float) - np.asarray(anchor, dtype=float)
+        centered = np.asarray(raw_values, dtype=float) - np.asarray(gradients, dtype=float) @ offset
+        mean, half_width = objective_confidence_interval(
+            centered, weights=np.asarray(self.sample_path_weights, dtype=float),
+            strata=np.asarray(self.sample_path_strata))
+        summary['centered_mean'] = mean
+        summary['centered_half_width'] = half_width
+        summary['centered_std'] = float(np.sqrt(max(
+            np.asarray(self.sample_path_weights, dtype=float) @ (centered - mean) ** 2, 0.0)))
 
     def _aggregate_in_sample(self, values, coefficients, objectives, scenario_states=None):
         coefficients = np.asarray(coefficients, dtype=float)
@@ -822,6 +870,16 @@ class ApproxQAgent(InfiniteRTAgent):
         # dropping them leaves the minimiser and the expected bound untouched.
         constants = np.array([Phi[i].item().getConstant() for i in range(theta.shape[0])], dtype=float)
         return model.ObjVal - self.penalty_ratio * float(theta @ constants)
+
+    def policy_cost_and_gradient(self, state, sample_path, period_weights=None, terminal=None,
+                                 fixed_actions=None, verbose=False):
+        model, theta, Phi, _ = self._information_relaxation_model(
+            state, sample_path, period_weights, terminal, None, fixed_actions)
+        if not solve_and_handle_errors(model, verbose=verbose):
+            raise RuntimeError("policy cost model not solved to optimality")
+        gradient = self.penalty_ratio * np.array(
+            [Phi[i].item().getValue() for i in range(theta.shape[0])], dtype=float)
+        return float(model.ObjVal), gradient
 
     def information_relaxation_schedule(self, state, sample_path, period_weights, terminal, start_actions=None,
                                         verbose=False):

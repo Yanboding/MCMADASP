@@ -19,6 +19,7 @@ from experiments.experiment_config import get_config_by_type
 from importance_sampling import build_proposal
 from utils import iter_to_tuple, get_uid, safe_open, RunningStats, encode, decode, get_solution_value, acquire_grb_env, read_lines_with_pattern
 from decision_maker import MyopicAgent, ALPRowGenerationAgent, ApproxQAgent
+from decision_maker.approximate_q_agent import dispose_agent_models
 from policy_evaluator import PolicyEvaluator
 from policy_evaluator.potential_improvement import arrival_informed_schedule_cost
 from generating_function import AbsorptionALPPenaltyFunction, AbsorptionLinearPenaltyFunction, LinearPenaltyFunction
@@ -840,7 +841,7 @@ def train_penalty_coefficients_for_env(
     worst_case_scope = inner.pop('worst_case_scope', None) or 'per_state'
     worst_case_alpha = inner.pop('worst_case_alpha', None)
     worst_case_alpha = None if worst_case_alpha is None else float(worst_case_alpha)
-    policy_cost_cap = bool(inner.pop('policy_cost_cap', False))
+    policy_centering_enabled = bool(inner.pop('policy_centering', False))
     policy_cap_scenarios = int(inner.pop('policy_cap_scenarios', 64) or 64)
     cap_policy = inner.pop('cap_policy', None) or 'penalized_hindsight'
     if cap_policy not in ('alp', 'penalized_hindsight'):
@@ -881,19 +882,28 @@ def train_penalty_coefficients_for_env(
     # paths (the pinned arrival/env seeds in env_args make them identical).
     env.reset_random_seeds()
 
-    policy_cost_caps = None
-    if policy_cost_cap:
+    checkpoint_dir = os.path.join(
+        'experiments', 'results', experiment_name, 'benders_checkpoints'
+    )
+    os.makedirs(checkpoint_dir, exist_ok=True)
+    policy_centering = None
+    if policy_centering_enabled:
         if initial_coefficients is None:
-            raise ValueError('policy_cost_cap needs initial_coefficients: the caps are evaluated under the ALP policy')
+            raise ValueError(
+                'policy_centering needs initial_coefficients: they anchor both the penalty and the policy')
+        if noise_removal is not None:
+            raise ValueError(
+                f"policy_centering replaces noise removal: it already subtracts the policy's sampled penalty "
+                f"variation, so --noise-removal {noise_removal!r} would subtract the shared part twice")
         cap_start = time.time()
         if training_generating_function_spec['name'] != 'absorption_alp_penalty':
             raise ValueError(
-                "policy_cost_cap needs --penalty-function absorption_alp_penalty: ALPRowGenerationAgent reads the "
+                "policy_centering needs --penalty-function absorption_alp_penalty: ALPRowGenerationAgent reads the "
                 f"coefficient vector as [W_0, U, V, W], which does not match "
                 f"{training_generating_function_spec['name']!r}")
         if training_objective != 'mean':
             raise ValueError(
-                f"policy_cost_cap needs the mean objective: {training_objective!r} subtracts the initial-state value "
+                f"policy_centering needs the mean objective: {training_objective!r} subtracts the initial-state value "
                 "from each scenario, so absolute policy costs would cap a residual")
         if cap_policy == 'alp':
             policy_agent = ALPRowGenerationAgent(
@@ -902,28 +912,44 @@ def train_penalty_coefficients_for_env(
         else:
             policy_args = dict(inner)
             policy_args['sample_path_number'] = int(policy_cap_scenarios)
+            # inner already holds a built proposal object, so rebuild from the raw spec:
+            # the training proposal stratifies for sample_path_number paths and the policy
+            # draws far fewer, which cannot fill that many strata.
+            raw_proposal = ((agent_args or {}).get('agent_args') or {}).get('sample_path_length_proposal')
+            if isinstance(raw_proposal, dict) and 'num_strata' in raw_proposal:
+                raw_proposal = dict(raw_proposal)
+                raw_proposal['num_strata'] = max(1, min(int(raw_proposal['num_strata']),
+                                                        int(policy_cap_scenarios) // 2))
+                policy_args['sample_path_proposal'] = build_proposal(raw_proposal)
             policy_args['generating_function'] = _build_generating_function(
                 env=env, spec=dict(training_generating_function_spec), coefficients=initial_coefficients)
             policy_args['solver_name'] = 'approx_penalized_hindsight'
             policy_agent = ApproxQAgent(
                 env=env, discount_factor=env.discount_factor, grb_env=grb_env,
                 subproblem_grb_envs=grb_sub_envs, **policy_args)
-        policy_cost_caps = agent.policy_cost_caps(
-            policy_agent, init_state=resolved_init_state, coefficients=initial_coefficients,
-            noise_removal=noise_removal)
+        cache_path = os.path.join(checkpoint_dir, f'{uid}-policy-centering.npz')
+        cached = np.load(cache_path) if os.path.exists(cache_path) else None
+        if cached is not None and cached['costs'].shape == (sample_path_number,):
+            policy_centering = (cached['costs'], cached['gradients'], cached['anchor'])
+            print(f"  reusing cached policy centering from {cache_path}")
+        else:
+            policy_centering = agent.policy_cost_centering(
+                policy_agent, init_state=resolved_init_state, coefficients=initial_coefficients)
+            np.savez(cache_path, costs=policy_centering[0], gradients=policy_centering[1],
+                     anchor=policy_centering[2])
+        # The policy models are dead weight once the centering data exists; releasing them
+        # keeps them out of memory while training holds its own subproblems.
+        dispose_agent_models(policy_agent)
         env.reset_random_seeds()
-        print(f"  policy cost caps computed in {time.time() - cap_start:.1f}s: "
-              f"mean {float(np.mean(policy_cost_caps)):.4f}, min {float(np.min(policy_cost_caps)):.4f}")
+        costs = policy_centering[0]
+        print(f"  policy centering ready in {time.time() - cap_start:.1f}s: "
+              f"mean policy cost {float(np.mean(costs)):.4f}, min {float(np.min(costs)):.4f}")
 
     print(
         f"Training penalty coefficients for uid={uid}, mode={init_state_mode}, "
         f"sample_path_number={sample_path_number}"
     )
     start = time.time()
-    checkpoint_dir = os.path.join(
-        'experiments', 'results', experiment_name, 'benders_checkpoints'
-    )
-    os.makedirs(checkpoint_dir, exist_ok=True)
     checkpoint_path = os.path.join(
         checkpoint_dir, f'{uid}-penalty-checkpoint.pickle'
     )
@@ -941,7 +967,7 @@ def train_penalty_coefficients_for_env(
         coefficient_bound_overrides=_by_coefficient_index(coefficient_bound_overrides),
         worst_case_scope=worst_case_scope,
         worst_case_alpha=worst_case_alpha,
-        policy_cost_caps=policy_cost_caps,
+        policy_centering=policy_centering,
     )
     elapsed = time.time() - start
     print(f"  solver={solver_choice}, obj={obj}, elapsed={elapsed:.1f}s")
@@ -965,10 +991,10 @@ def train_penalty_coefficients_for_env(
         'coefficient_bound': None if coefficient_bound == GRB.INFINITY else coefficient_bound,
         'coefficient_bound_overrides': coefficient_bound_overrides,
         'training_objective': training_objective,
-        'policy_cost_cap': policy_cost_cap,
-        'cap_policy': cap_policy if policy_cost_cap else None,
-        'policy_cap_scenarios': policy_cap_scenarios if policy_cost_cap and cap_policy != 'alp' else None,
-        'policy_cost_cap_info': info.get('policy_cost_cap'),
+        'policy_centering': policy_centering_enabled,
+        'cap_policy': cap_policy if policy_centering_enabled else None,
+        'policy_cap_scenarios': policy_cap_scenarios if policy_centering_enabled and cap_policy != 'alp' else None,
+        'policy_centering_info': info.get('policy_centering'),
         'paths_per_state': paths_per_state,
         'noise_removal': noise_removal,
         'min_norm': info.get('min_norm'),
