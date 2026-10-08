@@ -219,7 +219,8 @@ class ApproxQAgent(InfiniteRTAgent):
         return actions
 
     def train_master_builder_fn(self, coefficient_bound=GRB.INFINITY, fixed_coefficients=None,
-                                coefficient_bound_overrides=None, policy_centering=None):
+                                coefficient_bound_overrides=None, policy_centering=None,
+                                alp_value_floors=None):
         master_model = gp.Model(f"SAA_train_Master", env=self.grb_env)
         # FORCES DUAL SIMPLEX (Crucial for Benders warm-starting)
         master_model.setParam("Method", 1)
@@ -243,6 +244,20 @@ class ApproxQAgent(InfiniteRTAgent):
             costs, _, _ = policy_centering
             master_model.update()
             theta_vars.UB = np.minimum(theta_vars.UB, np.asarray(costs, dtype=float))
+        if alp_value_floors is not None:
+            floors = np.asarray(alp_value_floors, dtype=float)
+            if policy_centering is None:
+                # xi is the plain penalized IR cost, so the floor is a variable bound.
+                master_model.update()
+                theta_vars.LB = np.maximum(theta_vars.LB, floors)
+            else:
+                # xi carries the control variate already subtracted; add it back once so the
+                # floor still applies to the raw pathwise value.
+                _, gradients, anchor = policy_centering
+                offset = coefficient_vars - np.asarray(anchor, dtype=float)
+                master_model.addConstr(
+                    theta_vars + np.asarray(gradients, dtype=float) @ offset >= floors,
+                    name="alp_value_floor")
         master_model.setObjective(z, GRB.MAXIMIZE)
         # Gurobi finalizes objective sense on update; do this before Benders reads ModelSense.
         master_model.update()
@@ -328,6 +343,22 @@ class ApproxQAgent(InfiniteRTAgent):
             )
 
         return sub_model, None, objective_builder_fn, cut_gradient_fn
+
+    def alp_value_floors(self, init_state, coefficients):
+        # The fixed pathwise floor hat V_{theta*_ALP}(s(omega)); constant for the whole fit, so
+        # distinct initial states are evaluated once and shared states reuse the value.
+        generating_function = self._require_generating_function()
+        coefficients = np.asarray(coefficients, dtype=float)
+        init_state_for = self._resolve_init_state_per_scenario(init_state)
+        cache = {}
+        floors = np.empty(self.sample_path_number, dtype=float)
+        for sid in range(self.sample_path_number):
+            state = init_state_for(sid)
+            key = tuple(np.concatenate([np.asarray(c, dtype=float).reshape(-1) for c in state]).tolist())
+            if key not in cache:
+                cache[key] = float(generating_function.approximate_value(state, coefficients))
+            floors[sid] = cache[key]
+        return floors
 
     def _resolve_init_state_per_scenario(self, init_state):
         is_per_scenario_list = (
@@ -429,7 +460,9 @@ class ApproxQAgent(InfiniteRTAgent):
                                     min_norm_slack=0.0,
                                     min_norm_every_iteration=False,
                                     coefficient_bound_overrides=None,
-                                    policy_centering=None):
+                                    policy_centering=None,
+                                    alp_value_floor=False,
+                                    alp_value_floor_tolerance=1e-6):
         overall_start = time.time()
         fixed_coefficients = dict(fixed_coefficients or {})
         self._training_policy_centering = policy_centering
@@ -446,6 +479,10 @@ class ApproxQAgent(InfiniteRTAgent):
             self.coefficient_model = None
         self.subproblem_initial_cuts.clear()
         self.subproblem_cold_solve_seconds.clear()
+        if alp_value_floor and initial_coefficients is None:
+            raise ValueError(
+                'alp_value_floor needs initial_coefficients: they are the theta*_ALP the pathwise '
+                'floor hat V is evaluated at')
         init_solution = None
         if initial_coefficients is not None:
             init_solution = np.array(initial_coefficients, dtype=float)
@@ -459,11 +496,15 @@ class ApproxQAgent(InfiniteRTAgent):
         if verbose:
             print(f"[TIMING] Workers building (parallel={parallel}): {workers_time:.2f}s")
 
+        # The floor is hat V at theta*_ALP itself, so it uses initial_coefficients rather than
+        # init_solution, which carries any fixed_coefficients overrides applied to the warm start.
+        value_floors = (self.alp_value_floors(init_state, initial_coefficients)
+                        if alp_value_floor else None)
         master_start = time.time()
         master_model, coefficient_vars, theta_vars = self.train_master_builder_fn(
             coefficient_bound, fixed_coefficients=fixed_coefficients,
             coefficient_bound_overrides=coefficient_bound_overrides,
-            policy_centering=policy_centering)
+            policy_centering=policy_centering, alp_value_floors=value_floors)
         master_time = time.time() - master_start
         if verbose:
             print(f"[TIMING] Master model building: {master_time:.2f}s")
@@ -536,6 +577,26 @@ class ApproxQAgent(InfiniteRTAgent):
                 difference = difference - np.asarray(gradients, dtype=float) @ offset
             mean, half_width = objective_confidence_interval(difference, weights=kappa, strata=strata)
             info['improvement'] = {'mean': mean, 'half_width': half_width}
+        if value_floors is not None:
+            # final_costs is the raw pathwise penalized IR cost at theta_hat. The training
+            # subproblems are LPs solved to optimality, so each optimal value is itself a valid
+            # global bound and the check below is conclusive; an integer formulation would need
+            # the solver's bound instead of the incumbent.
+            margin = final_costs - value_floors
+            violations = int(np.sum(margin < -alp_value_floor_tolerance))
+            info['alp_value_floor'] = {
+                'tolerance': float(alp_value_floor_tolerance),
+                'min_margin': float(margin.min()),
+                'violations': violations,
+                'verified': violations == 0,
+                'floors': np.asarray(value_floors, dtype=float).tolist(),
+            }
+            if violations:
+                print(f"ALP value floor NOT verified: {violations} of {self.sample_path_number} "
+                      f"training paths below their floor (worst margin {margin.min():.6g})")
+            else:
+                print(f"ALP value floor verified on all {self.sample_path_number} training paths "
+                      f"(smallest margin {margin.min():.6g})")
         if policy_centering is not None:
             costs, gradients, anchor = policy_centering
             offset = np.asarray(self.coefficients, dtype=float) - np.asarray(anchor, dtype=float)

@@ -877,6 +877,8 @@ def train_penalty_coefficients_for_env(
     fixed_coefficients = inner.pop('fixed_coefficients', None)
     min_norm_slack = float(inner.pop('min_norm_slack', 0.0) or 0.0)
     min_norm_every_iteration = bool(inner.pop('min_norm_every_iteration', False))
+    alp_value_floor = bool(inner.pop('alp_value_floor', False))
+    alp_value_floor_tolerance = float(inner.pop('alp_value_floor_tolerance', 1e-6) or 1e-6)
     coefficient_bound_overrides = inner.pop('coefficient_bound_overrides', None)
     paths_per_state = inner.pop('paths_per_state', None)
     paths_per_state = None if paths_per_state is None else int(paths_per_state)
@@ -993,6 +995,8 @@ def train_penalty_coefficients_for_env(
         fixed_coefficients=_by_coefficient_index(fixed_coefficients),
         min_norm_slack=min_norm_slack,
         min_norm_every_iteration=min_norm_every_iteration,
+        alp_value_floor=alp_value_floor,
+        alp_value_floor_tolerance=alp_value_floor_tolerance,
         coefficient_bound_overrides=_by_coefficient_index(coefficient_bound_overrides),
         policy_centering=policy_centering,
     )
@@ -1023,6 +1027,8 @@ def train_penalty_coefficients_for_env(
         'paths_per_state': paths_per_state,
         'min_norm': info.get('min_norm'),
         'min_norm_every_iteration': min_norm_every_iteration,
+        'alp_value_floor': alp_value_floor,
+        'alp_value_floor_info': info.get('alp_value_floor'),
         'initial_coefficients_source': initial_coefficients_source,
         'fixed_coefficients': fixed_coefficients,
         'initial_in_sample': info.get('initial_in_sample'),

@@ -34,6 +34,10 @@ class AbsorptionALPPenaltyFunction(GeneratingFunction):
         names = ['intercept', 'regular', 'overtime', 'waitlist']
         return {name: list(range(offsets[index], offsets[index + 1])) for index, name in enumerate(names)}
 
+    def state_features(self, state):
+        regular, overtime, waitlist = (np.asarray(component, dtype=float).reshape(-1) for component in state)
+        return np.concatenate(([1.0], regular, overtime, waitlist))
+
     def get_coefficients(self, solution):
         if not isinstance(solution, gp.MVar):
             solution = np.asarray(solution, dtype=float)
