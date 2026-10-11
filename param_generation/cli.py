@@ -354,6 +354,12 @@ def build_parser():
                  'with this fraction of total (regular + overtime) capacity '
                  'booked on every day (mutate_initial_state_congestion); '
                  "default: the experiment's own reset initial state")
+        sub_parser.add_argument(
+            '--alp-coefficients', default=None, metavar='PATH',
+            help='jsonl file holding theta*_ALP (e.g. '
+                 'experiments/results/toy_alp_train/alp_penalty.jsonl). On lowerbound it adds the '
+                 'policy-cost-centered fields around that anchor; on eval it is also the penalty '
+                 'of the alp_penalized_hindsight policy')
         sub_parser.add_argument('--skip-ir', action='store_true',
                                 help='mark records skip_information_relaxation')
         sub_parser.add_argument(
@@ -388,13 +394,6 @@ def build_parser():
              'grid (0 and 1 are always included) on the evaluation paths; the '
              'coefficients must already exist under --penalty-dir (no training). '
              'See report_penalty_shrinkage for the overfitting diagnostic.')
-    lower.add_argument(
-        '--alp-coefficients', default=None, metavar='PATH',
-        help='jsonl file holding theta_ALP (e.g. '
-             'experiments/results/toy_alp_train/alp_penalty.jsonl); every record then also '
-             'reports centered_fitted_information_relaxation_cost, '
-             'centered_alp_information_relaxation_cost and center_potential_gap, the '
-             'policy-cost-centered bounds around that anchor')
 
     saure = sub.add_parser('saure-ejor', help='Saure EJOR case-study pair.')
     saure.add_argument('--paths', type=int, default=4096)

@@ -128,6 +128,11 @@ def generate_test_paths_and_init_state(test_envs, test_sample_path_num, warm_up_
         penalty_ratios = normalize_penalty_ratios(penalty_ratios)
         if not is_require_penalty_coefficients:
             raise ValueError('penalty_ratios requires is_require_penalty_coefficients=True.')
+    if 'alp_penalized_hindsight' in policy_id_set and alp_coefficients is None:
+        raise ValueError(
+            "alp_penalized_hindsight is the penalized hindsight policy at theta*_ALP, so it needs "
+            "alp_coefficients (--alp-coefficients); po_penalized_hindsight is the one that reads "
+            "the fitted coefficients from --penalty-dir.")
     if alp_coefficients is not None and len(test_envs) > 1:
         raise ValueError(
             "alp_coefficients anchors the policy cost centering of a single environment, so it "
@@ -244,6 +249,28 @@ def generate_test_paths_and_init_state(test_envs, test_sample_path_num, warm_up_
                     policy_id='approx_hindsight',
                     solver_name='approx_penalized_hindsight',
                     penalty_coefficients=_zero_penalty_coefficients(env, policy_generating_function_spec),
+                    generating_function_spec=policy_generating_function_spec,
+                )
+            )
+
+        if 'alp_penalized_hindsight' in policy_id_set:
+            policies.append(
+                _build_penalty_policy(
+                    base_agent_args=variant['agent_args'],
+                    policy_id='alp_penalized_hindsight',
+                    solver_name='approx_penalized_hindsight',
+                    penalty_coefficients=[float(value) for value in alp_coefficients],
+                    generating_function_spec=policy_generating_function_spec,
+                )
+            )
+
+        if 'po_penalized_hindsight' in policy_id_set:
+            policies.append(
+                _build_penalty_policy(
+                    base_agent_args=variant['agent_args'],
+                    policy_id='po_penalized_hindsight',
+                    solver_name='approx_penalized_hindsight',
+                    penalty_coefficients=direct_coefficients,
                     generating_function_spec=policy_generating_function_spec,
                 )
             )
