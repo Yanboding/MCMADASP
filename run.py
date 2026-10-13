@@ -526,6 +526,35 @@ def _order_policy_specs_for_warm_up(policy_specs, warm_up_policy_id):
     return warm_up_specs + [spec for spec in policy_specs if spec['policy_id'] != warm_up_policy_id]
 
 
+def _alp_policy_cost_and_gradient(env, alp_spec, init_state, sample_path_tail, period_weights, terminal,
+                                  grb_env, grb_sub_envs):
+    centering_agent = ApproxQAgent(
+        env, discount_factor=env.discount_factor,
+        current_decision_var_type='integer', future_decision_var_type='continuous',
+        generating_function=_build_generating_function(env=env, spec=alp_spec),
+        penalty_ratio=1.0, grb_env=grb_env, subproblem_grb_envs=grb_sub_envs)
+    alp_agent = ALPRowGenerationAgent(env, discount_factor=env.discount_factor,
+                                      coefficients=np.asarray(alp_spec['coefficients'], dtype=float), grb_env=grb_env)
+    path = SamplePath(sample_path_tail, terminal,
+                      None if period_weights is None else period_weights[:len(sample_path_tail) + 1], None)
+    actions = centering_agent._rollout_actions(alp_agent, init_state, path)
+    return centering_agent.policy_cost_and_gradient(
+        init_state, sample_path_tail, period_weights=period_weights, terminal=terminal,
+        fixed_actions=actions)
+
+
+def _policy_centered_relaxation_fields(env, generating_function_spec, init_state, sample_path_tail,
+                                       period_weights, terminal, penalized, grb_env, grb_sub_envs):
+    penalized_policy_cost, gradient = _alp_policy_cost_and_gradient(
+        env, generating_function_spec, init_state, sample_path_tail, period_weights, terminal,
+        grb_env, grb_sub_envs)
+    policy_penalty = float(gradient @ np.asarray(generating_function_spec['coefficients'], dtype=float))
+    return {
+        'policy_centered_information_relaxation_cost': float(penalized) - policy_penalty,
+        'alp_policy_cost': float(penalized_policy_cost) - policy_penalty,
+    }
+
+
 def _centered_relaxation_fields(env, generating_function_spec, alp_coefficients, init_state,
                                 sample_path_tail, period_weights, terminal, uncentered_fitted,
                                 grb_env, grb_sub_envs):
@@ -537,19 +566,8 @@ def _centered_relaxation_fields(env, generating_function_spec, alp_coefficients,
     fitted = np.asarray(generating_function_spec.get('coefficients', anchor), dtype=float)
     alp_spec = dict(generating_function_spec)
     alp_spec['coefficients'] = anchor.tolist()
-    centering_agent = ApproxQAgent(
-        env, discount_factor=env.discount_factor,
-        current_decision_var_type='integer', future_decision_var_type='continuous',
-        generating_function=_build_generating_function(env=env, spec=alp_spec),
-        penalty_ratio=1.0, grb_env=grb_env, subproblem_grb_envs=grb_sub_envs)
-    alp_agent = ALPRowGenerationAgent(env, discount_factor=env.discount_factor,
-                                      coefficients=anchor, grb_env=grb_env)
-    path = SamplePath(sample_path_tail, terminal,
-                      None if period_weights is None else period_weights[:len(sample_path_tail) + 1], None)
-    actions = centering_agent._rollout_actions(alp_agent, init_state, path)
-    _, gradient = centering_agent.policy_cost_and_gradient(
-        init_state, sample_path_tail, period_weights=period_weights, terminal=terminal,
-        fixed_actions=actions)
+    _, gradient = _alp_policy_cost_and_gradient(
+        env, alp_spec, init_state, sample_path_tail, period_weights, terminal, grb_env, grb_sub_envs)
     centered_alp = float(information_relaxation_bounds(
         env, alp_spec, [1.0], init_state, sample_path_tail, period_weights, terminal,
         grb_env, grb_sub_envs)[1.0])
@@ -583,6 +601,7 @@ def evaluate_policy_costs_with_information_relaxation(uid,
                                                       coefficients_source=None,
                                                       remove_path_noise=False,
                                                       alp_coefficients=None,
+                                                      policy_centering=False,
                                                       terminal=None):
     init_state = tuple(np.array(item) for item in init_state)
     sample_path = np.array(sample_path)
@@ -605,12 +624,22 @@ def evaluate_policy_costs_with_information_relaxation(uid,
         'path_stratum': path_stratum,
     }
     ordered_policy_specs = _order_policy_specs_for_warm_up(policy_specs, warm_up_policy_id)
+    if policy_centering and ordered_policy_specs:
+        raise ValueError('policy_centering centers the information-relaxation-only bound; the record '
+                         f'also evaluates policies {[spec["policy_id"] for spec in ordered_policy_specs]}')
 
     if not ordered_policy_specs:
         bounds = None if skip_information_relaxation else information_relaxation_bounds(
             env, generating_function_spec, ratios, init_state, sample_path_tail, period_weights, terminal,
             grb_env, grb_sub_envs, remove_path_noise)
         centered = {}
+        if policy_centering and bounds is not None:
+            if remove_path_noise:
+                raise ValueError('policy_centering and remove_path_noise cannot be combined: the policy '
+                                 'centering already removes the action-independent penalty terms')
+            centered = _policy_centered_relaxation_fields(
+                env, generating_function_spec, init_state, sample_path_tail, period_weights, terminal,
+                bounds[1.0], grb_env, grb_sub_envs)
         if alp_coefficients is not None and bounds is not None:
             if remove_path_noise:
                 raise ValueError('alp_coefficients and remove_path_noise cannot be combined: '

@@ -394,6 +394,11 @@ def build_parser():
              '--penalty-function absorption_alp_penalty, excludes --penalty-dir and --penalty-ratios, and '
              f'suffixes policy_id / experiment_name with _{_ALP_PENALTY_TAG}')
     lower.add_argument(
+        '--policy-centering', action='store_true',
+        help='with --alp-penalty: also record the policy-centered penalized bound, i.e. subtract from each '
+             'path the penalty that the ALP policy at theta*_ALP accrues along its own actions (a zero-mean '
+             'control variate), and that policy\'s cost on the path')
+    lower.add_argument(
         '--penalty-ratios', default=None, metavar='T1,T2,...',
         help='evaluate the information-relaxation lower bound with the trained '
              'penalty coefficients scaled by each factor t of this comma-separated '
@@ -836,6 +841,7 @@ def _run_eval(args, policy_ids):
         penalty_ratios=penalty_ratios,
         alp_coefficients=alp_coefficients,
         alp_penalty=alp_penalty,
+        policy_centering=getattr(args, 'policy_centering', False),
     )
     if args.skip_ir:
         for record in records:

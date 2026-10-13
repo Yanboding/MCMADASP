@@ -82,3 +82,54 @@ def test_alp_penalty_without_a_length_proposal_fails_before_fitting():
             cli.main(['lowerbound', 'toy_lb_occupancy', '--variants', '0.5', '--paths', '4',
                       '--penalty-function', 'absorption_alp_penalty', '--alp-penalty',
                       '--dat', os.path.join(tmp, 'table.dat')])
+
+
+def test_policy_centering_needs_the_alp_penalty():
+    with pytest.raises(ValueError, match='needs alp_penalty'):
+        generate_test_paths_and_init_state(
+            test_envs=cli.alp_penalty_test_envs('toy_lb_occupancy'), test_sample_path_num=4, policy_centering=True)
+
+
+def _centered_record(uid, zero, penalized, centered, approximate):
+    return {
+        'uid': uid, 'group_id': 'g', 'experiment_name': 'x', 'mutate_val': 0.5, 'warm_up_periods': 0,
+        'path_weight': None, 'path_stratum': None, 'policy_id': 'information_relaxation_only',
+        'agent_name': 'information_relaxation_only', 'zero_information_relaxation_cost': zero,
+        'penalized_information_relaxation_cost': penalized, 'gap_to_zero_information_relaxation': 0.0,
+        'gap_to_penalized_information_relaxation': 0.0, 'approximate_value_at_init_state': approximate,
+        'policy_centered_information_relaxation_cost': centered, 'alp_policy_cost': centered + 100.0,
+    }
+
+
+def _summarize(records):
+    import json
+    from experiments import get_config_by_type
+    from experiments.new_result_aggregration import SimulateEvaluationResult
+    with tempfile.TemporaryDirectory() as tmp:
+        with open(os.path.join(tmp, '1.jsonl'), 'w') as handle:
+            handle.writelines(json.dumps(record) + '\n' for record in records)
+        ser = SimulateEvaluationResult(tmp, '[0-9]*.jsonl', get_config_by_type('toy').env, is_reuse=False)
+    return ser.policy_centered_comparison('g', 0.5, 0.95)
+
+
+def test_policy_centered_comparison_is_paired_and_matches_numpy():
+    import numpy as np
+    from scipy import stats
+    rng = np.random.default_rng(0)
+    n = 300
+    zero = rng.normal(4000, 900, n)
+    centered = zero + rng.normal(300, 40, n)
+    row = _summarize([_centered_record(f'u{i}', zero[i], zero[i] + 5.0, centered[i], 2500.0) for i in range(n)])
+    t = stats.t.ppf(0.975, n - 1)
+    assert row['policy_centered_n'] == n
+    assert np.isclose(row['policy_centered_mean'], centered.mean())
+    assert np.isclose(row['policy_centered_improvement_mean'], (centered - zero).mean())
+    assert np.isclose(row['policy_centered_improvement_half_window'], t * (centered - zero).std(ddof=1) / np.sqrt(n))
+    assert np.isclose(row['policy_centered_minus_approximate_mean'], centered.mean() - 2500.0)
+    assert np.isclose(row['policy_centered_minus_approximate_half_window'], t * centered.std(ddof=1) / np.sqrt(n))
+    assert np.isclose(row['alp_policy_cost_mean'], centered.mean() + 100.0)
+
+
+def test_policy_centered_relative_to_a_nonpositive_approximation_is_withheld():
+    row = _summarize([_centered_record(f'u{i}', 1000.0 + i, 1100.0 + i, 1200.0 + i, -187.0) for i in range(4)])
+    assert row['policy_centered_relative_to_approximate_pct'] is None

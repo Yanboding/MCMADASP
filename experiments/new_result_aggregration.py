@@ -142,6 +142,8 @@ class SimulateEvaluationResult:
         'ir_stratum_by_uid',
         'ir_cost_by_ratio_by_uid',
         'ir_approximate_value_by_uid',
+        'ir_policy_centered_by_uid',
+        'ir_alp_policy_cost_by_uid',
         'ir_coefficients_source_by_uid',
         'ir_coefficients_source',
         'booking_day_counts',
@@ -179,6 +181,8 @@ class SimulateEvaluationResult:
         self.ir_stratum_by_uid = defaultdict(dict)
         self.ir_cost_by_ratio_by_uid = defaultdict(dict)
         self.ir_approximate_value_by_uid = defaultdict(dict)
+        self.ir_policy_centered_by_uid = defaultdict(dict)
+        self.ir_alp_policy_cost_by_uid = defaultdict(dict)
         self.ir_coefficients_source_by_uid = defaultdict(dict)
         self.ir_coefficients_source = {}
         self.booking_day_counts = {}
@@ -277,6 +281,9 @@ class SimulateEvaluationResult:
                 self.ir_stratum_by_uid[key][uid] = path_stratum
                 if data.get('approximate_value_at_init_state') is not None:
                     self.ir_approximate_value_by_uid[key][uid] = data['approximate_value_at_init_state']
+                if data.get('policy_centered_information_relaxation_cost') is not None:
+                    self.ir_policy_centered_by_uid[key][uid] = data['policy_centered_information_relaxation_cost']
+                    self.ir_alp_policy_cost_by_uid[key][uid] = data['alp_policy_cost']
                 by_ratio = data.get('information_relaxation_cost_by_penalty_ratio')
                 if by_ratio:
                     self.ir_cost_by_ratio_by_uid[key][uid] = {
@@ -582,6 +589,51 @@ Type
         if approximate_stats.mean > 0:
             row['relative_to_approximate_pct'], row['relative_to_approximate_half_window_pct'] = (
                 _stratified_relative_improvement(diff, approximate, weights, strata, confidence))
+        return row
+
+    def policy_centered_comparison(self, group_id, mutate_val, confidence=0.95):
+        key = (group_id, mutate_val)
+        centered_costs = self.ir_policy_centered_by_uid.get(key, {})
+        zero_costs = self.ir_zero_by_uid.get(key, {})
+        uids = list(centered_costs.keys() & zero_costs.keys())
+        if not uids:
+            return {}
+        weights, strata = _uid_weights_and_strata(
+            uids, self.ir_weight_by_uid.get(key, {}), self.ir_stratum_by_uid.get(key, {}))
+        centered = np.array([centered_costs[uid] for uid in uids], dtype=float)
+        zero = np.array([zero_costs[uid] for uid in uids], dtype=float)
+        policy_cost = np.array([self.ir_alp_policy_cost_by_uid[key][uid] for uid in uids], dtype=float)
+        centered_stats = _stratified_stats(centered, weights, strata)
+        improvement_stats = _stratified_stats(centered - zero, weights, strata)
+        policy_stats = _stratified_stats(policy_cost, weights, strata)
+        relative, relative_half_window = _stratified_relative_improvement(
+            centered - zero, zero, weights, strata, confidence)
+        row = {
+            'policy_centered_n': len(uids),
+            'policy_centered_mean': centered_stats.mean,
+            'policy_centered_half_window': centered_stats.half_window(confidence),
+            'policy_centered_improvement_mean': improvement_stats.mean,
+            'policy_centered_improvement_half_window': improvement_stats.half_window(confidence),
+            'policy_centered_relative_improvement_pct': relative,
+            'policy_centered_relative_improvement_half_window_pct': relative_half_window,
+            'alp_policy_cost_mean': policy_stats.mean,
+            'alp_policy_cost_half_window': policy_stats.half_window(confidence),
+        }
+        approximate_values = self.ir_approximate_value_by_uid.get(key, {})
+        if not all(uid in approximate_values for uid in uids):
+            return row
+        approximate = np.array([approximate_values[uid] for uid in uids], dtype=float)
+        diff_stats = _stratified_stats(centered - approximate, weights, strata)
+        row.update({
+            'policy_centered_minus_approximate_mean': diff_stats.mean,
+            'policy_centered_minus_approximate_half_window': diff_stats.half_window(confidence),
+            'policy_centered_relative_to_approximate_pct': None,
+            'policy_centered_relative_to_approximate_half_window_pct': None,
+        })
+        if _stratified_stats(approximate, weights, strata).mean > 0:
+            (row['policy_centered_relative_to_approximate_pct'],
+             row['policy_centered_relative_to_approximate_half_window_pct']) = _stratified_relative_improvement(
+                centered - approximate, approximate, weights, strata, confidence)
         return row
 
     def overall_performance_table(self, gamma='0.99', baseline_id='myopic', confidence=0.95):
@@ -1353,6 +1405,7 @@ def report_information_relaxation_lower_bounds(experiment_name, config_type='ejo
             'relative_improvement_pct': relative_pct,
             'relative_improvement_half_window_pct': relative_half_window_pct,
             **ser.approximate_value_comparison(group_id, mutate_val, confidence),
+            **ser.policy_centered_comparison(group_id, mutate_val, confidence),
             'coefficients_sources': list({
                 json.dumps(source, sort_keys=True): source
                 for source in ser.ir_coefficients_source_by_uid.get(key, {}).values()}.values()),
@@ -1374,6 +1427,20 @@ def report_information_relaxation_lower_bounds(experiment_name, config_type='ejo
                     'of approximate value')
         print(f"    over approx. (paired): {row['penalized_minus_approximate_mean']:,.2f} +/- "
               f"{row['penalized_minus_approximate_half_window']:,.2f}  ({relative})")
+        if 'policy_centered_mean' not in row:
+            continue
+        print(f"    policy-centered LB   : {row['policy_centered_mean']:,.2f} +/- {row['policy_centered_half_window']:,.2f}"
+              f"  (ALP policy cost {row['alp_policy_cost_mean']:,.2f} +/- {row['alp_policy_cost_half_window']:,.2f})")
+        print(f"    centered improvement : {row['policy_centered_improvement_mean']:,.2f} +/- "
+              f"{row['policy_centered_improvement_half_window']:,.2f}  ({row['policy_centered_relative_improvement_pct']:.2f}% "
+              f"+/- {row['policy_centered_relative_improvement_half_window_pct']:.2f}% of zero-penalty LB)")
+        if 'policy_centered_minus_approximate_mean' in row:
+            relative = ('approximate value not positive; no relative improvement'
+                        if row['policy_centered_relative_to_approximate_pct'] is None else
+                        f"{row['policy_centered_relative_to_approximate_pct']:.2f}% +/- "
+                        f"{row['policy_centered_relative_to_approximate_half_window_pct']:.2f}% of approximate value")
+            print(f"    centered over approx.: {row['policy_centered_minus_approximate_mean']:,.2f} +/- "
+                  f"{row['policy_centered_minus_approximate_half_window']:,.2f}  ({relative})")
     return rows
 
 
@@ -1396,6 +1463,18 @@ _LOWER_BOUND_CSV_COLUMNS = (
     ('penalized_minus_approximate_half_window', 'penalized_minus_approximate_half_window'),
     ('relative_to_approximate_pct', 'relative_to_approximate_pct'),
     ('relative_to_approximate_half_window_pct', 'relative_to_approximate_half_window_pct'),
+    ('policy_centered_mean', 'policy_centered_mean'),
+    ('policy_centered_half_window', 'policy_centered_half_window'),
+    ('policy_centered_gap_mean', 'policy_centered_improvement_mean'),
+    ('policy_centered_gap_half_window', 'policy_centered_improvement_half_window'),
+    ('policy_centered_relative_gap_pct', 'policy_centered_relative_improvement_pct'),
+    ('policy_centered_relative_gap_half_window_pct', 'policy_centered_relative_improvement_half_window_pct'),
+    ('policy_centered_minus_approximate_mean', 'policy_centered_minus_approximate_mean'),
+    ('policy_centered_minus_approximate_half_window', 'policy_centered_minus_approximate_half_window'),
+    ('policy_centered_relative_to_approximate_pct', 'policy_centered_relative_to_approximate_pct'),
+    ('policy_centered_relative_to_approximate_half_window_pct', 'policy_centered_relative_to_approximate_half_window_pct'),
+    ('alp_policy_cost_mean', 'alp_policy_cost_mean'),
+    ('alp_policy_cost_half_window', 'alp_policy_cost_half_window'),
 )
 _TRAINING_LOG_CSV_COLUMNS = (
     ('training_penalized_lb_mean', 'mean'),
@@ -1579,10 +1658,14 @@ TOY_LOWER_BOUND_SENSITIVITY_PANELS = (
 TOY_LOWER_BOUND_BASELINE = ('toy_lb_occupancy', 0.5)
 _TOY_LOWER_BOUND_SUMMARY_COLUMNS = (
     'panel', 'mutate_val', 'source', 'n', 'alp_objective', 'alp_max_bellman_violation',
-    'zero_mean', 'zero_half_window', 'approximate_value_mean', 'penalized_mean', 'penalized_half_window',
-    'improvement_mean', 'improvement_half_window', 'relative_improvement_pct', 'relative_improvement_half_window_pct',
+    'zero_mean', 'zero_half_window', 'approximate_value_mean', 'policy_centered_mean', 'policy_centered_half_window',
+    'policy_centered_improvement_mean', 'policy_centered_improvement_half_window',
+    'policy_centered_relative_improvement_pct', 'policy_centered_relative_improvement_half_window_pct',
+    'policy_centered_minus_approximate_mean', 'policy_centered_minus_approximate_half_window',
+    'policy_centered_relative_to_approximate_pct', 'policy_centered_relative_to_approximate_half_window_pct',
+    'alp_policy_cost_mean', 'alp_policy_cost_half_window',
+    'penalized_mean', 'penalized_half_window', 'improvement_mean', 'improvement_half_window',
     'penalized_minus_approximate_mean', 'penalized_minus_approximate_half_window',
-    'relative_to_approximate_pct', 'relative_to_approximate_half_window_pct',
 )
 
 
@@ -1620,11 +1703,16 @@ def toy_lower_bound_sensitivity(is_reuse=False, expected_paths=4096, confidence=
             raise ValueError(f"{label}: only {row['approximate_value_n']} of {row['n']} paths carry the approximate value")
         if row['approximate_value_half_window'] > 1e-9:
             raise ValueError(f'{label}: the approximate value varies across paths, so the initial state is not fixed')
+        if row.get('policy_centered_n') != row['n']:
+            raise ValueError(f"{label}: {row.get('policy_centered_n', 0)} of {row['n']} paths carry the policy-centered "
+                             'bound; generate the commands with --policy-centering')
         sources = row['coefficients_sources']
         if len(sources) != 1 or not sources[0].get('alp_max_bellman_violation', float('inf')) <= ALP_BELLMAN_TOLERANCE:
             raise ValueError(f'{label}: the penalty is not a single certified ALP solution (coefficients sources {sources})')
         if row['zero_mean'] - row['zero_half_window'] <= 0:
             row['relative_improvement_pct'] = row['relative_improvement_half_window_pct'] = None
+            row['policy_centered_relative_improvement_pct'] = None
+            row['policy_centered_relative_improvement_half_window_pct'] = None
         return {**row, 'source': experiment_name, 'alp_objective': sources[0]['alp_objective'],
                 'alp_max_bellman_violation': sources[0]['alp_max_bellman_violation']}
 
@@ -1663,12 +1751,13 @@ def plot_toy_lower_bound_sensitivity(rows, save_file):
         top.errorbar(x, column_of('zero_mean'), yerr=column_of('zero_half_window'), marker='o', capsize=3,
                      label='Zero-penalty IR bound')
         top.plot(x, column_of('approximate_value_mean'), marker='s', linestyle='--', label='ALP approximation')
-        top.errorbar(x, column_of('penalized_mean'), yerr=column_of('penalized_half_window'), marker='^', capsize=3,
-                     label='ALP-penalized IR bound')
-        bottom.errorbar(x, column_of('improvement_mean'), yerr=column_of('improvement_half_window'), marker='o',
-                        capsize=3, label='Over zero penalty (paired)')
-        bottom.errorbar(x, column_of('penalized_minus_approximate_mean'),
-                        yerr=column_of('penalized_minus_approximate_half_window'), marker='^', capsize=3,
+        top.errorbar(x, column_of('policy_centered_mean'), yerr=column_of('policy_centered_half_window'), marker='^',
+                     capsize=3, label='ALP-penalized IR bound (policy-centered)')
+        bottom.errorbar(x, column_of('policy_centered_improvement_mean'),
+                        yerr=column_of('policy_centered_improvement_half_window'), marker='o', capsize=3,
+                        label='Over zero penalty (paired)')
+        bottom.errorbar(x, column_of('policy_centered_minus_approximate_mean'),
+                        yerr=column_of('policy_centered_minus_approximate_half_window'), marker='^', capsize=3,
                         label='Over ALP approximation')
         bottom.axhline(0.0, color='grey', linewidth=0.8)
         top.set_title(title)
