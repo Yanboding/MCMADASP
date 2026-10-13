@@ -388,6 +388,12 @@ def build_parser():
         'lowerbound', help='Information-relaxation lower bounds only (no policies).')
     add_eval_arguments(lower)
     lower.add_argument(
+        '--alp-penalty', action='store_true',
+        help="use each variant's certified ALP coefficients theta*_ALP (fitted and cached by "
+             'train_alp_coefficients, as for row_gen_alp) as the penalty of the penalized bound; needs '
+             '--penalty-function absorption_alp_penalty, excludes --penalty-dir and --penalty-ratios, and '
+             f'suffixes policy_id / experiment_name with _{_ALP_PENALTY_TAG}')
+    lower.add_argument(
         '--penalty-ratios', default=None, metavar='T1,T2,...',
         help='evaluate the information-relaxation lower bound with the trained '
              'penalty coefficients scaled by each factor t of this comma-separated '
@@ -483,6 +489,25 @@ def _apply_penalty_function(test_envs, name):
         uid = get_uid({'env_args': variant['env_args'], 'agent_args': agent_args})
         updated[(uid, experiment_name, mutate_val)] = variant
     return updated
+
+
+_ALP_PENALTY_TAG = 'alpcoef'
+
+
+def _apply_alp_penalty(test_envs):
+    updated = {}
+    for (_, experiment_name, mutate_val), variant in test_envs.items():
+        variant = copy.deepcopy(variant)
+        agent_args = variant.setdefault('agent_args', {})
+        agent_args['policy_id'] = agent_args.get('policy_id', '') + '_' + _ALP_PENALTY_TAG
+        uid = get_uid({'env_args': variant['env_args'], 'agent_args': agent_args})
+        updated[(uid, f'{experiment_name}_{_ALP_PENALTY_TAG}', mutate_val)] = variant
+    return updated
+
+
+def alp_penalty_test_envs(experiment):
+    test_envs = build_variation_test_env(EXPERIMENT_SPECS[experiment])
+    return _apply_alp_penalty(_apply_penalty_function(test_envs, 'absorption_alp_penalty'))
 
 
 def _coefficient_bound_tag(bound):
@@ -782,6 +807,7 @@ def _parse_penalty_ratios(text):
 def _run_eval(args, policy_ids):
     penalty_ratios = _parse_penalty_ratios(getattr(args, 'penalty_ratios', None))
     alp_coefficients, _ = _load_initial_coefficients(getattr(args, 'alp_coefficients', None))
+    alp_penalty = getattr(args, 'alp_penalty', False)
     test_envs = _select_variants(
         build_variation_test_env(EXPERIMENT_SPECS[args.experiment]), args.variants)
     if args.init_occupancy is not None:
@@ -789,7 +815,9 @@ def _run_eval(args, policy_ids):
     if args.policy_spec:
         test_envs = _apply_policy_spec(test_envs, args.policy_spec, policy_ids)
     test_envs = _apply_penalty_function(test_envs, args.penalty_function)
-    if args.policy_spec:
+    if alp_penalty:
+        test_envs = _apply_alp_penalty(test_envs)
+    elif args.policy_spec:
         _guard_against_retrain(args, test_envs)
     records = generate_test_paths_and_init_state(
         test_envs=test_envs,
@@ -807,6 +835,7 @@ def _run_eval(args, policy_ids):
             json.loads(args.eval_proposal) if args.eval_proposal else None),
         penalty_ratios=penalty_ratios,
         alp_coefficients=alp_coefficients,
+        alp_penalty=alp_penalty,
     )
     if args.skip_ir:
         for record in records:

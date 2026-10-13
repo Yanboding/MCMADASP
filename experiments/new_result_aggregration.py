@@ -141,6 +141,8 @@ class SimulateEvaluationResult:
         'ir_weight_by_uid',
         'ir_stratum_by_uid',
         'ir_cost_by_ratio_by_uid',
+        'ir_approximate_value_by_uid',
+        'ir_coefficients_source_by_uid',
         'ir_coefficients_source',
         'booking_day_counts',
     )
@@ -176,6 +178,8 @@ class SimulateEvaluationResult:
         self.ir_weight_by_uid = defaultdict(dict)
         self.ir_stratum_by_uid = defaultdict(dict)
         self.ir_cost_by_ratio_by_uid = defaultdict(dict)
+        self.ir_approximate_value_by_uid = defaultdict(dict)
+        self.ir_coefficients_source_by_uid = defaultdict(dict)
         self.ir_coefficients_source = {}
         self.booking_day_counts = {}
         self.waiting_time_target_ptc_by_type_day = defaultdict(dd_dd_rs_factory)
@@ -271,12 +275,16 @@ class SimulateEvaluationResult:
                 self.ir_penalized_by_uid[key][uid] = data['penalized_information_relaxation_cost']
                 self.ir_weight_by_uid[key][uid] = path_weight
                 self.ir_stratum_by_uid[key][uid] = path_stratum
+                if data.get('approximate_value_at_init_state') is not None:
+                    self.ir_approximate_value_by_uid[key][uid] = data['approximate_value_at_init_state']
                 by_ratio = data.get('information_relaxation_cost_by_penalty_ratio')
                 if by_ratio:
                     self.ir_cost_by_ratio_by_uid[key][uid] = {
                         float(ratio): float(cost) for ratio, cost in by_ratio}
                     if data.get('coefficients_source') is not None:
                         self.ir_coefficients_source[key] = data['coefficients_source']
+                if data.get('coefficients_source') is not None:
+                    self.ir_coefficients_source_by_uid[key][uid] = data['coefficients_source']
             return
         if self.group_ids and group_id not in self.group_ids:
             self.group_ids.append(group_id)
@@ -549,6 +557,33 @@ Type
             penalized - zero, zero, weights, strata, confidence)
         return improvement, half_width, n
 
+    def approximate_value_comparison(self, group_id, mutate_val, confidence=0.95):
+        key = (group_id, mutate_val)
+        approximate_values = self.ir_approximate_value_by_uid.get(key, {})
+        penalized_costs = self.ir_penalized_by_uid.get(key, {})
+        uids = list(approximate_values.keys() & penalized_costs.keys())
+        if not uids:
+            return {}
+        weights, strata = _uid_weights_and_strata(
+            uids, self.ir_weight_by_uid.get(key, {}), self.ir_stratum_by_uid.get(key, {}))
+        approximate = np.array([approximate_values[uid] for uid in uids], dtype=float)
+        diff = np.array([penalized_costs[uid] for uid in uids], dtype=float) - approximate
+        approximate_stats = _stratified_stats(approximate, weights, strata)
+        diff_stats = _stratified_stats(diff, weights, strata)
+        row = {
+            'approximate_value_n': len(uids),
+            'approximate_value_mean': approximate_stats.mean,
+            'approximate_value_half_window': approximate_stats.half_window(confidence),
+            'penalized_minus_approximate_mean': diff_stats.mean,
+            'penalized_minus_approximate_half_window': diff_stats.half_window(confidence),
+            'relative_to_approximate_pct': None,
+            'relative_to_approximate_half_window_pct': None,
+        }
+        if approximate_stats.mean > 0:
+            row['relative_to_approximate_pct'], row['relative_to_approximate_half_window_pct'] = (
+                _stratified_relative_improvement(diff, approximate, weights, strata, confidence))
+        return row
+
     def overall_performance_table(self, gamma='0.99', baseline_id='myopic', confidence=0.95):
         policy_order = [
             ('approx_penalized_hindsight', 'Penalized Hindsight'),
@@ -710,6 +745,13 @@ def _uid_weights_and_strata(uids, weights_map, strata_map):
         0 if strata_map.get(uid) is None else int(strata_map[uid])
         for uid in uids])
     return weights, strata
+
+
+def _stratified_stats(values, weights, strata):
+    stats = StratifiedRunningStats()
+    for value, weight, stratum in zip(values, weights, strata):
+        stats.record(value, weight, stratum)
+    return stats
 
 
 def _stratified_relative_improvement(diff, base, weights, strata, confidence):
@@ -1310,6 +1352,10 @@ def report_information_relaxation_lower_bounds(experiment_name, config_type='ejo
             'improvement_half_window': improvement.half_window(confidence),
             'relative_improvement_pct': relative_pct,
             'relative_improvement_half_window_pct': relative_half_window_pct,
+            **ser.approximate_value_comparison(group_id, mutate_val, confidence),
+            'coefficients_sources': list({
+                json.dumps(source, sort_keys=True): source
+                for source in ser.ir_coefficients_source_by_uid.get(key, {}).values()}.values()),
         })
     level = round(confidence * 100)
     print(f"{experiment_name}: information-relaxation lower bounds ({level}% CI)")
@@ -1319,6 +1365,15 @@ def report_information_relaxation_lower_bounds(experiment_name, config_type='ejo
         print(f"    penalized LB         : {row['penalized_mean']:,.2f} +/- {row['penalized_half_window']:,.2f}")
         print(f"    improvement (paired) : {row['improvement_mean']:,.2f} +/- {row['improvement_half_window']:,.2f}"
               f"  ({row['relative_improvement_pct']:.2f}% +/- {row['relative_improvement_half_window_pct']:.2f}% of zero-penalty LB)")
+        if 'approximate_value_mean' not in row:
+            continue
+        print(f"    approximate value    : {row['approximate_value_mean']:,.2f} +/- {row['approximate_value_half_window']:,.2f}")
+        relative = ('approximate value not positive; no relative improvement'
+                    if row['relative_to_approximate_pct'] is None else
+                    f"{row['relative_to_approximate_pct']:.2f}% +/- {row['relative_to_approximate_half_window_pct']:.2f}% "
+                    'of approximate value')
+        print(f"    over approx. (paired): {row['penalized_minus_approximate_mean']:,.2f} +/- "
+              f"{row['penalized_minus_approximate_half_window']:,.2f}  ({relative})")
     return rows
 
 
@@ -1335,6 +1390,12 @@ _LOWER_BOUND_CSV_COLUMNS = (
     ('gap_half_window', 'improvement_half_window'),
     ('relative_gap_pct', 'relative_improvement_pct'),
     ('relative_gap_half_window_pct', 'relative_improvement_half_window_pct'),
+    ('approximate_value_mean', 'approximate_value_mean'),
+    ('approximate_value_half_window', 'approximate_value_half_window'),
+    ('penalized_minus_approximate_mean', 'penalized_minus_approximate_mean'),
+    ('penalized_minus_approximate_half_window', 'penalized_minus_approximate_half_window'),
+    ('relative_to_approximate_pct', 'relative_to_approximate_pct'),
+    ('relative_to_approximate_half_window_pct', 'relative_to_approximate_half_window_pct'),
 )
 _TRAINING_LOG_CSV_COLUMNS = (
     ('training_penalized_lb_mean', 'mean'),
@@ -1432,19 +1493,13 @@ def penalty_shrinkage_rows(ser, key, zetas=(0.0, 0.05), confidence=0.95):
     values = {t: np.array([by_uid[uid][t] for uid in uids], dtype=float) for t in grid}
     base = values[0.0]
 
-    def stats_of(samples):
-        stats = StratifiedRunningStats()
-        for value, weight, stratum in zip(samples, weights, strata):
-            stats.record(value, weight, stratum)
-        return stats
-
     rows = []
     for t in grid:
-        bound = stats_of(values[t])
-        diff = stats_of(values[t] - base)
+        bound = _stratified_stats(values[t], weights, strata)
+        diff = _stratified_stats(values[t] - base, weights, strata)
         relative, relative_half_window = _stratified_relative_improvement(
             values[t] - base, base, weights, strata, confidence)
-        shares = {zeta: stats_of((values[t] < (1.0 - zeta) * base).astype(float)) for zeta in zetas}
+        shares = {zeta: _stratified_stats((values[t] < (1.0 - zeta) * base).astype(float), weights, strata) for zeta in zetas}
         rows.append({
             'group_id': key[0], 'mutate_val': key[1], 'penalty_ratio': t, 'n': len(uids),
             'mean': bound.mean, 'half_window': bound.half_window(confidence),
@@ -1454,7 +1509,7 @@ def penalty_shrinkage_rows(ser, key, zetas=(0.0, 0.05), confidence=0.95):
             'violation_share_half_window': {zeta: shares[zeta].half_window(confidence) for zeta in zetas},
         })
     t_star = max(rows, key=lambda row: row['mean'])['penalty_ratio']
-    gain = stats_of(values[t_star] - values[1.0])
+    gain = _stratified_stats(values[t_star] - values[1.0], weights, strata)
     unit_row = next(row for row in rows if row['penalty_ratio'] == 1.0)
     summary = {
         'group_id': key[0], 'mutate_val': key[1], 'n': len(uids), 'grid': list(grid),
@@ -1513,6 +1568,124 @@ def report_penalty_shrinkage(experiment_name, config_type='ejor', zetas=(0.0, 0.
         is_reuse=is_reuse,
     )
     return print_penalty_shrinkage(ser, experiment_name, zetas=zetas, confidence=confidence)
+
+
+TOY_LOWER_BOUND_SENSITIVITY_PANELS = (
+    ('occupancy', 'toy_lb_occupancy', '(a) Initial occupancy', {0.2: '20%', 0.5: '50%', 0.9: '90%'}),
+    ('type1_share', 'toy_lb_type1_share', '(b) Type-1 arrival proportion', None),
+    ('type2_target', 'toy_lb_type2_target', '(c) Type-2 waiting-time target', None),
+    ('type1_cost', 'toy_lb_type1_cost', '(d) Type-1 waiting-cost parameter', None),
+)
+TOY_LOWER_BOUND_BASELINE = ('toy_lb_occupancy', 0.5)
+_TOY_LOWER_BOUND_SUMMARY_COLUMNS = (
+    'panel', 'mutate_val', 'source', 'n', 'alp_objective', 'alp_max_bellman_violation',
+    'zero_mean', 'zero_half_window', 'approximate_value_mean', 'penalized_mean', 'penalized_half_window',
+    'improvement_mean', 'improvement_half_window', 'relative_improvement_pct', 'relative_improvement_half_window_pct',
+    'penalized_minus_approximate_mean', 'penalized_minus_approximate_half_window',
+    'relative_to_approximate_pct', 'relative_to_approximate_half_window_pct',
+)
+
+
+def toy_lower_bound_sensitivity(is_reuse=False, expected_paths=4096, confidence=0.95,
+                                csv_path=os.path.join('experiments', 'toy_lb_sensitivity_summary.csv'),
+                                save_file=os.path.join('experiments', 'figures', 'toy_lb_sensitivity.pdf')):
+    from param_generation.cli import alp_penalty_test_envs
+    from param_generation.training import ALP_BELLMAN_TOLERANCE
+    from utils import get_uid
+
+    def variants(spec_name):
+        return {mutate_val: {'group_id': group_id, 'experiment_name': experiment_name,
+                             'env_uid': get_uid(variant['env_args'])}
+                for (group_id, experiment_name, mutate_val), variant in alp_penalty_test_envs(spec_name).items()}
+
+    reports = {}
+
+    def evaluated_row(spec_name, mutate_val, variant):
+        experiment_name = variant['experiment_name']
+        if experiment_name not in reports:
+            reports[experiment_name] = {
+                (row['group_id'], row['mutate_val']): row
+                for row in report_information_relaxation_lower_bounds(
+                    experiment_name, config_type='toy', confidence=confidence, is_reuse=is_reuse)}
+        row = reports[experiment_name].get((variant['group_id'], mutate_val))
+        if row is None:
+            return None
+        label = f'{spec_name}={mutate_val}'
+        if row['n'] != expected_paths:
+            raise ValueError(f"{label}: {row['n']} of {expected_paths} paths finished")
+        if 'approximate_value_mean' not in row:
+            raise ValueError(f'{label}: the records carry no approximate_value_at_init_state; '
+                             'they were produced by an older run.py')
+        if row['approximate_value_n'] != row['n']:
+            raise ValueError(f"{label}: only {row['approximate_value_n']} of {row['n']} paths carry the approximate value")
+        if row['approximate_value_half_window'] > 1e-9:
+            raise ValueError(f'{label}: the approximate value varies across paths, so the initial state is not fixed')
+        sources = row['coefficients_sources']
+        if len(sources) != 1 or not sources[0].get('alp_max_bellman_violation', float('inf')) <= ALP_BELLMAN_TOLERANCE:
+            raise ValueError(f'{label}: the penalty is not a single certified ALP solution (coefficients sources {sources})')
+        if row['zero_mean'] - row['zero_half_window'] <= 0:
+            row['relative_improvement_pct'] = row['relative_improvement_half_window_pct'] = None
+        return {**row, 'source': experiment_name, 'alp_objective': sources[0]['alp_objective'],
+                'alp_max_bellman_violation': sources[0]['alp_max_bellman_violation']}
+
+    baseline_spec, baseline_val = TOY_LOWER_BOUND_BASELINE
+    baseline_variant = variants(baseline_spec)[baseline_val]
+    baseline = evaluated_row(baseline_spec, baseline_val, baseline_variant)
+    rows = []
+    for panel, spec_name, _, _ in TOY_LOWER_BOUND_SENSITIVITY_PANELS:
+        for mutate_val, variant in variants(spec_name).items():
+            row = evaluated_row(spec_name, mutate_val, variant)
+            if row is None and baseline is not None and variant['env_uid'] == baseline_variant['env_uid']:
+                row = {**baseline, 'source': f"{baseline_variant['experiment_name']}={baseline_val} "
+                                             '(identical configuration and paths)'}
+            if row is None:
+                raise ValueError(f"{spec_name}={mutate_val} has no results in {variant['experiment_name']} "
+                                 'and differs from the baseline')
+            rows.append({**row, 'panel': panel, 'mutate_val': mutate_val})
+    os.makedirs(os.path.dirname(csv_path) or '.', exist_ok=True)
+    with open(csv_path, 'w', newline='') as handle:
+        writer = csv.DictWriter(handle, fieldnames=_TOY_LOWER_BOUND_SUMMARY_COLUMNS, extrasaction='ignore')
+        writer.writeheader()
+        writer.writerows(rows)
+    print(f'Saved {len(rows)} rows to {csv_path}')
+    plot_toy_lower_bound_sensitivity(rows, save_file)
+    return rows
+
+
+def plot_toy_lower_bound_sensitivity(rows, save_file):
+    import matplotlib.pyplot as plt
+    figure, axes = plt.subplots(2, len(TOY_LOWER_BOUND_SENSITIVITY_PANELS), figsize=(16, 7), sharex='col')
+    for column, (panel, _, title, tick_labels) in enumerate(TOY_LOWER_BOUND_SENSITIVITY_PANELS):
+        panel_rows = sorted((row for row in rows if row['panel'] == panel), key=lambda row: row['mutate_val'])
+        x = np.arange(len(panel_rows))
+        column_of = lambda key: np.array([row[key] for row in panel_rows], dtype=float)
+        top, bottom = axes[0, column], axes[1, column]
+        top.errorbar(x, column_of('zero_mean'), yerr=column_of('zero_half_window'), marker='o', capsize=3,
+                     label='Zero-penalty IR bound')
+        top.plot(x, column_of('approximate_value_mean'), marker='s', linestyle='--', label='ALP approximation')
+        top.errorbar(x, column_of('penalized_mean'), yerr=column_of('penalized_half_window'), marker='^', capsize=3,
+                     label='ALP-penalized IR bound')
+        bottom.errorbar(x, column_of('improvement_mean'), yerr=column_of('improvement_half_window'), marker='o',
+                        capsize=3, label='Over zero penalty (paired)')
+        bottom.errorbar(x, column_of('penalized_minus_approximate_mean'),
+                        yerr=column_of('penalized_minus_approximate_half_window'), marker='^', capsize=3,
+                        label='Over ALP approximation')
+        bottom.axhline(0.0, color='grey', linewidth=0.8)
+        top.set_title(title)
+        bottom.set_xticks(x, [tick_labels[row['mutate_val']] if tick_labels else f"{row['mutate_val']:g}"
+                              for row in panel_rows])
+        top.grid(alpha=0.3)
+        bottom.grid(alpha=0.3)
+    axes[0, 0].set_ylabel('Lower bound')
+    axes[1, 0].set_ylabel('Improvement')
+    axes[0, 0].legend(fontsize=8)
+    axes[1, 0].legend(fontsize=8)
+    figure.tight_layout()
+    os.makedirs(os.path.dirname(save_file) or '.', exist_ok=True)
+    figure.savefig(save_file)
+    figure.savefig(os.path.splitext(save_file)[0] + '.png', dpi=200)
+    plt.close(figure)
+    print(f'Saved {save_file}')
 
 
 if __name__ == "__main__":

@@ -11,6 +11,7 @@ from utils import get_uid
 from param_generation.caching import (
     load_cached_training_result as _load_cached_training_result,
     save_training_result as _save_training_result,
+    training_result_path as _training_result_path,
 )
 from param_generation.generating_functions import (
     build_generating_function as _build_generating_function,
@@ -112,6 +113,9 @@ def train_penalty_coefficients(env_args, experiment_name, agent_args=None):
     return obj, direct_coefficients, info
 
 
+ALP_BELLMAN_TOLERANCE = 1e-6
+
+
 def train_alp_coefficients(env_args, experiment_name):
     cached = _load_cached_training_result(experiment_name, 'alp_train.jsonl', env_args, agent_args={})
     if cached is not None:
@@ -124,7 +128,11 @@ def train_alp_coefficients(env_args, experiment_name):
     config_for_train = get_config_by_type('infinite_custom', args=env_args)
     env = config_for_train.env
     alp_agent = ALPRowGenerationAgent(env=env, discount_factor=env.discount_factor)
-    obj, coefficients = alp_agent.train(debug=False, verbose=False)
+    obj, coefficients = alp_agent.train(debug=False, tol=ALP_BELLMAN_TOLERANCE, verbose=False)
+    solver = alp_agent.rg_solver
+    if not solver.converged:
+        raise ValueError(f'the ALP of {experiment_name} did not converge: maximum Bellman violation '
+                         f'{solver.max_violation} after {solver.iterations} iterations')
     _save_training_result(
         experiment_name=experiment_name,
         file_name='alp_train.jsonl',
@@ -132,9 +140,19 @@ def train_alp_coefficients(env_args, experiment_name):
         agent_name='row_gen_alp',
         obj_val=obj,
         coefficients=coefficients,
-        info={},
+        info={'converged': True, 'max_bellman_violation': float(solver.max_violation),
+              'iterations': solver.iterations, 'tolerance': ALP_BELLMAN_TOLERANCE},
     )
     return obj, coefficients
+
+
+def certified_alp_coefficients(env_args, experiment_name):
+    objective, coefficients = train_alp_coefficients(env_args=env_args, experiment_name=experiment_name)
+    info = _load_cached_training_result(experiment_name, 'alp_train.jsonl', env_args, agent_args={})['result']['info']
+    if not info.get('converged'):
+        raise ValueError(f"the cached ALP of {experiment_name} carries no convergence certificate; remove its record "
+                         f"from {_training_result_path(experiment_name, 'alp_train.jsonl')} to refit it")
+    return objective, coefficients, info
 
 
 def zero_penalty_coefficients(env, generating_function_spec=None):

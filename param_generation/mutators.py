@@ -1,6 +1,6 @@
 from functools import partial
 
-from utils import str2treatment_patterns
+from utils import str2treatment_patterns, wait_time
 
 
 def set_env_fields(updates, env_args, val):
@@ -27,6 +27,37 @@ def mutate_initial_state_congestion(env_args, occupancy_level):
     env_args['reset_params'] = {
         'init_state': (regular_bookings, overtime_bookings, waitlist),
     }
+
+
+TOY_LB_WAITLIST = [1, 2]
+
+
+def mutate_toy_lb_occupancy(env_args, occupancy_level):
+    mutate_initial_state_congestion(env_args, occupancy_level)
+    regular_bookings, overtime_bookings, _ = env_args['reset_params']['init_state']
+    env_args['reset_params'] = {'init_state': (regular_bookings, overtime_bookings, list(TOY_LB_WAITLIST))}
+
+
+def _set_waiting_cost(env_args, type_index, target, cost):
+    column = wait_time([(0, target, 0), (target, env_args['booking_window_size'], cost)]).tolist()
+    for day, row in enumerate(env_args['holding_cost_by_day_by_type']):
+        row[type_index] = column[day]
+
+
+def mutate_toy_lb_type1_share(env_args, share):
+    total_rate = sum(env_args['arrival_rates'])
+    env_args['arrival_rates'] = [round(total_rate * share, 10), round(total_rate * (1 - share), 10)]
+    mutate_toy_lb_occupancy(env_args, 0.5)
+
+
+def mutate_toy_lb_type2_target(env_args, target):
+    _set_waiting_cost(env_args, 1, target, 10)
+    mutate_toy_lb_occupancy(env_args, 0.5)
+
+
+def mutate_toy_lb_type1_cost(env_args, cost):
+    _set_waiting_cost(env_args, 0, 1, cost)
+    mutate_toy_lb_occupancy(env_args, 0.5)
 
 
 def mutate_initial_state_congestion_05_const(env_args, val):

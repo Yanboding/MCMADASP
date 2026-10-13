@@ -171,7 +171,7 @@ class ALPRowGenerationAgent(InfiniteRTAgent):
         separation_model.setObjective(violation, GRB.MAXIMIZE)
         if solve_and_handle_errors(separation_model):
             candidate = self.get_candidate(state_var, action_var)
-            yield candidate, separation_model.ObjVal
+            yield candidate, separation_model.ObjBound
 
     def train(self, debug, tol=1e-6, max_iter=20000, verbose=False):
         if debug == True:

@@ -11,6 +11,7 @@ from utils import get_uid, is_single_init_state
 from param_generation.caching import (
     load_trained_coefficient_record_from_folder as _load_trained_coefficient_record_from_folder,
     load_trained_coefficients_from_folder as _load_trained_coefficients_from_folder,
+    training_result_path as _training_result_path,
 )
 from param_generation.command_files import (
     write_command_file,
@@ -21,10 +22,15 @@ from param_generation.generating_functions import (
 )
 from param_generation.policies import build_penalty_policy as _build_penalty_policy
 from param_generation.training import (
+    certified_alp_coefficients,
     train_alp_coefficients,
     train_penalty_coefficients,
     zero_penalty_coefficients as _zero_penalty_coefficients,
 )
+
+
+_ABSORPTION_PENALTY_FUNCTIONS = ('absorption_linear_penalty', 'absorption_alp_penalty')
+_FITTED_PENALTY_POLICIES = {'approx_penalized_hindsight', 'po_penalized_hindsight'}
 
 
 def _pin_sampling_seeds(env_args, seed):
@@ -121,9 +127,15 @@ def _warn_initial_state_mismatch(coefficients_source, is_random_initial_state):
               "use --init-occupancy to match the training state instead.")
 
 
-def generate_test_paths_and_init_state(test_envs, test_sample_path_num, warm_up_periods=0, num_periods=None, dat_file=None, num_groups=None, is_require_penalty_coefficients=True, is_random_initial_state=False, policy_ids=None, warm_up_policy_id=None, evaluation_proposal_spec=None, penalty_coefficients_dir=None, warm_up_paths=None, sample_gen_seed_offset=1001, penalty_ratios=None, alp_coefficients=None):
+def generate_test_paths_and_init_state(test_envs, test_sample_path_num, warm_up_periods=0, num_periods=None, dat_file=None, num_groups=None, is_require_penalty_coefficients=True, is_random_initial_state=False, policy_ids=None, warm_up_policy_id=None, evaluation_proposal_spec=None, penalty_coefficients_dir=None, warm_up_paths=None, sample_gen_seed_offset=1001, penalty_ratios=None, alp_coefficients=None, alp_penalty=False):
     policy_ids = list(policy_ids or [])
     policy_id_set = set(policy_ids)
+    if alp_penalty and (penalty_ratios is not None or penalty_coefficients_dir is not None):
+        raise ValueError('alp_penalty takes the penalty from the ALP fit; it excludes penalty_ratios and '
+                         'penalty_coefficients_dir.')
+    if alp_penalty and policy_id_set & _FITTED_PENALTY_POLICIES:
+        raise ValueError(f'alp_penalty only sets the penalty of the penalized bound; it cannot be combined with '
+                         f'the fitted-coefficient policies {sorted(policy_id_set & _FITTED_PENALTY_POLICIES)}.')
     if penalty_ratios is not None:
         penalty_ratios = normalize_penalty_ratios(penalty_ratios)
         if not is_require_penalty_coefficients:
@@ -173,6 +185,20 @@ def generate_test_paths_and_init_state(test_envs, test_sample_path_num, warm_up_
         lowerbound_generating_function_spec = _normalize_generating_function_spec(
             inner_agent_args.get('penalized_lowerbound_generating_function_spec')
         )
+        eval_proposal_spec = (
+            evaluation_proposal_spec
+            if evaluation_proposal_spec is not None
+            else inner_agent_args.get('sample_path_length_proposal')
+            or inner_agent_args.get('sample_path_proposal')
+        )
+        sample_path_proposal = build_proposal(eval_proposal_spec)
+        if (lowerbound_generating_function_spec['name'] in _ABSORPTION_PENALTY_FUNCTIONS
+                and (num_periods is not None or sample_path_proposal is None)):
+            raise ValueError(
+                f"the absorption penalty ({lowerbound_generating_function_spec['name']}) needs every evaluation "
+                "record to carry survival weights and a terminal outcome: draw the tails from "
+                "a length proposal (pass --eval-proposal, e.g. "
+                "'{\"type\": \"geometric\", \"discount_factor_proposal\": 0.99}')")
 
         policies = []
         if 'row_gen_alp' in policy_id_set:
@@ -195,7 +221,23 @@ def generate_test_paths_and_init_state(test_envs, test_sample_path_num, warm_up_
 
         direct_coefficients = _zero_penalty_coefficients(env, lowerbound_generating_function_spec)
         coefficients_source = None
-        if is_require_penalty_coefficients:
+        if alp_penalty:
+            if lowerbound_generating_function_spec['name'] != 'absorption_alp_penalty':
+                raise ValueError('alp_penalty needs the absorption_alp_penalty generating function, whose '
+                                 'coefficients are the ALP vector [W_0, U, V, W].')
+            alp_objective, direct_coefficients, certificate = certified_alp_coefficients(
+                env_args=env_args, experiment_name=experiment_name)
+            coefficients_source = {
+                'file': _training_result_path(experiment_name, 'alp_train.jsonl'),
+                'alp_objective': float(alp_objective),
+                'alp_max_bellman_violation': certificate['max_bellman_violation'],
+                'alp_iterations': certificate['iterations'],
+                'alp_tolerance': certificate['tolerance'],
+            }
+            print(f"ALP penalty for experiment={experiment_name}, mutate_val={mutate_val}: objective "
+                  f"{alp_objective}, maximum Bellman violation {certificate['max_bellman_violation']:.3e} "
+                  f"after {certificate['iterations']} iterations.")
+        elif is_require_penalty_coefficients:
             sample_path_number = variant.get('agent_args', {}).get('agent_args', {}).get('sample_path_number')
             if penalty_ratios is not None:
                 record = _load_trained_coefficient_record_from_folder(
@@ -293,20 +335,6 @@ def generate_test_paths_and_init_state(test_envs, test_sample_path_num, warm_up_
         sample_gen_args = offset_sample_generation_seeds(env_args, sample_gen_seed_offset)
         config_for_sample_path = get_config_by_type('infinite_custom', args=sample_gen_args)
         env_for_sample_path = config_for_sample_path.env
-        eval_proposal_spec = (
-            evaluation_proposal_spec
-            if evaluation_proposal_spec is not None
-            else inner_agent_args.get('sample_path_length_proposal')
-            or inner_agent_args.get('sample_path_proposal')
-        )
-        sample_path_proposal = build_proposal(eval_proposal_spec)
-        if (lowerbound_generating_function_spec['name'] == 'absorption_linear_penalty'
-                and (num_periods is not None or sample_path_proposal is None)):
-            raise ValueError(
-                "the absorption penalty (absorption_linear_penalty) needs every evaluation "
-                "record to carry survival weights and a terminal outcome: draw the tails from "
-                "a length proposal (pass --eval-proposal, e.g. "
-                "'{\"type\": \"geometric\", \"discount_factor_proposal\": 0.99}')")
         # Generate the whole evaluation batch directly from the proposal in a
         # single call. The proposal's stratified/QMC length sampling is defined
         # over the FULL sample size (e.g. a mixture deterministically assigns a
@@ -383,6 +411,7 @@ def generate_test_paths_and_init_state(test_envs, test_sample_path_num, warm_up_
                 save_params['warm_up_policy_id'] = warm_up_policy_id
             if penalty_ratios is not None:
                 save_params['penalty_ratios'] = list(penalty_ratios)
+            if coefficients_source is not None:
                 save_params['coefficients_source'] = coefficients_source
             # Include all record semantics in duplicate detection, including
             # the drawing law, policy/accounting coefficients and shared warm-up.

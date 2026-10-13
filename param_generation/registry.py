@@ -12,6 +12,10 @@ from param_generation.mutators import (
     mutate_mixture_target_discount_factor_overtime_50,
     mutate_sample_path_number_mixture_geometric_l01,
     mutate_stratified_geometric_scenario,
+    mutate_toy_lb_occupancy,
+    mutate_toy_lb_type1_cost,
+    mutate_toy_lb_type1_share,
+    mutate_toy_lb_type2_target,
 )
 
 OCCUPANCY_LEVELS = [0.3, 0.5, 0.9]
@@ -108,6 +112,14 @@ EXPERIMENT_SPECS = {
             mutate=mutate_initial_state_congestion,
         ),
         *_toy_stratified_experiment_specs(),
+        ExperimentSpec(name='toy_lb_occupancy', config_type='toy', val_args=[0.2, 0.5, 0.9],
+                       mutate=mutate_toy_lb_occupancy),
+        ExperimentSpec(name='toy_lb_type1_share', config_type='toy', val_args=[0.3, 0.5, 0.9],
+                       mutate=mutate_toy_lb_type1_share),
+        ExperimentSpec(name='toy_lb_type2_target', config_type='toy', val_args=[1, 3, 5],
+                       mutate=mutate_toy_lb_type2_target),
+        ExperimentSpec(name='toy_lb_type1_cost', config_type='toy', val_args=[10, 100, 200],
+                       mutate=mutate_toy_lb_type1_cost),
         ExperimentSpec(
             name='steady_state_toy_study',
             config_type='toy',

@@ -61,6 +61,9 @@ class RowGenerationSolver:
     def solve(self, tol=1e-6, max_iter=1000):
         previous_solution = [float('inf') for v in self.master_model.getVars()]
         drift = float('inf')
+        self.converged = False
+        self.max_violation = float('inf')
+        self.iterations = max_iter
         for iteration in range(max_iter):
             print(f"\n--- Iteration {iteration + 1} ---")
             max_violation = 0.0
@@ -69,12 +72,25 @@ class RowGenerationSolver:
                     self.add_constraint(candidate=candidate, constr_name=f"init_{i + 1}")
             else:
                 solution = [v.X for v in self.master_model.getVars()]
+                separated = False
+                added = False
                 for candidate, violation in self.separation_callback(solution):
+                    separated = True
                     max_violation = max(max_violation, violation)
                     if violation > tol and self.add_constraint(candidate=candidate, constr_name=f'constr_{iteration}'):
+                        added = True
                         break
-                else:
-                    print(f"Optimal solution found after {iteration} iterations.")
+                if not added:
+                    self.iterations = iteration
+                    self.max_violation = max_violation if separated else float('inf')
+                    self.converged = separated and max_violation <= tol
+                    if self.converged:
+                        print(f"Optimal solution found after {iteration} iterations.")
+                    elif separated:
+                        print(f"Row generation stalled after {iteration} iterations: the most violated row "
+                              f"(violation {max_violation:.3e}) is already in the master.")
+                    else:
+                        print(f"Separation problem could not be solved after {iteration} iterations. Aborting.")
                     break
             
             self.penalty_weight_l2, self.penalty_weight_l1 = self.calculate_penalty_weight(
@@ -87,6 +103,7 @@ class RowGenerationSolver:
             self.master_model.setObjective(self.objective - self.penalty_weight_l2 * self.l2_penalty - self.penalty_weight_l1 * self.l1_penalty, self.master_model.ModelSense)
             self.master_model.update()
             if not solve_and_handle_errors(self.master_model):
+                self.iterations = iteration
                 print("Master problem could not be solved to optimality. Aborting.")
                 break
             current_solution = np.array([v.X for v in self.master_model.getVars()])

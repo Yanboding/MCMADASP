@@ -499,6 +499,14 @@ def information_relaxation_cost_fields(bounds):
             'penalized_information_relaxation_cost': float(bounds[1.0])}
 
 
+def approximate_value_fields(generating_function, init_state):
+    try:
+        value = generating_function.approximate_value(init_state)
+    except NotImplementedError:
+        return {}
+    return {'approximate_value_at_init_state': float(value)}
+
+
 def policy_gap_fields(policy_result, bounds):
     if bounds is None:
         return {'gap_to_zero_information_relaxation': None, 'gap_to_penalized_information_relaxation': None}
@@ -616,6 +624,7 @@ def evaluate_policy_costs_with_information_relaxation(uid,
             'agent_name': 'information_relaxation_only',
             **information_relaxation_cost_fields(bounds),
             **centered,
+            **approximate_value_fields(policy_costs_generating_function, init_state),
             'gap_to_zero_information_relaxation': 0.0,
             'gap_to_penalized_information_relaxation': 0.0,
             'warmup_state': tuple(np.array(item).tolist() for item in init_state),
@@ -624,6 +633,7 @@ def evaluate_policy_costs_with_information_relaxation(uid,
             record['penalty_ratios'] = ratios
             record['information_relaxation_cost_by_penalty_ratio'] = (
                 None if bounds is None else [[t, float(bounds[t])] for t in ratios])
+        if penalty_ratios is not None or coefficients_source is not None:
             record['coefficients_source'] = coefficients_source
         _append_jsonl_record(output_file, record)
         return [record]

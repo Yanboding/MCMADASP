@@ -11,8 +11,12 @@ def training_uid(env_args, agent_args=None):
     return get_uid({'env_args': env_args, 'agent_args': agent_args})
 
 
+def training_result_path(experiment_name, file_name):
+    return os.path.join('experiments', 'results', experiment_name, file_name)
+
+
 def load_cached_training_result(experiment_name, file_name, env_args, agent_args):
-    file_path = os.path.join('experiments', 'results', experiment_name, file_name)
+    file_path = training_result_path(experiment_name, file_name)
     if not os.path.exists(file_path):
         return None
     target_uid = training_uid(env_args, agent_args)
@@ -32,7 +36,7 @@ def load_cached_training_result(experiment_name, file_name, env_args, agent_args
 
 
 def save_training_result(experiment_name, file_name, env_args, agent_name, obj_val, coefficients, info=None, agent_args=None):
-    file_path = os.path.join('experiments', 'results', experiment_name, file_name)
+    file_path = training_result_path(experiment_name, file_name)
     os.makedirs(os.path.dirname(file_path), exist_ok=True)
     record = {
         'uid': training_uid(env_args, agent_args),
