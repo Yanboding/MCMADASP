@@ -158,7 +158,7 @@ class ApproxQAgent(InfiniteRTAgent):
         return linking_constraints
 
     def pathwise_terms(self, model, generating_function, form, path, state_var, action_var,
-                       include_first_cost=True, fixed_actions=None, action_vars=None):
+                       include_first_cost=True, fixed_actions=None, action_vars=None, with_penalty=True):
         gamma = self.discount_factor
         W = form.period_weights(path, gamma)
         tau = path.periods
@@ -167,12 +167,14 @@ class ApproxQAgent(InfiniteRTAgent):
         for s in range(tau):
             expected_weight, realized_weight = form.term_weights(s, tau, W, gamma, path.terminal)
             if s == tau - 1:
-                generating_function.penalty_features(
-                    state_var, action_var, None, expected_weight, 0.0, is_var=True).add_to(Phi)
+                if with_penalty:
+                    generating_function.penalty_features(
+                        state_var, action_var, None, expected_weight, 0.0, is_var=True).add_to(Phi)
                 break
             arrival = path.arrivals[s]
-            generating_function.penalty_features(
-                state_var, action_var, arrival, expected_weight, realized_weight, is_var=True).add_to(Phi)
+            if with_penalty:
+                generating_function.penalty_features(
+                    state_var, action_var, arrival, expected_weight, realized_weight, is_var=True).add_to(Phi)
             state_var = self.get_next_state(model=model, state=state_var, action=action_var, new_arrival=arrival)
             action_var = self.get_action_var(model=model, advance_scheduling_type=self.future_decision_var_type)
             if fixed_actions is not None:
@@ -696,7 +698,7 @@ class ApproxQAgent(InfiniteRTAgent):
         action_vars = [action_var]
         cost, Phi, _, _ = self.pathwise_terms(
             model, generating_function, generating_function.form('evaluation'), path, state_var, action_var,
-            fixed_actions=fixed_actions, action_vars=action_vars)
+            fixed_actions=fixed_actions, action_vars=action_vars, with_penalty=self.penalty_ratio != 0)
         model.setObjective(cost + self.penalty_ratio * (theta * Phi).sum(), GRB.MINIMIZE)
         return model, theta, Phi, action_vars
 

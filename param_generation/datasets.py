@@ -127,7 +127,7 @@ def _warn_initial_state_mismatch(coefficients_source, is_random_initial_state):
               "use --init-occupancy to match the training state instead.")
 
 
-def generate_test_paths_and_init_state(test_envs, test_sample_path_num, warm_up_periods=0, num_periods=None, dat_file=None, num_groups=None, is_require_penalty_coefficients=True, is_random_initial_state=False, policy_ids=None, warm_up_policy_id=None, evaluation_proposal_spec=None, penalty_coefficients_dir=None, warm_up_paths=None, sample_gen_seed_offset=1001, penalty_ratios=None, alp_coefficients=None, alp_penalty=False, policy_centering=False):
+def generate_test_paths_and_init_state(test_envs, test_sample_path_num, warm_up_periods=0, num_periods=None, dat_file=None, num_groups=None, is_require_penalty_coefficients=True, is_random_initial_state=False, policy_ids=None, warm_up_policy_id=None, evaluation_proposal_spec=None, penalty_coefficients_dir=None, warm_up_paths=None, sample_gen_seed_offset=1001, penalty_ratios=None, alp_coefficients=None, alp_penalty=False, policy_centering=False, alp_policy_coefficients=None):
     policy_ids = list(policy_ids or [])
     policy_id_set = set(policy_ids)
     if alp_penalty and (penalty_ratios is not None or penalty_coefficients_dir is not None):
@@ -148,6 +148,10 @@ def generate_test_paths_and_init_state(test_envs, test_sample_path_num, warm_up_
             "alp_penalized_hindsight is the penalized hindsight policy at theta*_ALP, so it needs "
             "alp_coefficients (--alp-coefficients); po_penalized_hindsight is the one that reads "
             "the fitted coefficients from --penalty-dir.")
+    if alp_policy_coefficients is not None and len(test_envs) > 1:
+        raise ValueError(
+            "alp_policy_coefficients fixes the row_gen_alp policy of a single environment, so it needs exactly "
+            f"one variant; got {len(test_envs)}. Narrow the run with --variants.")
     if alp_coefficients is not None and len(test_envs) > 1:
         raise ValueError(
             "alp_coefficients anchors the policy cost centering of a single environment, so it "
@@ -205,13 +209,15 @@ def generate_test_paths_and_init_state(test_envs, test_sample_path_num, warm_up_
 
         policies = []
         if 'row_gen_alp' in policy_id_set:
-            _, alp_policy_coefficients = train_alp_coefficients(
-                env_args=env_args, experiment_name=experiment_name)
+            row_gen_alp_coefficients = alp_policy_coefficients
+            if row_gen_alp_coefficients is None:
+                _, row_gen_alp_coefficients = train_alp_coefficients(
+                    env_args=env_args, experiment_name=experiment_name)
             policies.append({
                 'policy_id': 'row_gen_alp',
                 'agent_name': 'row_gen_alp',
                 'agent_args': {
-                    'coefficients': alp_policy_coefficients,
+                    'coefficients': row_gen_alp_coefficients,
                 },
             })
         if 'myopic' in policy_id_set:

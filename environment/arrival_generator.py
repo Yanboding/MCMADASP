@@ -58,12 +58,13 @@ class MultiClassPoissonArrivalGenerator:
     def set_geom_p(self, geom_p):
         self.geom_p = geom_p
 
-    def rvs(self, size=1):
-        N_values = self.rng.choice(
+    def rvs(self, size=1, rng=None):
+        rng = self.rng if rng is None else rng
+        N_values = rng.choice(
             self.maximum_arrival + 1, size=size, p=self.truncate_poisson_pmf
         )
         arrivals = np.array([
-            self.rng.multinomial(N, self.type_probs) for N in N_values
+            rng.multinomial(N, self.type_probs) for N in N_values
         ])
         return arrivals
     

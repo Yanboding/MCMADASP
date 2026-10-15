@@ -11,7 +11,7 @@ import numpy as np
 
 from experiments import get_config_by_type
 from param_generation.caching import load_trained_coefficients_from_folder
-from param_generation.command_files import write_command_file, write_grouped_command_file
+from param_generation.command_files import read_command_file_records, write_command_file, write_grouped_command_file
 from param_generation.datasets import (
     generate_penalty_coefficient_training_env,
     generate_test_paths_and_init_state,
@@ -20,6 +20,7 @@ from param_generation.datasets import (
 from param_generation.experiment_specs import build_variation_test_env
 from param_generation.generating_functions import GENERATING_FUNCTION_CLASSES, build_generating_function, normalize_generating_function_spec
 from param_generation.mutators import mutate_initial_state_congestion
+from param_generation.partial_relaxation import partial_relaxation_records, warm_up_states
 from param_generation.potential_improvement import generate_potential_improvement_records
 from param_generation.registry import EXPERIMENT_SPECS
 from param_generation.training import train_alp_coefficients
@@ -363,6 +364,10 @@ def build_parser():
         sub_parser.add_argument('--skip-ir', action='store_true',
                                 help='mark records skip_information_relaxation')
         sub_parser.add_argument(
+            '--alp-policy-coefficients', default=None, metavar='JSONL',
+            help='coefficients of the row_gen_alp policy, read from the first record with a coefficients list '
+                 'in this jsonl file, instead of fitting or loading the ALP through train_alp_coefficients')
+        sub_parser.add_argument(
             '--penalty-function', choices=sorted(GENERATING_FUNCTION_CLASSES), default=None,
             help='generating function of the bound and the policies: linear_penalty '
                  '(default, legacy) or absorption_linear_penalty (Brown-Haugh '
@@ -405,6 +410,22 @@ def build_parser():
              'grid (0 and 1 are always included) on the evaluation paths; the '
              'coefficients must already exist under --penalty-dir (no training). '
              'See report_penalty_shrinkage for the overfitting diagnostic.')
+
+    partial = sub.add_parser(
+        'partial-ir', help='Partial information-relaxation bounds (arrivals known, termination time unknown) on '
+                           'the sample paths of an existing evaluation.')
+    partial.add_argument('--source-dat', required=True, metavar='DAT',
+                         help="command file of the source evaluation; its records give each path's uid, arrivals, "
+                              'weights and strata')
+    partial.add_argument('--source-results', required=True, metavar='DIR',
+                         help="results folder of the source evaluation, read for each path's post-warm-up state")
+    partial.add_argument('--name', required=True,
+                         help='experiment name, i.e. results folder, of the partial-relaxation records')
+    partial.add_argument('--horizon', type=int, default=None, metavar='T',
+                         help='decision periods of the truncated discounted horizon (default: the 0.9999 quantile '
+                              "of Geom(1 - gamma) of each path's environment)")
+    partial.add_argument('--groups', type=int, default=None, help='command lines (default: one path per line)')
+    partial.add_argument('--dat', default='table.dat')
 
     saure = sub.add_parser('saure-ejor', help='Saure EJOR case-study pair.')
     saure.add_argument('--paths', type=int, default=4096)
@@ -810,6 +831,13 @@ def _parse_penalty_ratios(text):
 
 
 def _run_eval(args, policy_ids):
+    records = _evaluation_records(args, policy_ids)
+    write_grouped_command_file(results=records, num_groups=args.groups,
+                               dat_file=args.dat)
+    return records
+
+
+def _evaluation_records(args, policy_ids):
     penalty_ratios = _parse_penalty_ratios(getattr(args, 'penalty_ratios', None))
     alp_coefficients, _ = _load_initial_coefficients(getattr(args, 'alp_coefficients', None))
     alp_penalty = getattr(args, 'alp_penalty', False)
@@ -842,12 +870,21 @@ def _run_eval(args, policy_ids):
         alp_coefficients=alp_coefficients,
         alp_penalty=alp_penalty,
         policy_centering=getattr(args, 'policy_centering', False),
+        alp_policy_coefficients=_load_initial_coefficients(args.alp_policy_coefficients)[0],
     )
     if args.skip_ir:
         for record in records:
             record['skip_information_relaxation'] = True
-    write_grouped_command_file(results=records, num_groups=args.groups,
-                               dat_file=args.dat)
+    return records
+
+
+def _run_partial_ir(args):
+    source_records = read_command_file_records(args.source_dat)
+    states = warm_up_states(args.source_results, [record['uid'] for record in source_records])
+    records = partial_relaxation_records(source_records, states, args.name, args.horizon)
+    write_grouped_command_file(results=records, num_groups=args.groups, dat_file=args.dat)
+    horizons = sorted({len(record['arrival_stream']) + 1 for record in records})
+    print(f'{args.name}: {len(records)} paths, horizon {horizons} decision periods')
     return records
 
 
@@ -888,4 +925,6 @@ def main(argv=None):
             dat_file=args.dat)
     if args.command == 'improvement':
         return _run_improvement(args)
+    if args.command == 'partial-ir':
+        return _run_partial_ir(args)
     raise ValueError(f'Unknown command: {args.command}')

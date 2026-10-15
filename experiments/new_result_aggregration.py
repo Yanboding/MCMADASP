@@ -961,6 +961,74 @@ def _metric_cell(stats, confidence, mean_decimals=0, hw_decimals=1, bold=False):
     return _value_cell(stats.mean, stats.half_window(confidence), mean_decimals, hw_decimals, bold)
 
 
+def partial_relaxation_costs(partial_folder):
+    costs = {}
+    horizons = {}
+    for path in sorted(glob.glob(os.path.join(partial_folder, '[0-9]*.jsonl'))):
+        with open(path) as handle:
+            for line in handle:
+                record = json.loads(line)
+                source_uid = record['source_uid']
+                cost = record['partial_information_relaxation_cost']
+                if costs.setdefault(source_uid, cost) != cost:
+                    raise ValueError(f'path {source_uid} has two different partial-relaxation costs in {partial_folder}')
+                horizons.setdefault(record['group_id'], set()).add(record['horizon'])
+    mixed = {group_id: sorted(values) for group_id, values in horizons.items() if len(values) > 1}
+    if mixed:
+        raise ValueError(f'{partial_folder} mixes partial-relaxation horizons within a group: {mixed}')
+    return costs
+
+
+def partial_relaxation_gaps(ser, partial_costs, group_id, policy_id, confidence=0.95):
+    policy_costs = ser.cost_by_uid[(group_id, policy_id)]
+    missing = policy_costs.keys() - partial_costs.keys()
+    if missing:
+        raise ValueError(f'{len(missing)} of {len(policy_costs)} paths of {policy_id} have no partial-relaxation cost')
+    uids = list(policy_costs)
+    weights, strata = _uid_weights_and_strata(
+        uids, ser.weight_by_uid.get((group_id, policy_id), {}), ser.stratum_by_uid.get((group_id, policy_id), {}))
+    policy = np.array([policy_costs[uid] for uid in uids], dtype=float)
+    bound = np.array([partial_costs[uid] for uid in uids], dtype=float)
+    bound_stats = _stratified_stats(bound, weights, strata)
+    gap_stats = _stratified_stats(policy - bound, weights, strata)
+    relative, relative_half_window = _stratified_relative_improvement(policy - bound, bound, weights, strata, confidence)
+    return {
+        'n': len(uids),
+        'partial_mean': bound_stats.mean, 'partial_half_window': bound_stats.half_window(confidence),
+        'gap_mean': gap_stats.mean, 'gap_half_window': gap_stats.half_window(confidence),
+        'gap_pct': relative, 'gap_half_window_pct': relative_half_window,
+    }
+
+
+def report_partial_relaxation_gaps(source_folder='cs_alp_steady_state', partial_folder='cs_alp_steady_state_partial_ir',
+                                   config_type='ejor', confidence=0.95, is_reuse=True):
+    from experiments import get_config_by_type
+    results_dir = os.path.join('.', 'experiments', 'results')
+    ser = SimulateEvaluationResult(os.path.join(results_dir, source_folder), '[0-9]*.jsonl',
+                                   get_config_by_type(config_type).env, is_reuse=is_reuse)
+    partial_costs = partial_relaxation_costs(os.path.join(results_dir, partial_folder))
+    rows = []
+    for group_id, policy_id in sorted(ser.cost_by_uid, key=str):
+        zero = ser.zero_penalized_information_relaxation_cost[(group_id, policy_id)]
+        penalized = ser.penalized_information_relaxation_cost[(group_id, policy_id)]
+        partial = partial_relaxation_gaps(ser, partial_costs, group_id, policy_id, confidence)
+        cost = ser.policy_costs[(group_id, policy_id)]
+        rows.append({'group_id': group_id, 'policy_id': policy_id, 'policy_cost': cost.mean,
+                     'zero_mean': zero.mean, 'penalized_mean': penalized.mean,
+                     'zero_gap_pct': ser.zero_penalized_improvement[(group_id, policy_id)].mean,
+                     'penalized_gap_pct': ser.penalized_improvement[(group_id, policy_id)].mean, **partial})
+    level = round(confidence * 100)
+    print(f'{source_folder}: lower bounds and policy gaps ({level}% CI), partial relaxation from {partial_folder}')
+    for row in rows:
+        print(f"  {row['policy_id']:<28} cost {row['policy_cost']:>11,.1f}  n={row['n']}")
+        print(f"    zero-penalty LB {row['zero_mean']:>11,.1f}  gap {row['zero_gap_pct']:6.1f}%")
+        print(f"    partial-info LB {row['partial_mean']:>11,.1f} +/- {row['partial_half_window']:,.1f}  "
+              f"gap {row['gap_pct']:6.1f}% +/- {row['gap_half_window_pct']:.1f}% "
+              f"(paired {row['gap_mean']:,.1f} +/- {row['gap_half_window']:,.1f})")
+        print(f"    penalized LB    {row['penalized_mean']:>11,.1f}  gap {row['penalized_gap_pct']:6.1f}%")
+    return rows
+
+
 def saure_ejor_steady_state_table(
     base_results_dir=os.path.join('.', 'experiments', 'results'),
     folder_name='case_study_ejor_alp_steady_state',
@@ -968,6 +1036,7 @@ def saure_ejor_steady_state_table(
     is_reuse=True,
     baseline_id='myopic',
     confidence=0.95,
+    partial_folder_name=None,
 ):
     from experiments import get_config_by_type
     env = get_config_by_type('ejor').env
@@ -983,6 +1052,19 @@ def saure_ejor_steady_state_table(
         env,
         is_reuse=is_reuse,
     )
+    has_partial = partial_folder_name is not None
+    partial_costs = partial_relaxation_costs(os.path.join(base_results_dir, partial_folder_name)) if has_partial else None
+    column_spec = 'lccccccc' if has_partial else 'lcccccc'
+    partial_header = '\n& \\makecell{\\% gap to partial-\\\\information LB}' if has_partial else ''
+    gap_note = (
+        'The last three columns report the policy\'s suboptimality gap to the zero-penalty perfect-information, '
+        'the zero-penalty partial-information, and the penalized perfect-information relaxation lower bounds, '
+        'expressed as a percentage of the corresponding bound. The partial-information bound knows every future '
+        'arrival but not the termination time, so it minimizes the expected discounted cost over the geometric '
+        'horizon; its gap is the paired relative difference with a delta-method confidence interval.'
+        if has_partial else
+        'The last two columns report the policy\'s suboptimality gap to the zero-penalty and penalized '
+        'perfect-information relaxation lower bounds, expressed as a percentage of the corresponding bound.')
 
     rows = []
     n_paths = 0
@@ -999,6 +1081,8 @@ def saure_ejor_steady_state_table(
                                                cost_by_uid=ser.cost_by_uid)
             for pid, _ in policies if pid != baseline_id
         }
+        partial_gaps = {pid: partial_relaxation_gaps(ser, partial_costs, group_id, pid, confidence)
+                        for pid, _ in policies} if has_partial else {}
         n_paths = max(n_paths, max(stats.n for stats in costs.values()))
 
         best_cost = min(costs, key=lambda pid: costs[pid].mean)
@@ -1006,6 +1090,7 @@ def saure_ejor_steady_state_table(
         best_overtime = min(overtimes, key=lambda pid: overtimes[pid].mean)
         best_zero_gap = min(zero_gaps, key=lambda pid: zero_gaps[pid].mean)
         best_penalized_gap = min(penalized_gaps, key=lambda pid: penalized_gaps[pid].mean)
+        best_partial_gap = min(partial_gaps, key=lambda pid: partial_gaps[pid]['gap_pct']) if has_partial else None
         best_improvement = max(improvements, key=lambda pid: improvements[pid][0]) if improvements else None
 
         for pid, label in policies:
@@ -1015,6 +1100,9 @@ def saure_ejor_steady_state_table(
                 improvement, half_width, _ = improvements[pid]
                 improvement_cell = _value_cell(improvement, half_width, mean_decimals=1,
                                                bold=pid == best_improvement)
+            partial_cell = ' & ' + _value_cell(
+                partial_gaps[pid]['gap_pct'], partial_gaps[pid]['gap_half_window_pct'], mean_decimals=1,
+                bold=pid == best_partial_gap) if has_partial else ''
             rows.append(
                 f'{label}'
                 f' & {_metric_cell(costs[pid], confidence, bold=pid == best_cost)}'
@@ -1022,6 +1110,7 @@ def saure_ejor_steady_state_table(
                 f' & {_metric_cell(violations[pid], confidence, bold=pid == best_violation)}'
                 f' & {_metric_cell(overtimes[pid], confidence, bold=pid == best_overtime)}'
                 f' & {_metric_cell(zero_gaps[pid], confidence, mean_decimals=1, bold=pid == best_zero_gap)}'
+                f'{partial_cell}'
                 f' & {_metric_cell(penalized_gaps[pid], confidence, mean_decimals=1, bold=pid == best_penalized_gap)} \\\\'
             )
     body = '\n'.join(rows)
@@ -1037,14 +1126,14 @@ def saure_ejor_steady_state_table(
 \\renewcommand{{\\arraystretch}}{{1.15}}
 
 \\resizebox{{\\textwidth}}{{!}}{{%
-\\begin{{tabular}}{{lcccccc}}
+\\begin{{tabular}}{{{column_spec}}}
 \\toprule
 Policy
 & \\makecell{{Discounted\\\\total cost}}
 & \\makecell{{Improvement over\\\\Myopic (\\%)}}
 & \\makecell{{Wait-time\\\\violations}}
 & \\makecell{{Overtime\\\\utilization}}
-& \\makecell{{\\% gap to\\\\zero-penalty LB}}
+& \\makecell{{\\% gap to\\\\zero-penalty LB}}{partial_header}
 & \\makecell{{\\% gap to\\\\penalized LB}}\\\\
 \\midrule
 {body}
@@ -1054,7 +1143,7 @@ Policy
 
 \\begin{{tablenotes}}[flushleft]
 \\footnotesize
-\\item \\textit{{Note.}} Values are sample means \\(\\pm\\) {round(confidence * 100)}\\% confidence-interval half-widths over \\({_fmt_latex_number(n_paths)}\\) evaluation sample paths. Discounted total cost is the importance-weighted discounted cost of the post-warm-up evaluation periods. Improvement over Myopic is the paired relative reduction in discounted total cost on common sample paths, with a delta-method {round(confidence * 100)}\\% confidence interval. Wait-time violations and overtime utilization are percentages computed over the evaluation periods only. The last two columns report the policy's suboptimality gap to the zero-penalty and penalized perfect-information relaxation lower bounds, expressed as a percentage of the corresponding bound. Bold entries are the best value in each metric.
+\\item \\textit{{Note.}} Values are sample means \\(\\pm\\) {round(confidence * 100)}\\% confidence-interval half-widths over \\({_fmt_latex_number(n_paths)}\\) evaluation sample paths. Discounted total cost is the importance-weighted discounted cost of the post-warm-up evaluation periods. Improvement over Myopic is the paired relative reduction in discounted total cost on common sample paths, with a delta-method {round(confidence * 100)}\\% confidence interval. Wait-time violations and overtime utilization are percentages computed over the evaluation periods only. {gap_note} Bold entries are the best value in each metric.
 \\end{{tablenotes}}
 \\end{{threeparttable}}
 \\end{{table}}"""
@@ -1671,7 +1760,7 @@ _TOY_LOWER_BOUND_SUMMARY_COLUMNS = (
 
 def toy_lower_bound_sensitivity(is_reuse=False, expected_paths=4096, confidence=0.95,
                                 csv_path=os.path.join('experiments', 'toy_lb_sensitivity_summary.csv'),
-                                save_file=os.path.join('experiments', 'figures', 'toy_lb_sensitivity.pdf')):
+                                figure_dir=os.path.join('experiments', 'figures')):
     from param_generation.cli import alp_penalty_test_envs
     from param_generation.training import ALP_BELLMAN_TOLERANCE
     from utils import get_uid
@@ -1736,45 +1825,131 @@ def toy_lower_bound_sensitivity(is_reuse=False, expected_paths=4096, confidence=
         writer.writeheader()
         writer.writerows(rows)
     print(f'Saved {len(rows)} rows to {csv_path}')
-    plot_toy_lower_bound_sensitivity(rows, save_file)
+    plot_toy_lower_bound_bounds(rows, os.path.join(figure_dir, 'toy_lb_bounds.pdf'))
+    plot_toy_lower_bound_improvements(rows, os.path.join(figure_dir, 'toy_lb_improvements.svg'))
     return rows
 
 
-def plot_toy_lower_bound_sensitivity(rows, save_file):
-    import matplotlib.pyplot as plt
-    figure, axes = plt.subplots(2, len(TOY_LOWER_BOUND_SENSITIVITY_PANELS), figsize=(16, 7), sharex='col')
-    for column, (panel, _, title, tick_labels) in enumerate(TOY_LOWER_BOUND_SENSITIVITY_PANELS):
-        panel_rows = sorted((row for row in rows if row['panel'] == panel), key=lambda row: row['mutate_val'])
-        x = np.arange(len(panel_rows))
-        column_of = lambda key: np.array([row[key] for row in panel_rows], dtype=float)
-        top, bottom = axes[0, column], axes[1, column]
-        top.errorbar(x, column_of('zero_mean'), yerr=column_of('zero_half_window'), marker='o', capsize=3,
-                     label='Zero-penalty IR bound')
-        top.plot(x, column_of('approximate_value_mean'), marker='s', linestyle='--', label='ALP approximation')
-        top.errorbar(x, column_of('policy_centered_mean'), yerr=column_of('policy_centered_half_window'), marker='^',
-                     capsize=3, label='ALP-penalized IR bound (policy-centered)')
-        bottom.errorbar(x, column_of('policy_centered_improvement_mean'),
-                        yerr=column_of('policy_centered_improvement_half_window'), marker='o', capsize=3,
-                        label='Over zero penalty (paired)')
-        bottom.errorbar(x, column_of('policy_centered_minus_approximate_mean'),
-                        yerr=column_of('policy_centered_minus_approximate_half_window'), marker='^', capsize=3,
-                        label='Over ALP approximation')
-        bottom.axhline(0.0, color='grey', linewidth=0.8)
-        top.set_title(title)
-        bottom.set_xticks(x, [tick_labels[row['mutate_val']] if tick_labels else f"{row['mutate_val']:g}"
-                              for row in panel_rows])
-        top.grid(alpha=0.3)
-        bottom.grid(alpha=0.3)
-    axes[0, 0].set_ylabel('Lower bound')
-    axes[1, 0].set_ylabel('Improvement')
-    axes[0, 0].legend(fontsize=8)
-    axes[1, 0].legend(fontsize=8)
-    figure.tight_layout()
+_TOY_LB_SERIES_COLORS = {'zero': '#2a78d6', 'approximate': '#eb6834', 'penalized': '#1baf7a'}
+_TOY_LB_TEXT_PRIMARY = '#0b0b0b'
+_TOY_LB_TEXT_SECONDARY = '#52514e'
+_TOY_LB_GRID = '#e4e3df'
+
+
+def _toy_lb_panel_rows(rows, panel):
+    return sorted((row for row in rows if row['panel'] == panel), key=lambda row: row['mutate_val'])
+
+
+def _toy_lb_column(panel_rows, key):
+    return np.array([np.nan if row.get(key) is None else row[key] for row in panel_rows], dtype=float)
+
+
+def _style_toy_lb_axis(ax):
+    ax.grid(axis='y', color=_TOY_LB_GRID, linewidth=0.8)
+    ax.set_axisbelow(True)
+    ax.tick_params(colors=_TOY_LB_TEXT_SECONDARY, labelsize=9, length=0)
+    for side in ('top', 'right'):
+        ax.spines[side].set_visible(False)
+    for side in ('left', 'bottom'):
+        ax.spines[side].set_color(_TOY_LB_GRID)
+
+
+def _plot_toy_lb_series(ax, x, mean, half_window, color, label, marker='o', linestyle='-'):
+    ax.errorbar(x, mean, yerr=half_window, color=color, marker=marker, markersize=7, linewidth=2,
+                linestyle=linestyle, elinewidth=1.5, capsize=3, markeredgecolor='white', markeredgewidth=1.2,
+                label=label, zorder=3)
+
+
+def _set_toy_lb_ticks(ax, panel_rows, tick_labels):
+    ax.set_xticks(np.arange(len(panel_rows)), [
+        tick_labels[row['mutate_val']] if tick_labels else f"{row['mutate_val']:g}" for row in panel_rows])
+    ax.set_xlim(-0.4, len(panel_rows) - 0.6)
+
+
+def _save_toy_lb_figure(figure, save_file):
     os.makedirs(os.path.dirname(save_file) or '.', exist_ok=True)
-    figure.savefig(save_file)
-    figure.savefig(os.path.splitext(save_file)[0] + '.png', dpi=200)
-    plt.close(figure)
+    figure.savefig(save_file, bbox_inches='tight')
+    figure.savefig(os.path.splitext(save_file)[0] + '.png', dpi=200, bbox_inches='tight')
     print(f'Saved {save_file}')
+
+
+def plot_toy_lower_bound_bounds(rows, save_file):
+    import matplotlib.pyplot as plt
+    figure, axes = plt.subplots(1, len(TOY_LOWER_BOUND_SENSITIVITY_PANELS), figsize=(14, 3.6))
+    for ax, (panel, _, title, tick_labels) in zip(axes, TOY_LOWER_BOUND_SENSITIVITY_PANELS):
+        panel_rows = _toy_lb_panel_rows(rows, panel)
+        x = np.arange(len(panel_rows))
+        _plot_toy_lb_series(ax, x, _toy_lb_column(panel_rows, 'zero_mean'), _toy_lb_column(panel_rows, 'zero_half_window'),
+                            _TOY_LB_SERIES_COLORS['zero'], 'Zero-penalty IR bound (A)')
+        _plot_toy_lb_series(ax, x, _toy_lb_column(panel_rows, 'approximate_value_mean'), None,
+                            _TOY_LB_SERIES_COLORS['approximate'], 'ALP approximation (B)', marker='s', linestyle='--')
+        _plot_toy_lb_series(ax, x, _toy_lb_column(panel_rows, 'policy_centered_mean'),
+                            _toy_lb_column(panel_rows, 'policy_centered_half_window'),
+                            _TOY_LB_SERIES_COLORS['penalized'], 'ALP-penalized IR bound (C)', marker='^')
+        ax.set_title(title, fontsize=10, color=_TOY_LB_TEXT_PRIMARY)
+        _set_toy_lb_ticks(ax, panel_rows, tick_labels)
+        _style_toy_lb_axis(ax)
+    axes[0].set_ylabel('Lower bound on expected cost', fontsize=10, color=_TOY_LB_TEXT_PRIMARY)
+    handles, labels = axes[0].get_legend_handles_labels()
+    figure.legend(handles, labels, loc='lower center', ncol=3, frameon=False, fontsize=9,
+                  bbox_to_anchor=(0.5, -0.06), labelcolor=_TOY_LB_TEXT_PRIMARY)
+    figure.tight_layout()
+    _save_toy_lb_figure(figure, save_file)
+    plt.close(figure)
+
+
+_TOY_LB_IMPROVEMENT_AXES = {
+    'occupancy': ('Initial State Congestion (%)', 100),
+    'type1_share': ('High Priority Proportion (%)', 100),
+    'type2_target': ('Low Priority Waiting Time Target (Days)', 1),
+    'type1_cost': ('High Priority Waiting Time Penalty (Cost)', 1),
+}
+_TOY_LB_IMPROVEMENT_SERIES = (
+    ('policy_centered_relative_improvement_pct', 'policy_centered_relative_improvement_half_window_pct',
+     '#2f6df6', 'Penalized vs. Zero'),
+    ('policy_centered_relative_to_approximate_pct', 'policy_centered_relative_to_approximate_half_window_pct',
+     '#e8590c', 'Penalized vs. ALP'),
+)
+
+
+def plot_toy_lower_bound_improvements(rows, save_file):
+    import matplotlib.pyplot as plt
+    figure, axes = plt.subplots(2, 2, figsize=(18, 11.5))
+    for ax, (panel, _, _, _) in zip(axes.flat, TOY_LOWER_BOUND_SENSITIVITY_PANELS):
+        xlabel, scale = _TOY_LB_IMPROVEMENT_AXES[panel]
+        panel_rows = _toy_lb_panel_rows(rows, panel)
+        x = np.array([row['mutate_val'] * scale for row in panel_rows], dtype=float)
+        series = [(_toy_lb_column(panel_rows, mean_key), _toy_lb_column(panel_rows, half_window_key), color, label)
+                  for mean_key, half_window_key, color, label in _TOY_LB_IMPROVEMENT_SERIES]
+        bands = np.concatenate([np.concatenate([mean - half_window, mean + half_window])
+                                for mean, half_window, _, _ in series])
+        bands = bands[np.isfinite(bands)]
+        lower, upper = (bands.min(), bands.max()) if bands.size else (0.0, 1.0)
+        span = max(upper - lower, 1e-8)
+        text_offset = 0.03 * span
+        ax.set_facecolor('#fafafa')
+        for mean, half_window, color, label in series:
+            ax.plot(x, mean, marker='o', markersize=10, linewidth=3, color=color, label=label, zorder=3)
+            ax.fill_between(x, mean - half_window, mean + half_window, color=color, alpha=0.18, zorder=2)
+            for position, value in zip(x, mean):
+                if not np.isnan(value):
+                    ax.text(position, value + text_offset, f'{value:.3f}', ha='center', va='bottom', fontsize=18,
+                            color=color, zorder=4,
+                            bbox=dict(boxstyle='round,pad=0.25', facecolor='white', edgecolor='none', alpha=0.85))
+        ax.set_xticks(x)
+        ax.set_xticklabels([f'{value:g}' for value in x])
+        ax.tick_params(axis='both', labelsize=20)
+        ax.set_xlabel(xlabel, fontsize=24)
+        ax.set_ylabel('Improvement (%)', fontsize=24)
+        ax.set_ylim(lower - 0.08 * span, upper + 0.16 * span)
+        ax.grid(axis='y', linestyle='--', alpha=0.3)
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+    handles, labels = axes.flat[0].get_legend_handles_labels()
+    figure.legend(handles, labels, loc='lower center', ncol=2, frameon=False, fontsize=24)
+    figure.tight_layout(rect=(0, 0.06, 1, 1), h_pad=2.5)
+    _save_toy_lb_figure(figure, save_file)
+    plt.close(figure)
 
 
 if __name__ == "__main__":

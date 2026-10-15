@@ -433,8 +433,7 @@ def estimate_potential_improvement(uid, experiment_name, mutate_val, group_id, e
                                    prefix_periods, continuation_length, continuation_period_weights,
                                    path_weight, path_stratum, generating_function_spec, alp_coefficients,
                                    grb_env, grb_sub_envs, job_id):
-    output_file = os.path.join('experiments', 'results', experiment_name, f'{job_id}.jsonl')
-    os.makedirs(os.path.dirname(output_file), exist_ok=True)
+    output_file = _result_file(experiment_name, job_id)
     if jsonl_uid_exists(output_file, uid):
         print(f"Skip existing potential-improvement replication uid={uid}")
         return None
@@ -482,6 +481,45 @@ def estimate_potential_improvement(uid, experiment_name, mutate_val, group_id, e
     print(f"Potential improvement uid={uid}: partial {record['partial_information_relaxation_cost']:.4f}, "
           f"penalized {penalized_cost:.4f}, gap {record['potential_gap']:.4f}")
     return record
+
+
+def partial_information_relaxation_for_path(uid, source_uid, experiment_name, mutate_val, group_id, env_args,
+                                            init_state, arrival_stream, path_weight, path_stratum, grb_env,
+                                            grb_sub_envs, job_id):
+    output_file = _result_file(experiment_name, job_id)
+    if jsonl_uid_exists(output_file, uid):
+        print(f"Skip existing partial-relaxation path uid={uid}")
+        return None
+    start = time.time()
+    env = get_config_by_type(case_type='infinite_custom', args=env_args).env
+    stream = np.array(arrival_stream)
+    period_weights = (env.discount_factor ** np.arange(len(stream) + 1)).tolist()
+    cost = information_relaxation_bounds(
+        env, {'name': 'absorption_alp_penalty'}, [0.0], tuple(np.array(component) for component in init_state),
+        stream, period_weights, 'absorbed', grb_env, grb_sub_envs)[0.0]
+    record = {
+        'uid': uid,
+        'source_uid': source_uid,
+        'experiment_name': experiment_name,
+        'group_id': group_id,
+        'mutate_val': mutate_val,
+        'policy_id': 'partial_information_relaxation',
+        'partial_information_relaxation_cost': float(cost),
+        'horizon': len(period_weights),
+        'path_weight': path_weight,
+        'path_stratum': path_stratum,
+        'run_time_seconds': time.time() - start,
+    }
+    _append_jsonl_record(output_file, record)
+    print(f"Partial information relaxation uid={uid}: {cost:.4f} over {len(period_weights)} periods "
+          f"in {record['run_time_seconds']:.1f} seconds")
+    return record
+
+
+def _result_file(experiment_name, job_id):
+    output_file = os.path.join('experiments', 'results', experiment_name, f'{job_id}.jsonl')
+    os.makedirs(os.path.dirname(output_file), exist_ok=True)
+    return output_file
 
 
 def _append_jsonl_record(output_file, record):
@@ -1235,6 +1273,13 @@ if __name__ == '__main__':
         if 'policy_specs' in param:
             print('Wow, this is an evaluation record with policy_specs:')
             evaluate_policy_costs_with_information_relaxation(
+                **param,
+                grb_env=grb_env,
+                grb_sub_envs=grb_sub_envs,
+                job_id=args.job_id,
+            )
+        elif param.pop('partial_information_relaxation', False):
+            partial_information_relaxation_for_path(
                 **param,
                 grb_env=grb_env,
                 grb_sub_envs=grb_sub_envs,

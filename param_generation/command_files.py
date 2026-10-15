@@ -50,3 +50,13 @@ def write_grouped_command_file(results, num_groups=None, dat_file=None, start_in
 def write_command_file(results, dat_file=None):
     lines = [_command_line(line_index, result) for line_index, result in enumerate(results, start=1)]
     return _write_lines(lines, dat_file)
+
+
+def read_command_file_records(dat_file):
+    records = []
+    with open(dat_file) as handle:
+        for line in handle:
+            command = _strip_index(line)
+            if command is not None and " --params '" in command:
+                records.extend(json.loads(command.split(" --params '", 1)[1].rsplit("'", 1)[0]))
+    return records
