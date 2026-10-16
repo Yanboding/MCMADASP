@@ -160,6 +160,55 @@ def atomic_pickle_dump(path, payload):
             except OSError:
                 pass
 
+def build_policy_agent(env, agent_name, agent_args, grb_env=None, grb_sub_envs=None):
+    runtime_agent_args = dict(agent_args)
+    policy_generating_function_spec = _normalize_generating_function_spec(
+        runtime_agent_args.pop('generating_function_spec', None))
+    if agent_name in {"approx_hindsight", "approx_penalized_hindsight"}:
+        runtime_agent_args['generating_function'] = _build_generating_function(
+            env=env, spec=policy_generating_function_spec)
+        _set_sample_path_proposal(runtime_agent_args)
+        return ApproxQAgent(env, discount_factor=env.discount_factor, grb_env=grb_env,
+                            subproblem_grb_envs=grb_sub_envs, **runtime_agent_args)
+    if agent_name == "myopic":
+        return MyopicAgent(env, discount_factor=env.discount_factor, grb_env=grb_env, **runtime_agent_args)
+    if agent_name == 'row_gen_alp':
+        return ALPRowGenerationAgent(env, discount_factor=env.discount_factor, grb_env=grb_env, **runtime_agent_args)
+    raise ValueError(f"Unsupported policy: {agent_name}")
+
+
+def matched_state_decisions(uid, experiment_name, env_args, policy_specs, states, grb_env, grb_sub_envs, job_id):
+    output_file = _result_file(experiment_name, job_id)
+    pending = [state for state in states if not jsonl_uid_exists(output_file, state['state_uid'])]
+    if not pending:
+        print(f"Skip existing matched-state batch uid={uid}")
+        return []
+    env = get_config_by_type(case_type='infinite_custom', args=env_args).env
+    agents = {spec['policy_id']: build_policy_agent(env, spec['agent_name'], spec['agent_args'], grb_env, grb_sub_envs)
+              for spec in policy_specs}
+    records = []
+    for state in pending:
+        s = tuple(np.asarray(component) for component in state['state'])
+        decisions = {}
+        for policy_id, agent in agents.items():
+            start = time.time()
+            _, (bookings, overtime), _ = agent.solve(s, state['period'])
+            decisions[policy_id] = {
+                'bookings': np.asarray(bookings).astype(int).tolist(),
+                'overtime': np.asarray(overtime).astype(int).tolist(),
+                'solve_seconds': time.time() - start,
+            }
+        record = {key: value for key, value in state.items() if key != 'state_uid'}
+        record.update({'uid': state['state_uid'], 'policy_id': 'matched_state_decisions', 'batch_uid': uid,
+                       'decisions': decisions})
+        with open(output_file, 'a') as handle:
+            handle.write(json.dumps(record) + '\n')
+        records.append(record)
+        print(f"Matched state {state['state_uid']}: " + ', '.join(
+            f"{policy_id} {decision['solve_seconds']:.1f}s" for policy_id, decision in decisions.items()))
+    return records
+
+
 def calculate_policy_costs_with_penalty(uid,
                            experiment_name,
                            policy_id,
@@ -239,35 +288,8 @@ def calculate_policy_costs_with_penalty(uid,
             os.remove(checkpoint_file)
         return cached_result
 
-    runtime_agent_args = dict(agent_args)
-    # The policy carries its own self-contained generating-function spec
-    # (type + coefficients). It is independent from the accounting penalty
-    # (``generating_function``) applied to the executed trajectory below.
-    policy_generating_function_spec = _normalize_generating_function_spec(
-        runtime_agent_args.pop('generating_function_spec', None)
-    )
-    serializable_agent_args = {k: _to_jsonable(v) for k, v in runtime_agent_args.items() if k != 'grb_env'}
-    serializable_agent_args['generating_function_spec'] = policy_generating_function_spec
-
     local_generating_function = generating_function
-
-    if agent_name in {"approx_hindsight", "approx_penalized_hindsight"}:
-        runtime_agent_args['generating_function'] = _build_generating_function(
-            env=env,
-            spec=policy_generating_function_spec,
-        )
-        _set_sample_path_proposal(runtime_agent_args)
-        agent_instance = ApproxQAgent(env, discount_factor=env.discount_factor,
-                                        grb_env=grb_env,
-                                        subproblem_grb_envs=grb_sub_envs,
-                                        **runtime_agent_args
-                                    )
-    elif agent_name == "myopic":
-        agent_instance = MyopicAgent(env, discount_factor=env.discount_factor, grb_env=grb_env, **runtime_agent_args)
-    elif agent_name == 'row_gen_alp':
-        agent_instance = ALPRowGenerationAgent(env, discount_factor=env.discount_factor, grb_env=grb_env, **runtime_agent_args)
-    else:
-        raise ValueError(f"Unsupported policy: {agent_name}")
+    agent_instance = build_policy_agent(env, agent_name, agent_args, grb_env, grb_sub_envs)
 
     states = []
     actions = []
@@ -1270,7 +1292,14 @@ if __name__ == '__main__':
         #   * generate_train_env -> contains 'init_state_index' (and no
         #     'policy_specs') -> train the tight penalized lower bound at a
         #     single initial state and emit one (X, Y) record.
-        if 'policy_specs' in param:
+        if param.pop('matched_state_decision', False):
+            matched_state_decisions(
+                **param,
+                grb_env=grb_env,
+                grb_sub_envs=grb_sub_envs,
+                job_id=args.job_id,
+            )
+        elif 'policy_specs' in param:
             print('Wow, this is an evaluation record with policy_specs:')
             evaluate_policy_costs_with_information_relaxation(
                 **param,

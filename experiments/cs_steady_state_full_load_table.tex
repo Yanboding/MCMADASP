@@ -1,0 +1,17 @@
+\begin{table}[!htbp]
+\centering
+\caption{Scheduling decisions in fully loaded states of the case study (regular-capacity load of at least 97\% over the next 5 days), starting from the ALP steady state.}
+\label{tab:steady_state_full_load_decisions}
+\small
+\begin{tabular}{lccccccccc}
+\toprule
+& & \multicolumn{3}{c}{Cost per period} & \multicolumn{2}{c}{New overtime slots} & \multicolumn{3}{c}{\% booked beyond target}\\
+\cmidrule(lr){3-5}\cmidrule(lr){6-7}\cmidrule(lr){8-10}
+Policy & \% periods & Total & Waiting & Overtime & Days 1--5 & Later & Urgent & 5-day & 10-day\\
+\midrule
+Penalized hindsight & 53 & 1{,}251 & 240 & 1{,}010 & 8.2 & 2.2 & 25.0 & 10.5 & 19.1 \\
+ALP & 53 & 1{,}778 & 700 & 1{,}055 & 4.4 & 6.8 & 66.6 & 40.7 & 13.1 \\
+Myopic & 86 & 1{,}488 & 966 & 501 & 3.5 & 1.7 & 27.9 & 65.2 & 44.3 \\
+\bottomrule
+\end{tabular}
+\end{table}

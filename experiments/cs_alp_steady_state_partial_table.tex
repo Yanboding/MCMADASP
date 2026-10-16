@@ -1,0 +1,30 @@
+\begin{table}[!htbp]
+\centering
+\begin{threeparttable}
+\caption{Estimated case-study policy performance starting from the ALP steady state with $\gamma=0.99$.}
+\label{tab:saure_ejor_steady_state}
+
+\scriptsize
+\setlength{\tabcolsep}{2.4pt}
+\renewcommand{\arraystretch}{1.15}
+
+\begin{tabular*}{\textwidth}{@{\extracolsep{\fill}} lccc @{}}
+\toprule
+Metric & Penalized Hindsight & ALP & Myopic \\
+\midrule
+Discounted cost & \(\mathbf{68{,}815 \pm 2{,}737.2}\) & \(99{,}119 \pm 5{,}029.0\) & \(128{,}202 \pm 5{,}239.5\) \\
+Improvement over Myopic (\%) & \(\mathbf{46.3 \pm 0.8}\) & \(22.7 \pm 1.6\) & --- \\
+Wait-time violations (\%) & \(\mathbf{10 \pm 0.7}\) & \(17 \pm 1.0\) & \(45 \pm 0.9\) \\
+Overtime utilization (\%) & \(40 \pm 0.2\) & \(43 \pm 0.2\) & \(\mathbf{31 \pm 0.1}\) \\
+\% gap to zero-penalty LB & \(\mathbf{61.4 \pm 2.4}\) & \(132.4 \pm 7.9\) & \(200.6 \pm 8.7\) \\
+\% gap to penalized LB & \(\mathbf{12.1 \pm 0.7}\) & \(62.4 \pm 4.7\) & \(110.7 \pm 4.9\) \\
+\% gap to partial-information LB & \(\mathbf{8.9 \pm 3.2}\) & \(56.9 \pm 6.1\) & \(102.9 \pm 7.0\) \\
+\bottomrule
+\end{tabular*}
+
+\begin{tablenotes}[flushleft]
+\footnotesize
+\item \textit{Note.} Discounted cost is the importance-weighted discounted cost of the post-warm-up evaluation periods. Improvement over Myopic is the paired relative cost reduction on common sample paths, with a delta-method 95\% confidence interval. Wait-time violations and overtime utilization are percentages computed over the evaluation periods only. The last three rows report policy-to-bound gaps as percentages of the corresponding lower bound: the zero-penalty and penalized perfect-information-relaxation lower bounds, and the zero-penalty partial-information-relaxation lower bound, which knows all future arrivals but not the termination time and therefore minimizes the expected discounted cost over the geometric horizon. The partial-information gap is the paired relative difference on common sample paths, with a delta-method 95\% confidence interval. Bold entries are the best policy for each metric.
+\end{tablenotes}
+\end{threeparttable}
+\end{table}

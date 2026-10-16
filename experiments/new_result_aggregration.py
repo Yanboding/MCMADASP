@@ -1031,12 +1031,12 @@ def report_partial_relaxation_gaps(source_folder='cs_alp_steady_state', partial_
 
 def saure_ejor_steady_state_table(
     base_results_dir=os.path.join('.', 'experiments', 'results'),
-    folder_name='case_study_ejor_alp_steady_state',
+    folder_name='cs_alp_steady_state',
     file_pattern='[0-9]*.jsonl',
     is_reuse=True,
     baseline_id='myopic',
     confidence=0.95,
-    partial_folder_name=None,
+    partial_folder_name='cs_alp_steady_state_partial_ir',
 ):
     from experiments import get_config_by_type
     env = get_config_by_type('ejor').env
@@ -1054,17 +1054,23 @@ def saure_ejor_steady_state_table(
     )
     has_partial = partial_folder_name is not None
     partial_costs = partial_relaxation_costs(os.path.join(base_results_dir, partial_folder_name)) if has_partial else None
-    column_spec = 'lccccccc' if has_partial else 'lcccccc'
-    partial_header = '\n& \\makecell{\\% gap to partial-\\\\information LB}' if has_partial else ''
+    metric_labels = ['Discounted cost', 'Improvement over Myopic (\\%)', 'Wait-time violations (\\%)',
+                     'Overtime utilization (\\%)', '\\% gap to zero-penalty LB', '\\% gap to penalized LB']
+    if has_partial:
+        metric_labels.append('\\% gap to partial-information LB')
+    header = ''
+    column_spec = 'l'
+    level = round(confidence * 100)
     gap_note = (
-        'The last three columns report the policy\'s suboptimality gap to the zero-penalty perfect-information, '
-        'the zero-penalty partial-information, and the penalized perfect-information relaxation lower bounds, '
-        'expressed as a percentage of the corresponding bound. The partial-information bound knows every future '
-        'arrival but not the termination time, so it minimizes the expected discounted cost over the geometric '
-        'horizon; its gap is the paired relative difference with a delta-method confidence interval.'
+        'The last three rows report policy-to-bound gaps as percentages of the corresponding lower bound: the '
+        'zero-penalty and penalized perfect-information-relaxation lower bounds, and the zero-penalty '
+        'partial-information-relaxation lower bound, which knows all future arrivals but not the termination time '
+        'and therefore minimizes the expected discounted cost over the geometric horizon. The partial-information '
+        f'gap is the paired relative difference on common sample paths, with a delta-method {level}\\% '
+        'confidence interval.'
         if has_partial else
-        'The last two columns report the policy\'s suboptimality gap to the zero-penalty and penalized '
-        'perfect-information relaxation lower bounds, expressed as a percentage of the corresponding bound.')
+        'The last two rows report policy-to-bound gaps as percentages of the corresponding zero-penalty and '
+        'penalized perfect-information-relaxation lower bounds.')
 
     rows = []
     n_paths = 0
@@ -1093,26 +1099,33 @@ def saure_ejor_steady_state_table(
         best_partial_gap = min(partial_gaps, key=lambda pid: partial_gaps[pid]['gap_pct']) if has_partial else None
         best_improvement = max(improvements, key=lambda pid: improvements[pid][0]) if improvements else None
 
-        for pid, label in policies:
+        cells = {}
+        for pid, _ in policies:
             if pid == baseline_id:
                 improvement_cell = '---'
             else:
                 improvement, half_width, _ = improvements[pid]
                 improvement_cell = _value_cell(improvement, half_width, mean_decimals=1,
                                                bold=pid == best_improvement)
-            partial_cell = ' & ' + _value_cell(
-                partial_gaps[pid]['gap_pct'], partial_gaps[pid]['gap_half_window_pct'], mean_decimals=1,
-                bold=pid == best_partial_gap) if has_partial else ''
-            rows.append(
-                f'{label}'
-                f' & {_metric_cell(costs[pid], confidence, bold=pid == best_cost)}'
-                f' & {improvement_cell}'
-                f' & {_metric_cell(violations[pid], confidence, bold=pid == best_violation)}'
-                f' & {_metric_cell(overtimes[pid], confidence, bold=pid == best_overtime)}'
-                f' & {_metric_cell(zero_gaps[pid], confidence, mean_decimals=1, bold=pid == best_zero_gap)}'
-                f'{partial_cell}'
-                f' & {_metric_cell(penalized_gaps[pid], confidence, mean_decimals=1, bold=pid == best_penalized_gap)} \\\\'
-            )
+            cells[pid] = [
+                _metric_cell(costs[pid], confidence, bold=pid == best_cost),
+                improvement_cell,
+                _metric_cell(violations[pid], confidence, bold=pid == best_violation),
+                _metric_cell(overtimes[pid], confidence, bold=pid == best_overtime),
+                _metric_cell(zero_gaps[pid], confidence, mean_decimals=1, bold=pid == best_zero_gap),
+                _metric_cell(penalized_gaps[pid], confidence, mean_decimals=1, bold=pid == best_penalized_gap),
+            ]
+            if has_partial:
+                cells[pid].append(_value_cell(
+                    partial_gaps[pid]['gap_pct'], partial_gaps[pid]['gap_half_window_pct'], mean_decimals=1,
+                    bold=pid == best_partial_gap))
+        if not header:
+            header = ' & '.join(['Metric'] + [label for _, label in policies]) + ' \\\\'
+            column_spec = 'l' + 'c' * len(policies)
+        elif rows:
+            rows.append('\\midrule')
+        for index, metric in enumerate(metric_labels):
+            rows.append(' & '.join([metric] + [cells[pid][index] for pid, _ in policies]) + ' \\\\')
     body = '\n'.join(rows)
 
     table = f"""\\begin{{table}}[!htbp]
@@ -1121,29 +1134,21 @@ def saure_ejor_steady_state_table(
 \\caption{{Estimated case-study policy performance starting from the ALP steady state with $\\gamma=0.99$.}}
 \\label{{tab:saure_ejor_steady_state}}
 
-\\small
-\\setlength{{\\tabcolsep}}{{4pt}}
+\\scriptsize
+\\setlength{{\\tabcolsep}}{{2.4pt}}
 \\renewcommand{{\\arraystretch}}{{1.15}}
 
-\\resizebox{{\\textwidth}}{{!}}{{%
-\\begin{{tabular}}{{{column_spec}}}
+\\begin{{tabular*}}{{\\textwidth}}{{@{{\\extracolsep{{\\fill}}}} {column_spec} @{{}}}}
 \\toprule
-Policy
-& \\makecell{{Discounted\\\\total cost}}
-& \\makecell{{Improvement over\\\\Myopic (\\%)}}
-& \\makecell{{Wait-time\\\\violations}}
-& \\makecell{{Overtime\\\\utilization}}
-& \\makecell{{\\% gap to\\\\zero-penalty LB}}{partial_header}
-& \\makecell{{\\% gap to\\\\penalized LB}}\\\\
+{header}
 \\midrule
 {body}
 \\bottomrule
-\\end{{tabular}}%
-}}
+\\end{{tabular*}}
 
 \\begin{{tablenotes}}[flushleft]
 \\footnotesize
-\\item \\textit{{Note.}} Values are sample means \\(\\pm\\) {round(confidence * 100)}\\% confidence-interval half-widths over \\({_fmt_latex_number(n_paths)}\\) evaluation sample paths. Discounted total cost is the importance-weighted discounted cost of the post-warm-up evaluation periods. Improvement over Myopic is the paired relative reduction in discounted total cost on common sample paths, with a delta-method {round(confidence * 100)}\\% confidence interval. Wait-time violations and overtime utilization are percentages computed over the evaluation periods only. {gap_note} Bold entries are the best value in each metric.
+\\item \\textit{{Note.}} Discounted cost is the importance-weighted discounted cost of the post-warm-up evaluation periods. Improvement over Myopic is the paired relative cost reduction on common sample paths, with a delta-method {level}\\% confidence interval. Wait-time violations and overtime utilization are percentages computed over the evaluation periods only. {gap_note} Bold entries are the best policy for each metric.
 \\end{{tablenotes}}
 \\end{{threeparttable}}
 \\end{{table}}"""
