@@ -17,7 +17,6 @@ from scipy.stats import geom
 
 from experiments.experiment_config import get_config_by_type
 from importance_sampling import build_proposal
-from experiments.repeated_po_training import run as run_repeated_po
 from importance_sampling.sample_path import SamplePath
 from utils import iter_to_tuple, get_uid, safe_open, RunningStats, encode, decode, get_solution_value, acquire_grb_env, read_lines_with_pattern
 from decision_maker import MyopicAgent, ALPRowGenerationAgent, ApproxQAgent
@@ -937,6 +936,7 @@ def train_penalty_coefficients_for_env(
     grb_env,
     grb_sub_envs,
     job_id,
+    batch_metadata=None,
 ):
     solver_choice = os.environ.get('PENALTY_TRAIN_SOLVER', 'benders').strip().lower()
     if solver_choice != 'benders':
@@ -944,9 +944,13 @@ def train_penalty_coefficients_for_env(
             f"Unsupported PENALTY_TRAIN_SOLVER={solver_choice!r}; "
             "only Benders training is implemented. Use PENALTY_TRAIN_SOLVER=benders."
         )
-    output_file = os.path.join(
-        'experiments', 'results', experiment_name, f'{job_id}.jsonl'
-    )
+    if batch_metadata is not None:
+        from experiments.po_training_audit import validate_training_metadata
+        validate_training_metadata(batch_metadata, env_args, agent_args, sample_path_number,
+                                   init_state_mode, init_state, init_state_seed)
+    output_file = (os.path.join(batch_metadata['output_dir'], 'training.jsonl')
+                   if batch_metadata is not None else os.path.join(
+                       'experiments', 'results', experiment_name, f'{job_id}.jsonl'))
     os.makedirs(os.path.dirname(output_file), exist_ok=True)
     if jsonl_uid_exists(output_file, uid):
         print(f"Skip duplicate penalty-training result: uid={uid}")
@@ -965,6 +969,12 @@ def train_penalty_coefficients_for_env(
     )
 
     inner = dict((agent_args or {}).get('agent_args', {}))
+    # Solver/audit options belong to training, not to the agent constructor.
+    training_options = {key: inner.pop(key) for key in (
+        'max_iterations', 'absolute_gap_tolerance', 'save_path_certificates',
+        'reference_coefficients', 'master_time_limit_seconds',
+        'subproblem_time_limit_seconds') if key in inner}
+    inner.pop('workers', None)  # the shared pool is allocated once by main()
     for spec_key in _GENERATING_FUNCTION_SPEC_KEYS:
         inner.pop(spec_key, None)
     inner['generating_function'] = generating_function
@@ -1023,9 +1033,7 @@ def train_penalty_coefficients_for_env(
     # paths (the pinned arrival/env seeds in env_args make them identical).
     env.reset_random_seeds()
 
-    checkpoint_dir = os.path.join(
-        'experiments', 'results', experiment_name, 'benders_checkpoints'
-    )
+    checkpoint_dir = os.path.join(os.path.dirname(output_file), 'benders_checkpoints')
     os.makedirs(checkpoint_dir, exist_ok=True)
     policy_centering = None
     if policy_centering_enabled:
@@ -1086,20 +1094,25 @@ def train_penalty_coefficients_for_env(
     checkpoint_path = os.path.join(
         checkpoint_dir, f'{uid}-penalty-checkpoint.pickle'
     )
-    obj, coefficients, info = agent.benders_decomposition_train(
-        coefficient_bound=coefficient_bound,
-        init_state=resolved_init_state,
-        checkpoint_path=checkpoint_path,
-        resume_checkpoint_path=checkpoint_path,
-        initial_coefficients=initial_coefficients,
-        fixed_coefficients=_by_coefficient_index(fixed_coefficients),
-        min_norm_slack=min_norm_slack,
-        min_norm_every_iteration=min_norm_every_iteration,
-        alp_value_floor=alp_value_floor,
-        alp_value_floor_tolerance=alp_value_floor_tolerance,
-        coefficient_bound_overrides=_by_coefficient_index(coefficient_bound_overrides),
-        policy_centering=policy_centering,
-    )
+    try:
+        obj, coefficients, info = agent.benders_decomposition_train(
+            coefficient_bound=coefficient_bound,
+            init_state=resolved_init_state,
+            checkpoint_path=checkpoint_path,
+            resume_checkpoint_path=checkpoint_path,
+            initial_coefficients=initial_coefficients,
+            fixed_coefficients=_by_coefficient_index(fixed_coefficients),
+            min_norm_slack=min_norm_slack,
+            min_norm_every_iteration=min_norm_every_iteration,
+            alp_value_floor=alp_value_floor,
+            alp_value_floor_tolerance=alp_value_floor_tolerance,
+            coefficient_bound_overrides=_by_coefficient_index(coefficient_bound_overrides),
+            policy_centering=policy_centering,
+            **training_options,
+        )
+    except Exception:
+        dispose_agent_models(agent)
+        raise
     elapsed = time.time() - start
     print(f"  solver={solver_choice}, obj={obj}, elapsed={elapsed:.1f}s")
 
@@ -1135,6 +1148,13 @@ def train_penalty_coefficients_for_env(
         'improvement': info.get('improvement'),
         'in_sample': info['in_sample'],
     }
+    try:
+        if batch_metadata is not None:
+            from experiments.po_training_audit import write_training_audit
+            write_training_audit(batch_metadata, coefficients, info, job_id, elapsed,
+                                 subproblem_environment_count=len(grb_sub_envs))
+    finally:
+        dispose_agent_models(agent)
     with open(output_file, 'a') as f:
         f.write(json.dumps(record) + '\n')
     return record
@@ -1244,16 +1264,8 @@ def main(argv=None):
         params = [params]
     if not isinstance(params, list) or not params or any(not isinstance(p, dict) for p in params):
         raise ValueError('Params must be a record or a nonempty list of records.')
-    unknown_types = [p['run_type'] for p in params if 'run_type' in p
-                     and p['run_type'] != 'figure1_repeated_po']
-    if unknown_types:
-        raise ValueError(f'Unknown run_type: {unknown_types!r}')
-    repeated = [p.get('run_type') == 'figure1_repeated_po' for p in params]
-    if any(repeated):
-        if not all(repeated):
-            raise ValueError('Cannot mix repeated PO and legacy records in one invocation.')
-        return [run_repeated_po(p, args.job_id) for p in params]
-    grb_env = acquire_grb_env({"Threads": 1}, verbose=False, wait=15)
+    if any('run_type' in p for p in params):
+        raise ValueError('Use ordinary train records with init_state_mode; run_type is unsupported.')
     # Dynamically allocate a pool of Gurobi tokens (envs) for the subproblems.
     # A Gurobi env is NOT thread-safe for concurrent optimization, so the
     # minimum number of tokens needed equals the number of subproblems solved
@@ -1284,89 +1296,103 @@ def main(argv=None):
         num_cpus = int(slurm_cpus) if slurm_cpus else (os.cpu_count() or 1)
     except ValueError:
         num_cpus = os.cpu_count() or 1
-    num_sub_envs = min(sample_path_number, num_cpus) if sample_path_number else 0
-    grb_sub_envs = [
-        acquire_grb_env({"Threads": 1}, verbose=False, wait=15)
-        for _ in range(num_sub_envs)
-    ]
-    print('grb_sub_envs:',len(grb_sub_envs))
-    def _is_hindsight_timing_record(param):
-        spec = ((param.get('agent_args') or {}).get('agent_args') or {}).get('generating_function_spec')
-        return isinstance(spec, dict) and 'coefficients' in spec
+    budget = os.environ.get('MCMADASP_CPU_BUDGET')
+    if budget is not None:
+        if int(budget) < 1:
+            raise ValueError('MCMADASP_CPU_BUDGET must be positive')
+        num_cpus = min(num_cpus, int(budget))
+    requested_workers = [((p.get('agent_args') or {}).get('agent_args') or {}).get('workers', num_cpus)
+                         for p in params]
+    if any(isinstance(n, bool) or int(n) != n or n < 1 for n in requested_workers):
+        raise ValueError('workers must be a positive integer')
+    num_sub_envs = min(sample_path_number, num_cpus, max(requested_workers)) if sample_path_number else 0
+    grb_env = acquire_grb_env({"Threads": 1}, verbose=False, wait=15)
+    grb_sub_envs = []
+    try:
+        for _ in range(num_sub_envs):
+            grb_sub_envs.append(acquire_grb_env({"Threads": 1}, verbose=False, wait=15))
+        print('grb_sub_envs:',len(grb_sub_envs))
+        def _is_hindsight_timing_record(param):
+            spec = ((param.get('agent_args') or {}).get('agent_args') or {}).get('generating_function_spec')
+            return isinstance(spec, dict) and 'coefficients' in spec
 
-    for param in params:
-        # Dispatch on the shape of the params record:
-        #   * generate_test_paths_and_init_state -> contains 'policy_specs'
-        #     -> evaluate policy costs against information-relaxation bounds.
-        #   * generate_penalty_coefficient_training_env -> contains
-        #     'init_state_mode' -> train one set of penalty coefficients per env
-        #     over sample_path_number scenarios.
-        #   * generate_train_env -> contains 'init_state_index' (and no
-        #     'policy_specs') -> train the tight penalized lower bound at a
-        #     single initial state and emit one (X, Y) record.
-        if param.pop('matched_state_decision', False):
-            matched_state_decisions(
-                **param,
-                grb_env=grb_env,
-                grb_sub_envs=grb_sub_envs,
-                job_id=args.job_id,
-            )
-        elif 'policy_specs' in param:
-            print('Wow, this is an evaluation record with policy_specs:')
-            evaluate_policy_costs_with_information_relaxation(
-                **param,
-                grb_env=grb_env,
-                grb_sub_envs=grb_sub_envs,
-                job_id=args.job_id,
-            )
-        elif param.pop('partial_information_relaxation', False):
-            partial_information_relaxation_for_path(
-                **param,
-                grb_env=grb_env,
-                grb_sub_envs=grb_sub_envs,
-                job_id=args.job_id,
-            )
-        elif param.pop('potential_improvement', False):
-            estimate_potential_improvement(
-                **param,
-                grb_env=grb_env,
-                grb_sub_envs=grb_sub_envs,
-                job_id=args.job_id,
-            )
-        elif _is_hindsight_timing_record(param):
-            evaluated_hindsight_policy_solving_time(
-                **param,
-                grb_env=grb_env,
-                grb_sub_envs=grb_sub_envs,
-                job_id=args.job_id,
-            )
-        elif 'init_state_mode' in param:
-            train_penalty_coefficients_for_env(
-                **param,
-                grb_env=grb_env,
-                grb_sub_envs=grb_sub_envs,
-                job_id=args.job_id,
-            )
-        elif 'init_state_index' in param:
-            train_lowerbound_for_init_state(
-                **param,
-                grb_env=grb_env,
-                grb_sub_envs=grb_sub_envs,
-                job_id=args.job_id,
-            )
-        elif param.pop('alp_training', False):
-            train_alp_coefficients_for_env(
-                **param,
-                grb_env=grb_env,
-                grb_sub_envs=grb_sub_envs,
-                job_id=args.job_id,
-            )
-        else:
-            raise ValueError(
-                "Unrecognized params payload: expected 'policy_specs' "
-                "(evaluation), 'init_state_mode' (penalty-coefficient training), "
-                "'init_state_index' (lower-bound training) or 'alp_training' in record."
-            )
+        for param in params:
+            # Dispatch on the shape of the params record:
+            #   * generate_test_paths_and_init_state -> contains 'policy_specs'
+            #     -> evaluate policy costs against information-relaxation bounds.
+            #   * generate_penalty_coefficient_training_env -> contains
+            #     'init_state_mode' -> train one set of penalty coefficients per env
+            #     over sample_path_number scenarios.
+            #   * generate_train_env -> contains 'init_state_index' (and no
+            #     'policy_specs') -> train the tight penalized lower bound at a
+            #     single initial state and emit one (X, Y) record.
+            if param.pop('matched_state_decision', False):
+                matched_state_decisions(
+                    **param,
+                    grb_env=grb_env,
+                    grb_sub_envs=grb_sub_envs,
+                    job_id=args.job_id,
+                )
+            elif 'policy_specs' in param:
+                print('Wow, this is an evaluation record with policy_specs:')
+                evaluate_policy_costs_with_information_relaxation(
+                    **param,
+                    grb_env=grb_env,
+                    grb_sub_envs=grb_sub_envs,
+                    job_id=args.job_id,
+                )
+            elif param.pop('partial_information_relaxation', False):
+                partial_information_relaxation_for_path(
+                    **param,
+                    grb_env=grb_env,
+                    grb_sub_envs=grb_sub_envs,
+                    job_id=args.job_id,
+                )
+            elif param.pop('potential_improvement', False):
+                estimate_potential_improvement(
+                    **param,
+                    grb_env=grb_env,
+                    grb_sub_envs=grb_sub_envs,
+                    job_id=args.job_id,
+                )
+            elif _is_hindsight_timing_record(param):
+                evaluated_hindsight_policy_solving_time(
+                    **param,
+                    grb_env=grb_env,
+                    grb_sub_envs=grb_sub_envs,
+                    job_id=args.job_id,
+                )
+            elif 'init_state_mode' in param:
+                train_penalty_coefficients_for_env(
+                    **param,
+                    grb_env=grb_env,
+                    grb_sub_envs=grb_sub_envs,
+                    job_id=args.job_id,
+                )
+            elif 'init_state_index' in param:
+                train_lowerbound_for_init_state(
+                    **param,
+                    grb_env=grb_env,
+                    grb_sub_envs=grb_sub_envs,
+                    job_id=args.job_id,
+                )
+            elif param.pop('alp_training', False):
+                train_alp_coefficients_for_env(
+                    **param,
+                    grb_env=grb_env,
+                    grb_sub_envs=grb_sub_envs,
+                    job_id=args.job_id,
+                )
+            else:
+                raise ValueError(
+                    "Unrecognized params payload: expected 'policy_specs' "
+                    "(evaluation), 'init_state_mode' (penalty-coefficient training), "
+                    "'init_state_index' (lower-bound training) or 'alp_training' in record."
+                )
+    finally:
+        for environment in reversed(grb_sub_envs):
+            environment.dispose()
+        grb_env.dispose()
 
 
 if __name__ == '__main__':

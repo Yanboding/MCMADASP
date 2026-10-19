@@ -1,23 +1,35 @@
 import json
 import shlex
+from collections import Counter
 
 import pytest
 
-from param_generation.generate_figure1_po import build_manifest, write_bundle, figure1_configurations
+from param_generation import cli
+from param_generation.generate_figure1_po import figure1_configurations, write_bundle
 from param_generation.caching import training_uid
 
 
 @pytest.fixture
 def cache(tmp_path):
     configs, _ = figure1_configurations()
-    for config in configs:
-        folder = tmp_path / config['source_experiment']
-        folder.mkdir(exist_ok=True)
+    for index, config in enumerate(configs):
+        folder = tmp_path / 'cache' / config['source_experiment']
+        folder.mkdir(parents=True, exist_ok=True)
         with (folder / 'alp_train.jsonl').open('a') as handle:
             handle.write(json.dumps({'uid': training_uid(config['configuration']), 'result': {
-                'agent_name': 'row_gen_alp', 'args': {'coefficients': list(range(17))},
+                'agent_name': 'row_gen_alp', 'args': {'coefficients': [index + k / 10 for k in range(17)]},
                 'info': {'converged': True, 'max_bellman_violation': 1e-8, 'tolerance': 1e-6}}}) + '\n')
-    return tmp_path
+    return tmp_path / 'cache'
+
+
+def arguments(cache, tmp_path, *options):
+    return ['train', 'figure1', '--alp-cache-root', str(cache),
+            '--server-project', '/server/project', '--results-root', '/server/results',
+            '--dat', str(tmp_path / 'table.dat'), *options]
+
+
+def manifest_at(tmp_path):
+    return json.loads((tmp_path / 'table.manifest.json').read_text())
 
 
 def test_full_configuration_dedup():
@@ -30,145 +42,128 @@ def test_full_configuration_dedup():
     assert share['initial_state'][2] == [1, 2]
 
 
-def test_manifest_commands_and_model_invariants(cache, tmp_path):
-    m = build_manifest(cache, '/server/project with space', '/server/results', seed=1977)
-    assert len(m['runs']) == 300 and m['expected_batches'] == 30 and m['expected_paths'] == 512
-    assert len({r['batch_id'] for r in m['runs']}) == 300
-    assert len({r['output_dir'] for r in m['runs']}) == 300
-    all_seeds = [s for r in m['runs'] for s in r['seeds'].values()]
-    assert len(set(all_seeds)) == len(all_seeds)
-    for r in m['runs']:
-        p = r['params']
-        assert p['decision_set'] == {'first': 'continuous', 'future': 'continuous'}
-        assert p['sampling']['proposal']['num_strata'] == 256
-        assert p['sampling']['sample_path_number'] == 512
-        assert p['theta_domain'] == {'coefficient_bound': None, 'alp_value_floor': False,
-                                     'regularization': 0, 'fixed_coefficients': {}}
-        argv = shlex.split(r['command'])
-        assert argv[:3] == ['python', 'run.py', '--params']
-        assert p['run_type'] == 'figure1_repeated_po'
-        assert json.loads(argv[argv.index('--params') + 1]) == p
-        assert p['reference']['source_uid'] == training_uid(p['configuration'])
-    target = tmp_path / 'bundle'
-    write_bundle(m, target)
-    assert len((target / 'table.dat').read_text().splitlines()) == 300
-    assert json.loads((target / 'manifest.json').read_text()) == m
-    with pytest.raises(FileExistsError):
-        write_bundle(m, target)
-    assert m == build_manifest(cache, '/server/project with space', '/server/results', seed=1977)
-
-
-def test_missing_or_bad_cache_rejected(cache):
-    file = next(cache.glob('*/alp_train.jsonl'))
-    file.write_text('{broken}\n')
-    with pytest.raises(ValueError, match='cache'):
-        build_manifest(cache, '/project', '/results')
-    file.unlink()
-    with pytest.raises(ValueError, match='cache'):
-        build_manifest(cache, '/project', '/results')
-
-
-def test_noncertified_and_nonfinite_coefficients_rejected(cache):
-    file = next(cache.glob('*/alp_train.jsonl'))
-    rows = [json.loads(l) for l in file.read_text().splitlines()]
-    rows[0]['result']['info']['converged'] = False
-    file.write_text('\n'.join(json.dumps(r) for r in rows))
-    with pytest.raises(ValueError, match='certif'):
-        build_manifest(cache, '/project', '/results')
-    rows[0]['result']['info']['converged'] = True
-    rows[0]['result']['args']['coefficients'][0] = float('nan')
-    file.write_text('\n'.join(json.dumps(r) for r in rows))
-    with pytest.raises(ValueError, match='coefficients'):
-        build_manifest(cache, '/project', '/results')
-
-
-def test_generation_never_initializes_solver(cache, monkeypatch, tmp_path):
+def test_train_group_emits_existing_training_records_and_manifest(cache, tmp_path, monkeypatch):
     import gurobipy
-    from param_generation.generate_figure1_po import main
+    from param_generation import datasets
 
     def forbidden(*args, **kwargs):
-        raise AssertionError('generation must not create Gurobi environments or models')
+        raise AssertionError('generation must not initialize a solver')
 
     monkeypatch.setattr(gurobipy, 'Env', forbidden)
     monkeypatch.setattr(gurobipy, 'Model', forbidden)
-    m = main(['--alp-cache-root', str(cache), '--server-project', '/server/project',
-              '--server-results', '/server/results', '--output-bundle', str(tmp_path / 'out')])
-    assert len(m['runs']) == 300
+    generated = []
+
+    def record_generator(*args, **kwargs):
+        records = datasets.generate_penalty_coefficient_training_env(*args, **kwargs)
+        generated.extend(records)
+        return records
+
+    monkeypatch.setattr(cli, 'generate_penalty_coefficient_training_env', record_generator)
+    records = cli.main(arguments(cache, tmp_path))
+    manifest = manifest_at(tmp_path)
+    assert records == generated and len(records) == 300
+    assert len(manifest['display_settings']) == 12 and len(manifest['configurations']) == 10
+    assert manifest['expected_batches'] == 30 and manifest['expected_paths'] == 512
+    assert manifest['seed_base'] == 420000
+    assert len({r['uid'] for r in records}) == 300
+    counts = Counter(r['batch_metadata']['config_id'] for r in records)
+    assert len(counts) == 10 and set(counts.values()) == {30}
+    lines = (tmp_path / 'table.dat').read_text().splitlines()
+    assert len(lines) == 300
+    for index, (record, run, line) in enumerate(zip(records, manifest['runs'], lines)):
+        argv = shlex.split(line)
+        assert argv[:4] == [str(index + 1), 'python', 'run.py', '--params']
+        assert json.loads(argv[4]) == record == run['params']
+        assert shlex.split(run['command']) == argv[1:]
+        assert record['init_state_mode'] == 'shared' and 'run_type' not in record
+        assert record['sample_path_number'] == 512
+        metadata = record['batch_metadata']
+        assert 'run_type' not in metadata
+        assert record['init_state'] == metadata['initial_state']
+        assert metadata['seeds'] == dict(env=420000 + 4 * index, arrival=420001 + 4 * index,
+                                         stop_time=420002 + 4 * index, initial_state=420003 + 4 * index)
+        for stream, field in [('env', 'env_random_seed'), ('arrival', 'arrival_random_seed'),
+                              ('stop_time', 'stop_time_random_seed')]:
+            assert record['env_args'][field] == metadata['seeds'][stream]
+        assert record['init_state_seed'] == metadata['seeds']['initial_state']
+        assert metadata['output_dir'] == '/server/results/' + metadata['batch_id']
+        inner = record['agent_args']['agent_args']
+        assert inner['current_decision_var_type'] == inner['future_decision_var_type'] == 'continuous'
+        assert inner['sample_path_length_proposal'] == metadata['sampling']['proposal']
+        assert inner['initial_coefficients'] == inner['reference_coefficients'] == metadata['reference']['coefficients']
+        assert inner['policy_centering'] is True and inner['cap_policy'] == 'alp'
+        assert inner['save_path_certificates'] is True
+        assert inner['max_iterations'] == 1500 and inner['absolute_gap_tolerance'] == 1e-6
+        assert inner['workers'] == 32
+        assert metadata['solver'] == dict(max_iterations=1500, absolute_gap_tolerance=1e-6, workers=32,
+                                          subproblem_time_limit_seconds=None, master_time_limit_seconds=None)
+        assert metadata['theta_domain'] == dict(coefficient_bound=None, alp_value_floor=False,
+                                                regularization=0, fixed_coefficients={})
+        assert metadata['reference']['source_uid'] == training_uid(metadata['configuration'])
 
 
-def cli_arguments(cache):
-    return ['figure1-repeated-po', '--alp-cache-root', str(cache),
-            '--server-project', '/server/project', '--server-results', '/server/results']
-
-
-def test_common_cli_defaults(cache, tmp_path, monkeypatch):
-    from param_generation import cli
-
-    monkeypatch.chdir(tmp_path)
-    args = cli.build_parser().parse_args(cli_arguments(cache))
-    assert args.dat == 'table.dat'
-    assert args.workers == 32
-    manifest = cli.main(cli_arguments(cache))
-    assert manifest == build_manifest(cache, '/server/project', '/server/results')
-    assert json.loads((tmp_path / 'table.manifest.json').read_text()) == manifest
-    assert len((tmp_path / 'table.dat').read_text().splitlines()) == 300
-
-
-def test_common_cli_custom_outputs_match_existing_generator(cache, tmp_path, monkeypatch):
-    import gurobipy
-    from param_generation import cli
-
-    def forbidden(*args, **kwargs):
-        raise AssertionError('command generation must not initialize Gurobi')
-
-    monkeypatch.setattr(gurobipy, 'Env', forbidden)
-    monkeypatch.setattr(gurobipy, 'Model', forbidden)
-    expected = build_manifest(cache, '/server/project', '/server/results', seed=1987,
-                              workers=4, max_iterations=1500, absolute_gap_tolerance=1e-6,
-                              subproblem_time_limit_seconds=60., master_time_limit_seconds=120.)
-    write_bundle(expected, tmp_path / 'legacy')
-    table = tmp_path / 'commands' / 'po.dat'
-    metadata = tmp_path / 'metadata' / 'po.json'
-    actual = cli.main(cli_arguments(cache) + [
-        '--dat', str(table), '--manifest', str(metadata), '--sample-paths-seed', '1987',
-        '--workers', '4', '--max-iterations', '1500', '--absolute-gap-tolerance', '1e-6',
-        '--subproblem-time-limit-seconds', '60', '--master-time-limit-seconds', '120'])
-    assert actual == expected
-    assert table.read_bytes() == (tmp_path / 'legacy' / 'table.dat').read_bytes()
-    assert metadata.read_bytes() == (tmp_path / 'legacy' / 'manifest.json').read_bytes()
-
-
-def test_common_cli_custom_table_default_manifest(cache, tmp_path):
-    from param_generation import cli
-
-    table = tmp_path / 'nested' / 'commands.dat'
-    manifest = cli.main(cli_arguments(cache) + ['--dat', str(table), '--seed', '987'])
-    assert json.loads(table.with_suffix('.manifest.json').read_text()) == manifest
-    assert manifest['seed_base'] == 987
-
-
-@pytest.mark.parametrize('existing_name', ['commands.dat', 'commands.manifest.json'])
-def test_common_cli_refuses_existing_outputs_without_writing_other_file(cache, tmp_path, existing_name):
-    from param_generation import cli
-
-    existing = tmp_path / existing_name
-    existing.write_text('keep this file')
-    with pytest.raises(FileExistsError):
-        cli.main(cli_arguments(cache) + ['--dat', str(tmp_path / 'commands.dat')])
-    assert existing.read_text() == 'keep this file'
-    assert {p.name for p in tmp_path.glob('commands.*')} == {existing_name}
+def test_train_group_uses_common_options(cache, tmp_path):
+    records = cli.main(arguments(cache, tmp_path, '--num-path-seeds', '2', '--sample-paths-seed', '1977',
+        '--workers', '4', '--max-iterations', '50', '--absolute-gap-tolerance', '0.001',
+        '--subproblem-time-limit-seconds', '60', '--master-time-limit-seconds', '120',
+        '--manifest', str(tmp_path / 'custom.json')))
+    manifest = json.loads((tmp_path / 'custom.json').read_text())
+    assert len(records) == 20 and manifest['expected_batches'] == 2
+    assert not (tmp_path / 'table.manifest.json').exists()
+    assert records[-1]['batch_metadata']['seeds']['initial_state'] == 1977 + 79
+    solver = records[0]['batch_metadata']['solver']
+    assert solver == dict(workers=4, max_iterations=50, absolute_gap_tolerance=.001,
+                         subproblem_time_limit_seconds=60., master_time_limit_seconds=120.)
 
 
 @pytest.mark.parametrize('options', [
-    ['--output-bundle', 'out', '--dat', 'table.dat'],
-    ['--output-bundle', 'out', '--manifest', 'manifest.json'],
+    ['--coefficient-bound', '10'], ['--alp-value-floor'], ['--fix-intercept'],
+    ['--num-init-states', '2'], ['--expected-init-state'], ['--sample-path-number', '256'],
+    ['--penalty-function', 'linear_penalty'], ['--cap-policy', 'penalized_hindsight'],
+    ['--num-path-seeds', '0'], ['--max-iterations', '0'], ['--absolute-gap-tolerance', '0'],
+    ['--sample-paths-seed', '-1'],
 ])
-def test_common_cli_rejects_conflicting_outputs_before_loading_cache(tmp_path, options):
-    from param_generation import cli
+def test_group_rejects_incompatible_settings_before_writing(cache, tmp_path, options):
+    with pytest.raises(ValueError):
+        cli.main(arguments(cache, tmp_path, *options))
+    assert not (tmp_path / 'table.dat').exists()
+    assert not (tmp_path / 'table.manifest.json').exists()
 
-    with pytest.raises(SystemExit) as exc:
-        cli.main(cli_arguments(tmp_path / 'missing-cache') + options)
-    assert exc.value.code == 2
+
+@pytest.mark.parametrize('mode', ['missing', 'malformed', 'uncertified', 'nonfinite'])
+def test_group_validates_real_cache_shape_before_writing(cache, tmp_path, mode):
+    path = next(cache.glob('*/alp_train.jsonl'))
+    if mode == 'missing':
+        path.unlink()
+    elif mode == 'malformed':
+        path.write_text('{broken}\n')
+    else:
+        rows = [json.loads(line) for line in path.read_text().splitlines()]
+        if mode == 'uncertified':
+            rows[0]['result']['info']['converged'] = False
+        else:
+            rows[0]['result']['args']['coefficients'][0] = float('nan')
+        path.write_text('\n'.join(json.dumps(row) for row in rows))
+    with pytest.raises(ValueError):
+        cli.main(arguments(cache, tmp_path))
+    assert not (tmp_path / 'table.dat').exists()
+
+
+@pytest.mark.parametrize('existing', ['table.dat', 'table.manifest.json'])
+def test_group_protects_existing_command_bundle(cache, tmp_path, existing):
+    (tmp_path / existing).write_text('keep')
+    with pytest.raises(FileExistsError):
+        cli.main(arguments(cache, tmp_path))
+    assert (tmp_path / existing).read_text() == 'keep'
+    assert len(list(tmp_path.glob('table*'))) == 1
+
+
+def test_removed_subcommand_and_helper_entrypoint():
+    from param_generation import generate_figure1_po
+    with pytest.raises(SystemExit):
+        cli.build_parser().parse_args(['figure1-repeated-po', '--alp-cache-root', '/cache',
+                                       '--server-project', '/project', '--server-results', '/results'])
+    assert not hasattr(generate_figure1_po, 'main')
 
 
 def test_bundle_writer_rejects_identical_output_paths_before_writing(tmp_path):
@@ -176,13 +171,3 @@ def test_bundle_writer_rejects_identical_output_paths_before_writing(tmp_path):
     with pytest.raises(ValueError, match='distinct'):
         write_bundle({'runs': []}, dat_file=output, manifest_file=output)
     assert not output.exists()
-
-
-def test_standalone_entrypoint_delegates_to_common_cli(monkeypatch):
-    from param_generation import cli, generate_figure1_po
-
-    captured = []
-    monkeypatch.setattr(cli, 'main', lambda argv: captured.append(argv) or 'delegated')
-    assert generate_figure1_po.main(['--help']) == 'delegated'
-    assert captured == [['figure1-repeated-po', '--help']]
-

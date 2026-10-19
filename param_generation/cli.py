@@ -1,6 +1,8 @@
 import argparse
 import copy
 import json
+import math
+from pathlib import PurePosixPath
 import os
 import shutil
 import time
@@ -18,9 +20,11 @@ from param_generation.datasets import (
     offset_sample_generation_seeds,
 )
 from param_generation.experiment_specs import build_variation_test_env
-from param_generation.generate_figure1_po import build_manifest, write_bundle
+from param_generation.generate_figure1_po import (
+    batch_metadata, build_manifest, figure1_training_group, write_bundle,
+)
 from param_generation.generating_functions import GENERATING_FUNCTION_CLASSES, build_generating_function, normalize_generating_function_spec
-from param_generation.mutators import mutate_initial_state_congestion
+from param_generation.mutators import mutate_initial_state_congestion, mutate_stratified_geometric_scenario
 from param_generation.partial_relaxation import partial_relaxation_records, warm_up_states
 from param_generation.potential_improvement import generate_potential_improvement_records
 from param_generation.registry import EXPERIMENT_SPECS
@@ -231,15 +235,16 @@ def build_parser():
     train = sub.add_parser(
         'train', help='Penalty-coefficient training commands (one per variant); '
                       "each variant's scenario count comes from its agent_args.")
-    train.add_argument('experiment', choices=sorted(EXPERIMENT_SPECS))
+    train.add_argument('experiment', choices=sorted([*EXPERIMENT_SPECS, 'figure1']))
     train.add_argument('--variants', default=None,
                        help='comma-separated mutate_val values to keep '
                             '(default: all variants of the experiment)')
     train.add_argument('--dat', default='table.dat')
     train.add_argument('--init-state-seed', type=int, default=12345)
-    train.add_argument('--sample-paths-seed', type=int, default=42,
+    train.add_argument('--sample-paths-seed', type=int, default=None,
                        help='first sample-path seed; with --num-path-seeds M '
-                            'the seeds seed, seed+1, ..., seed+M-1 are used')
+                            'the seeds seed, seed+1, ..., seed+M-1 are used (default 42); '
+                            'figure1 uses four separate streams per batch (default 420000)')
     train.add_argument(
         '--num-init-states', type=int, default=0, metavar='K',
         help='emit K commands per variant, each training on ONE fixed initial '
@@ -253,9 +258,10 @@ def build_parser():
              'state of the occupancy experiments) shared by all scenarios; '
              'mutually exclusive with --num-init-states')
     train.add_argument(
-        '--num-path-seeds', type=int, default=1, metavar='M',
+        '--num-path-seeds', type=int, default=None, metavar='M',
         help='emit M commands per variant (and per initial state), one per '
-             'consecutive sample-path seed starting at --sample-paths-seed')
+             'consecutive sample-path seed starting at --sample-paths-seed '
+             '(default 1; figure1 default 30)')
     train.add_argument(
         '--penalty-function', choices=sorted(GENERATING_FUNCTION_CLASSES), default=None,
         help='generating function of the penalty: linear_penalty (default, the '
@@ -281,7 +287,7 @@ def build_parser():
         '--init-occupancy', type=float, default=None, metavar='FRACTION',
         help='set the training initial state to this occupancy of total capacity; use with --reset-init-state')
     train.add_argument(
-        '--cap-policy', choices=('alp', 'penalized_hindsight'), default='penalized_hindsight',
+        '--cap-policy', choices=('alp', 'penalized_hindsight'), default=None,
         help='feasible policy whose penalized cost caps each scenario epigraph')
     train.add_argument(
         '--policy-cap-scenarios', type=int, default=64, metavar='N',
@@ -331,6 +337,25 @@ def build_parser():
         help='pin coefficient 0 (the intercept of absorption_alp_penalty) at 0 during '
              'training; its penalty term is action-independent with zero mean, so it '
              'only adds variance and drives the mean objective to the coefficient bound')
+
+    train.add_argument('--sample-path-number', type=int,
+                       help="override each variant's training scenario count")
+    train.add_argument('--workers', type=int, choices=range(1, 33), metavar='N',
+                       help='maximum parallel subproblem workers; figure1 defaults to 32')
+    train.add_argument('--max-iterations', type=int,
+                       help='Benders iteration limit; figure1 defaults to 1500')
+    train.add_argument('--absolute-gap-tolerance', type=float,
+                       help='absolute Benders gap tolerance; figure1 defaults to 1e-6')
+    train.add_argument('--subproblem-time-limit-seconds', type=float)
+    train.add_argument('--master-time-limit-seconds', type=float)
+    train.add_argument('--alp-cache-root', metavar='DIR',
+                       help='figure1: existing certified ALP caches; never trains missing fits')
+    train.add_argument('--server-project', metavar='DIR',
+                       help='figure1: absolute directory from which run.py will execute')
+    train.add_argument('--results-root', metavar='DIR',
+                       help='figure1: absolute result root for separate batch directories')
+    train.add_argument('--manifest', metavar='JSON',
+                       help='figure1: audit manifest (default <dat-stem>.manifest.json)')
 
     def add_eval_arguments(sub_parser):
         sub_parser.add_argument('experiment', choices=sorted(EXPERIMENT_SPECS))
@@ -440,31 +465,6 @@ def build_parser():
     comparison.add_argument('--paths', type=int, default=4096)
     comparison.add_argument('--groups', type=int, default=500)
     comparison.add_argument('--dat', default='table.dat')
-
-    repeated_po = sub.add_parser(
-        'figure1-repeated-po',
-        help='Figure 1 repeated PO: 10 unique configurations, 30 batches each, 512 paths per batch.')
-    repeated_po.add_argument('--alp-cache-root', required=True, metavar='DIR',
-                             help='existing certified ALP caches; generation does not train or run a solver')
-    repeated_po.add_argument('--server-project', required=True, metavar='DIR',
-                             help='absolute project directory from which run.py will execute on the server')
-    repeated_po.add_argument('--server-results', required=True, metavar='DIR',
-                             help='absolute server result root for the new campaign')
-    destination = repeated_po.add_mutually_exclusive_group()
-    destination.add_argument('--dat', default='table.dat',
-                             help='new Meta Farm command table (default: table.dat; never appends or overwrites)')
-    destination.add_argument('--output-bundle', metavar='DIR',
-                             help='compatibility option: write table.dat and manifest.json in this directory')
-    repeated_po.add_argument('--manifest', metavar='JSON',
-                             help='run manifest (default: <dat-stem>.manifest.json; excludes --output-bundle)')
-    repeated_po.add_argument('--sample-paths-seed', '--seed', dest='seed', type=int, default=420000,
-                             help='base seed for independent repeated batches (default: 420000)')
-    repeated_po.add_argument('--workers', type=int, choices=range(1, 33), default=32, metavar='N',
-                             help='parallel subproblem workers per training job, 1--32 (default: 32)')
-    repeated_po.add_argument('--max-iterations', type=int, default=1000)
-    repeated_po.add_argument('--absolute-gap-tolerance', type=float, default=1e-5)
-    repeated_po.add_argument('--subproblem-time-limit-seconds', type=float)
-    repeated_po.add_argument('--master-time-limit-seconds', type=float)
 
     improvement = sub.add_parser(
         'improvement', help='Upper bound on the potential penalty improvement over theta_ALP.')
@@ -701,9 +701,81 @@ def _apply_training_settings(test_envs, initial_coefficients, source, fix_interc
     return updated
 
 
+def _figure1_train_inputs(args):
+    incompatible = (args.variants is not None or args.num_init_states or args.expected_init_state
+                    or args.init_occupancy is not None or args.paths_per_state is not None
+                    or args.coefficient_bound is not None or args.fix_intercept or args.fix_block
+                    or args.intercept_bound is not None or args.alp_value_floor
+                    or args.alp_value_floor_tolerance is not None or args.min_norm_slack
+                    or args.min_norm_every_iteration or args.init_coefficients is not None
+                    or args.name is not None or args.init_state_seed != 12345
+                    or args.penalty_function not in (None, 'absorption_alp_penalty')
+                    or args.cap_policy not in (None, 'alp')
+                    or args.sample_path_number not in (None, 512))
+    if incompatible:
+        raise ValueError('figure1 requires fixed reset states, continuous decisions, 512 paths, '
+                         'the certified ALP reference, and unrestricted coefficients')
+    if not args.alp_cache_root or not args.server_project or not args.results_root:
+        raise ValueError('train figure1 needs --alp-cache-root, --server-project and --results-root')
+    if not all(PurePosixPath(path).is_absolute() for path in (args.server_project, args.results_root)):
+        raise ValueError('server project and result roots must be absolute paths')
+    args.reset_init_state = True
+    args.penalty_function = 'absorption_alp_penalty'
+    args.policy_centering = True
+    args.cap_policy = 'alp'
+    args.sample_path_number = 512
+    for name, default in [('workers', 32), ('max_iterations', 1500), ('absolute_gap_tolerance', 1e-6)]:
+        if getattr(args, name) is None:
+            setattr(args, name, default)
+    configs, display, test_envs = figure1_training_group(args.alp_cache_root)
+    by_uid = {config['config_id'][len('figure1_'):]: config for config in configs}
+    for variant in test_envs.values():
+        config = by_uid[get_uid(json.loads(json.dumps(variant['env_args'])))]
+        reference = config['reference']
+        mutate_stratified_geometric_scenario(variant['agent_args'], None, num_strata=256,
+                                            sample_path_number=512)
+        variant['agent_args']['agent_args'].update(
+            current_decision_var_type='continuous', future_decision_var_type='continuous',
+            initial_coefficients=copy.deepcopy(reference['coefficients']),
+            reference_coefficients=copy.deepcopy(reference['coefficients']),
+            initial_coefficients_source={'file': reference['source'], 'uid': reference['source_uid'],
+                                         'sha256': reference['source_sha256'],
+                                         'certificate': copy.deepcopy(reference['certificate'])},
+            save_path_certificates=True)
+    return configs, display, by_uid, test_envs
+
+
 def _run_train(args):
-    test_envs = _select_variants(
-        build_variation_test_env(EXPERIMENT_SPECS[args.experiment]), args.variants)
+    args = copy.copy(args)
+    figure1 = args.experiment == 'figure1'
+    if args.sample_paths_seed is None:
+        args.sample_paths_seed = 420000 if figure1 else 42
+    if args.num_path_seeds is None:
+        args.num_path_seeds = 30 if figure1 else 1
+    if args.num_path_seeds < 1:
+        raise ValueError('--num-path-seeds must be positive')
+    if figure1:
+        configs, display, by_uid, test_envs = _figure1_train_inputs(args)
+        if args.sample_paths_seed < 0 or args.sample_paths_seed + 4 * len(configs) * args.num_path_seeds > 2**32:
+            raise ValueError('seed range must fit unsigned 32-bit generator seeds')
+    else:
+        if any(getattr(args, key) is not None for key in
+               ('alp_cache_root', 'server_project', 'results_root', 'manifest')):
+            raise ValueError('ALP cache and manifest options currently describe the figure1 experiment group')
+        test_envs = _select_variants(
+            build_variation_test_env(EXPERIMENT_SPECS[args.experiment]), args.variants)
+        args.cap_policy = args.cap_policy or 'penalized_hindsight'
+    solver = {key: getattr(args, key) for key in
+              ('workers', 'max_iterations', 'absolute_gap_tolerance',
+               'subproblem_time_limit_seconds', 'master_time_limit_seconds')}
+    for key, value in {**solver, 'sample_path_number': args.sample_path_number}.items():
+        if value is not None and (not math.isfinite(value) or value <= 0):
+            raise ValueError(f'{key} must be positive and finite')
+    for variant in test_envs.values():
+        inner = variant['agent_args']['agent_args']
+        inner.update({key: value for key, value in solver.items() if value is not None or figure1})
+        if args.sample_path_number is not None:
+            inner['sample_path_number'] = args.sample_path_number
     test_envs = _apply_penalty_function(test_envs, args.penalty_function)
     if args.alp_value_floor and args.init_coefficients is None:
         raise ValueError('--alp-value-floor needs --init-coefficients: they are the theta*_ALP '
@@ -711,7 +783,7 @@ def _run_train(args):
     if args.alp_value_floor_tolerance is not None and not args.alp_value_floor:
         raise ValueError('--alp-value-floor-tolerance needs --alp-value-floor')
     if args.policy_centering:
-        if args.init_coefficients is None:
+        if args.init_coefficients is None and not figure1:
             raise ValueError('--policy-centering needs --init-coefficients: they anchor the policy and penalty')
         if args.penalty_function != 'absorption_alp_penalty':
             raise ValueError('--policy-centering needs --penalty-function absorption_alp_penalty')
@@ -761,16 +833,33 @@ def _run_train(args):
             env = get_config_by_type('infinite_custom', args=variant['env_args']).env
             init_states = [alp_expected_initial_state(env)]
         for init_state in init_states:
-            for path_seed in path_seeds:
+            for repetition, path_seed in enumerate(path_seeds, start=1):
+                extras = {}
+                init_state_seed = args.init_state_seed
+                record_key = key
+                if figure1:
+                    config = by_uid[get_uid(json.loads(json.dumps(variant['env_args'])))]
+                    metadata = batch_metadata(config, repetition, len(records), args.sample_paths_seed,
+                                              args.results_root, solver)
+                    extras = {'sampling_seeds': metadata['seeds'], 'batch_metadata': metadata}
+                    init_state_seed = metadata['seeds']['initial_state']
+                    record_key = (key[0], 'figure1/' + config['config_id'], key[2])
                 records.extend(generate_penalty_coefficient_training_env(
-                    {key: variant},
+                    {record_key: variant},
                     dat_file=None,
                     init_state=init_state,
                     sample_path_number=sample_path_number,
-                    init_state_seed=args.init_state_seed,
+                    init_state_seed=init_state_seed,
                     sample_paths_seed=path_seed,
+                    **extras,
                 ))
-    write_command_file(records, args.dat)
+    if figure1:
+        manifest = build_manifest(configs, display, records, args.server_project, args.results_root,
+                                  args.sample_paths_seed, args.num_path_seeds, args.sample_path_number)
+        write_bundle(manifest, dat_file=args.dat, manifest_file=args.manifest)
+        print(f"Generated {len(records)} training commands for {len(configs)} configurations")
+    else:
+        write_command_file(records, args.dat)
     return records
 
 
@@ -931,28 +1020,9 @@ def _run_improvement(args):
     return records
 
 
-def _run_figure1_repeated_po(args):
-    manifest = build_manifest(
-        args.alp_cache_root, args.server_project, args.server_results,
-        seed=args.seed, workers=args.workers, max_iterations=args.max_iterations,
-        absolute_gap_tolerance=args.absolute_gap_tolerance,
-        subproblem_time_limit_seconds=args.subproblem_time_limit_seconds,
-        master_time_limit_seconds=args.master_time_limit_seconds)
-    if args.output_bundle is not None:
-        write_bundle(manifest, args.output_bundle)
-    else:
-        write_bundle(manifest, dat_file=args.dat, manifest_file=args.manifest)
-    print(f"Generated {len(manifest['runs'])} commands for {len(manifest['configurations'])} configurations")
-    return manifest
-
-
 def main(argv=None):
     parser = build_parser()
     args = parser.parse_args(argv)
-    if args.command == 'figure1-repeated-po':
-        if args.output_bundle is not None and args.manifest is not None:
-            parser.error('--output-bundle cannot be combined with --manifest')
-        return _run_figure1_repeated_po(args)
     if args.command == 'train':
         return _run_train(args)
     if args.command == 'eval':

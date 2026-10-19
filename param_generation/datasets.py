@@ -499,6 +499,8 @@ def generate_penalty_coefficient_training_env(
     sample_path_number=256,
     init_state_seed=12345,
     sample_paths_seed=42,
+    sampling_seeds=None,
+    batch_metadata=None,
 ):
     init_state_mode, normalized_init_state = _normalize_penalty_training_init_state(
         init_state, sample_path_number
@@ -508,7 +510,12 @@ def generate_penalty_coefficient_training_env(
         base_env_args = copy.deepcopy(variant['env_args'])
         agent_args = copy.deepcopy(variant.get('agent_args', {}))
 
-        _pin_sampling_seeds(base_env_args, sample_paths_seed)
+        if sampling_seeds is None:
+            _pin_sampling_seeds(base_env_args, sample_paths_seed)
+        else:
+            for stream, field in [('env', 'env_random_seed'), ('arrival', 'arrival_random_seed'),
+                                  ('stop_time', 'stop_time_random_seed')]:
+                base_env_args[field] = int(sampling_seeds[stream])
 
         save_params = {
             'experiment_name': experiment_name,
@@ -531,6 +538,8 @@ def generate_penalty_coefficient_training_env(
             'init_state_seed': init_state_seed,
             'sample_path_number': sample_path_number,
         })
+        if batch_metadata is not None:
+            save_params['batch_metadata'] = copy.deepcopy(batch_metadata)
         results.append(save_params)
 
     write_command_file(results, dat_file)

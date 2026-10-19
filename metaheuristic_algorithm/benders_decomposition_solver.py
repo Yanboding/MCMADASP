@@ -278,6 +278,8 @@ class SubproblemWorker:
             self.objective_builder_fn(self.model, action_values)
         self._set_output_flag(self.model, verbose)
         self.model.optimize()
+        from experiments.po_certificates import min_certificate
+        self.last_certificate = min_certificate(self.model)
         if self.model.Status == GRB.OPTIMAL:
             v = self.model.ObjVal
             if self.cut_gradient_fn is not None:
@@ -293,6 +295,9 @@ class SubproblemWorker:
                     duals = np.array([c.Pi for c in self.link_rows], dtype=float)
             return True, v, duals
         else:
+            if self.model.Status != GRB.INFEASIBLE:
+                raise RuntimeError(f"Subproblem {self.subproblem_id} stopped with "
+                                   f"{get_status_string(self.model.Status)}; training requires OPTIMAL subproblems")
             if self.link_rows is None or len(self.link_rows) == 0:
                 raise RuntimeError(
                     f"Subproblem {self.subproblem_id} is infeasible/unbounded but has no linking constraints for feasibility rays"
@@ -425,6 +430,9 @@ class BendersDecompositionSolver:
               purge_slack_tol=1e-6):
         info = {}
         summary = {}
+        self.master_certificate_history = []
+        self.best_master_certificate = None
+        termination_reason = "max_iterations"
         lower_bound = -GRB.INFINITY
         upper_bound = GRB.INFINITY
         core_point = None
@@ -567,6 +575,7 @@ class BendersDecompositionSolver:
                     print('-' * 20)
                     continue
                 if abs(gap) < tol:
+                    termination_reason = 'absolute_gap_tolerance'
                     info = {}
                     break
                 if gap < 0:
@@ -581,6 +590,7 @@ class BendersDecompositionSolver:
                           f"subproblem cost-to-go {cost_to_go_estimation:.10g}, "
                           f"gap {gap:.6g} (tol {tol:g}), "
                           f"worst scenario {scenario_ids[worst]} gap {float(scenario_gaps[worst]):.6g}")
+                    termination_reason = 'invalid_gap'
                     info = {'debug': 'lower_bound_exceeded_upper_bound'}
                     break
                 print('-' * 20)
@@ -590,6 +600,8 @@ class BendersDecompositionSolver:
             if executor is not None:
                 executor.shutdown(wait=False)
         info.update(summary)
+        info['termination_reason'] = termination_reason
+        info['master_certificate'] = copy.deepcopy(self.best_master_certificate)
         if min_norm_action and min_norm_slack and summary and not info.get('debug'):
             self._relax_action_towards_the_minimum_norm(info, min_norm_slack, parallel, verbose)
         return upper_bound, info
@@ -694,8 +706,26 @@ class BendersDecompositionSolver:
         values = np.array([v for (_, v, _) in results], dtype=float)
         return values, self.objective_value(action, values, [w.subproblem_id for w in active_workers])
 
+    def evaluate_action_certificates(self, action, parallel=True, max_workers=None):
+        values, objective = self.evaluate_action(action, parallel=parallel, max_workers=max_workers)
+        workers = self.workers[:self.theta_vars.shape[0]]
+        return values, objective, [copy.deepcopy(worker.last_certificate) for worker in workers]
+
+    def _record_primary_master_certificate(self, global_certificate=True):
+        if not global_certificate or self.master_model.ModelSense != GRB.MAXIMIZE:
+            return
+        from experiments.po_certificates import max_certificate
+        certificate = max_certificate(self.master_model)
+        if not hasattr(self, 'master_certificate_history'):
+            self.master_certificate_history = []
+            self.best_master_certificate = None
+        self.master_certificate_history.append(copy.deepcopy(certificate))
+        best = self.best_master_certificate
+        if certificate['valid'] and (best is None or certificate['objective_bound'] < best['objective_bound']):
+            self.best_master_certificate = copy.deepcopy(certificate)
+
     def _solve_master_step(self, global_iteration, purge_slack_tol, min_norm_action, verbose,
-                           min_norm_every_iteration=False):
+                           min_norm_every_iteration=False, global_certificate=True):
         start = time.time()
         solved = solve_and_handle_errors(self.master_model, verbose=verbose)
         retry_cold = not solved and self.master_model.Status in (
@@ -719,6 +749,7 @@ class BendersDecompositionSolver:
             self.master_model.reset()
             self.master_model.Params.Presolve = 0
             solved = solve_and_handle_errors(self.master_model, verbose=verbose)
+        self._record_primary_master_certificate(global_certificate)
         if not solved:
             # A failed cold retry must not trigger another diagnostic solve.
             diagnostics = self._save_master_failure_diagnostics(
@@ -773,7 +804,7 @@ class BendersDecompositionSolver:
         self.action_vars.ub = fixed
         try:
             _, master_obj, theta_values = self._solve_master_step(
-                global_iteration, purge_slack_tol, False, verbose)
+                global_iteration, purge_slack_tol, False, verbose, global_certificate=False)
         finally:
             self.action_vars.lb = original_lb
             self.action_vars.ub = original_ub

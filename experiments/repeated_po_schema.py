@@ -136,6 +136,7 @@ def validate_group(batches, expected_batches=30, expected_paths=512):
 def match_manifest(batch, run):
     """Compare downloaded result metadata to the saved, pre-run manifest."""
     params = run.get('params', run.get('parameters', run))
+    params = params.get('batch_metadata', params)
     for key in ('config_id', 'batch_id', 'repetition', 'configuration', 'initial_state',
                 'decision_set', 'theta_domain', 'reference', 'sampling', 'solver', 'seeds'):
         if batch.get(key) != params.get(key):

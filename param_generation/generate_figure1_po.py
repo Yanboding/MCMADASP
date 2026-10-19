@@ -5,7 +5,6 @@ import json
 import math
 from pathlib import Path, PurePosixPath
 import shlex
-import sys
 
 from param_generation.experiment_specs import build_variation_test_env
 from param_generation.registry import EXPERIMENT_SPECS
@@ -75,56 +74,59 @@ def _reference(config, cache_root):
             'certificate': copy.deepcopy(matches[0]['result']['info'])}
 
 
-def build_manifest(cache_root, server_project, server_results, seed=420000,
-                   max_iterations=1000, absolute_gap_tolerance=1e-5,
-                   subproblem_time_limit_seconds=None, master_time_limit_seconds=None, workers=32):
-    """Return a complete reproducible command bundle; no experiment runs here."""
-    if seed < 0 or seed + 1200 >= 2**32:
-        raise ValueError('seed range must fit unsigned 32-bit generator seeds')
-    if workers < 1 or max_iterations < 1 or not absolute_gap_tolerance > 0:
-        raise ValueError('workers, max_iterations and absolute_gap_tolerance must be positive')
-    for limit in (subproblem_time_limit_seconds, master_time_limit_seconds):
-        if limit is not None and (not math.isfinite(limit) or limit <= 0):
-            raise ValueError('time limits must be positive finite values')
-    if not PurePosixPath(server_project).is_absolute() or not PurePosixPath(server_results).is_absolute():
-        raise ValueError('server project and result roots must be absolute paths')
+def figure1_training_group(cache_root):
+    """Load the existing variants and their certified, configuration-matched ALP fits."""
     configurations, display = figure1_configurations()
-    runs = []
+    variants = {}
     for config in configurations:
         config['reference'] = _reference(config, cache_root)
-        for repetition in range(1, 31):
-            index = len(runs)
-            batch_id = f"{config['config_id']}_r{repetition:02d}"
-            seeds = dict(zip(('env', 'arrival', 'stop_time', 'initial_state'),
-                             range(seed + 4 * index, seed + 4 * index + 4)))
-            params = {
-                'run_type': 'figure1_repeated_po',
-                'schema_version': 1, 'config_id': config['config_id'], 'batch_id': batch_id,
-                'repetition': repetition, 'configuration': copy.deepcopy(config['configuration']),
-                'initial_state': copy.deepcopy(config['initial_state']),
-                'decision_set': {'first': 'continuous', 'future': 'continuous'},
-                'theta_domain': {'coefficient_bound': None, 'alp_value_floor': False,
-                                 'regularization': 0, 'fixed_coefficients': {}},
-                'seeds': seeds, 'reference': copy.deepcopy(config['reference']),
-                'sampling': {'sample_path_number': 512, 'proposal': {
-                    'type': 'stratified_geometric', 'discount_factor_proposal': .99, 'num_strata': 256},
-                    'tau_definition': 'arrival_length_plus_one',
-                    'weight_convention': 'stratum_mass_over_count',
-                    'quantile_clip': [1e-12, .999999999999]},
-                'solver': {'max_iterations': max_iterations,
-                           'absolute_gap_tolerance': absolute_gap_tolerance,
-                           'subproblem_time_limit_seconds': subproblem_time_limit_seconds,
-                           'master_time_limit_seconds': master_time_limit_seconds, 'workers': workers},
-                'output_dir': str(PurePosixPath(server_results) / batch_id),
-            }
-            command = shlex.join(['python', 'run.py', '--params',
-                                  json.dumps(params, sort_keys=True, allow_nan=False)])
-            runs.append({'case_id': index + 1, 'batch_id': batch_id, 'config_id': config['config_id'],
-                         'repetition': repetition, 'seeds': seeds, 'output_dir': params['output_dir'],
-                         'params': params, 'command': command})
+        experiment = config['source_experiment'].removesuffix('_alp_alpcoef')
+        for key, variant in build_variation_test_env(EXPERIMENT_SPECS[experiment]).items():
+            if get_uid(json.loads(json.dumps(variant['env_args']))) == config['config_id'][len('figure1_'):]:
+                variant['env_args'] = copy.deepcopy(config['configuration'])
+                variants[key] = variant
+                break
+    return configurations, display, variants
+
+
+def batch_metadata(config, repetition, index, seed, results_root, solver):
+    """Describe one ordinary training record without selecting an execution route."""
+    batch_id = f"{config['config_id']}_r{repetition:02d}"
+    return {
+        'schema_version': 1, 'config_id': config['config_id'], 'batch_id': batch_id,
+        'repetition': repetition, 'configuration': copy.deepcopy(config['configuration']),
+        'initial_state': copy.deepcopy(config['initial_state']),
+        'decision_set': {'first': 'continuous', 'future': 'continuous'},
+        'theta_domain': {'coefficient_bound': None, 'alp_value_floor': False,
+                         'regularization': 0, 'fixed_coefficients': {}},
+        'seeds': dict(zip(('env', 'arrival', 'stop_time', 'initial_state'),
+                          range(seed + 4 * index, seed + 4 * index + 4))),
+        'reference': copy.deepcopy(config['reference']),
+        'sampling': {'sample_path_number': 512, 'proposal': {
+            'type': 'stratified_geometric', 'discount_factor_proposal': .99, 'num_strata': 256},
+            'tau_definition': 'arrival_length_plus_one',
+            'weight_convention': 'stratum_mass_over_count',
+            'quantile_clip': [1e-12, .999999999999]},
+        'solver': copy.deepcopy(solver),
+        'output_dir': str(PurePosixPath(results_root) / batch_id),
+    }
+
+
+def build_manifest(configurations, display, records, server_project, results_root, seed,
+                   repetitions, sample_path_number):
+    """Index records already produced by the standard training generator."""
+    runs = []
+    for index, record in enumerate(records):
+        metadata = record['batch_metadata']
+        command = shlex.join(['python', 'run.py', '--params',
+                              json.dumps(record, sort_keys=True, allow_nan=False)])
+        runs.append({'case_id': index + 1,
+                     **{key: copy.deepcopy(metadata[key]) for key in
+                        ('batch_id', 'config_id', 'repetition', 'seeds', 'output_dir')},
+                     'params': record, 'command': command})
     return {'schema_version': 1, 'display_settings': display, 'configurations': configurations,
-            'runs': runs, 'expected_batches': 30, 'expected_paths': 512,
-            'server_project': str(server_project), 'server_results': str(server_results),
+            'runs': runs, 'expected_batches': repetitions, 'expected_paths': sample_path_number,
+            'server_project': str(server_project), 'server_results': str(results_root),
             'seed_base': seed, 'execution_working_directory': str(server_project)}
 
 
@@ -150,14 +152,3 @@ def write_bundle(manifest, output_bundle=None, *, dat_file=None, manifest_file=N
     with table.open('x') as handle:
         for run in manifest['runs']:
             handle.write(f"{run['case_id']} {run['command']}\n")
-
-
-def main(argv=None):
-    """Compatibility entrypoint; the shared CLI owns argument parsing."""
-    from param_generation.cli import main as cli_main
-
-    return cli_main(['figure1-repeated-po', *(sys.argv[1:] if argv is None else argv)])
-
-
-if __name__ == '__main__':
-    main()

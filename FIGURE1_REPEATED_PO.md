@@ -9,24 +9,25 @@ The twelve displayed settings give ten unique environment configurations. Each c
 From the project root:
 
 ```bash
-python generate_params.py figure1-repeated-po \
+python generate_params.py train figure1 \
   --alp-cache-root /Users/yanboding/Desktop/PhdTopic/MCMADASP/experiments/results \
   --server-project /home/dingyanb/projects/def-sarhangi/dingyanb/MCMADASP \
-  --server-results /home/dingyanb/projects/def-sarhangi/dingyanb/MCMADASP/experiments/results/figure1_repeated_po_20261018 \
+  --results-root /home/dingyanb/projects/def-sarhangi/dingyanb/MCMADASP/experiments/results/figure1_repeated_po_20261018 \
   --dat /tmp/figure1_repeated_po_20261018/table.dat \
   --manifest /tmp/figure1_repeated_po_20261018/manifest.json \
+  --num-path-seeds 30 --sample-path-number 512 --sample-paths-seed 420000 \
   --max-iterations 1500 --absolute-gap-tolerance 1e-6 --workers 32
 ```
 
-This writes 300 `python run.py --params ...` commands to `table.dat` and records all parameters and setting aliases in `manifest.json`. It does not initialize a solver or run training. `run.py` recognizes `run_type=figure1_repeated_po` and dispatches to the shared batch-training implementation before allocating legacy solver environments. It accepts `--params`, `--params_file` and `--job_id`, including Meta Farm's existing params-file conversion. Existing command bundles and batch results are not overwritten silently.
+This writes 300 ordinary `python run.py --params ...` training records to `table.dat` and records all parameters and setting aliases in `manifest.json`. `figure1` is an experiment group under the existing `train` command. Generation uses `generate_penalty_coefficient_training_env`; each record has `init_state_mode="shared"` and executes the existing `run.train_penalty_coefficients_for_env → ApproxQAgent.benders_decomposition_train → BendersDecompositionSolver.solve` chain. No separate Figure 1 training driver or optimization loop exists.
 
-As with the other CLI subcommands, `--dat` defaults to `table.dat`. If `--manifest` is omitted, it defaults to `<dat-stem>.manifest.json` beside that table. `--sample-paths-seed` (alias `--seed`) sets the base seed. `--workers` controls subproblem workers within each job, not the number of Meta Farm jobs. The older generator module forwards to this same CLI; `--output-bundle DIR` remains available instead of `--dat`/`--manifest`. Previously generated commands remain supported for existing campaigns; do not replace a command table while its farm is active.
+The group defaults to 30 repetitions, 512 paths, base seed 420000, 32 workers, 1500 iterations and absolute gap tolerance 1e-6. The normal `train` command retains its existing defaults for other experiments. `--dat` defaults to `table.dat`; `--manifest` defaults to `<dat-stem>.manifest.json`. `--workers` caps the shared subproblem environment pool within each job. Commands do not initialize a solver or run training. Existing command bundles and completed batch results are not overwritten. Old dedicated `run_type` command tables must be regenerated while the farm is inactive.
 
 ## Training and certificates
 
-For each batch the fixed ALP policy supplies the gradient and the upper cap evaluated at the fixed reference coefficients. The driver maximizes the weighted sum of the IR value minus the policy-based control variate. It reuses the existing continuous subproblem builders and adds affine upper cuts from feasible subproblem solutions. It saves the best finite **primary MAX master bound**, with all objective constants included. A MIN incumbent is not treated as a lower certificate.
+For each batch the fixed ALP policy supplies the gradient and the upper cap evaluated at the fixed reference coefficients. The existing Benders method maximizes the weighted sum of the IR value minus the policy-based control variate, preserving its minimum-norm tie breaking and continuous-decision training. Optional audit recording removes the artificial scenario cap and retains the fixed-policy cap. It snapshots the finite **primary MAX master bound before any minimum-norm auxiliary solve**. A master with coefficients temporarily fixed to the initial vector is excluded from global certificates.
 
-Each run writes `batch.json`, including coefficients, primary master certificate, candidate lower bound, solver gap, timing, version and seeds. Each path has its stratum/weight, arrival length, termination time, hashes, policy gradient, the fitted/zero/ALP raw IR costs and MIN certificates, and both paired raw differences. Saved fitted cost and bound snapshots refer to the selected coefficient vector. Interrupted MIN solves use their finite valid lower certificates for conservative baseline subtraction; missing certificates fail validation. No master or subproblem solves are required for later local analysis.
+Each run retains the usual training JSONL and checkpoint files and additionally writes `batch.json`. The audit contains coefficients, primary master certificate, candidate lower bound, solver gap, timing, version and seeds. Each path has its stratum/weight, arrival length, termination time, hashes, policy gradient, the fitted/zero/ALP raw IR costs and MIN certificates, and both paired raw differences. These evaluations use the existing models and sampled paths. The existing solver remains optimal-only: a time-limited or otherwise interrupted subproblem fails the batch rather than being misclassified as an infeasibility cut or a completed solve. Missing or invalid certificates prevent publication of a valid batch file. No master or subproblem solves are required for later local analysis.
 
 The coefficient fit is the unrestricted SAA solution up to its recorded solver gap. It is not automatically the population-optimal penalty. Thirty runs must use identical settings and algorithm limits; failed or missing runs cannot simply be dropped from the statistical sample.
 
