@@ -222,14 +222,14 @@ class ApproxQAgent(InfiniteRTAgent):
 
     def train_master_builder_fn(self, coefficient_bound=GRB.INFINITY, fixed_coefficients=None,
                                 coefficient_bound_overrides=None, policy_centering=None,
-                                alp_value_floors=None):
+                                alp_value_floors=None, scenario_upper_bound=1e8):
         master_model = gp.Model(f"SAA_train_Master", env=self.grb_env)
         # FORCES DUAL SIMPLEX (Crucial for Benders warm-starting)
         master_model.setParam("Method", 1)
         master_model.setParam("MultiObjPre", 0)
         master_model.setParam("FeasibilityTol", 1e-9)
         master_model.setParam("OptimalityTol", 1e-9)
-        theta_vars = master_model.addMVar(shape=self.sample_path_number, vtype=GRB.CONTINUOUS, lb=-GRB.INFINITY, ub=1e8, name="theta")
+        theta_vars = master_model.addMVar(shape=self.sample_path_number, vtype=GRB.CONTINUOUS, lb=-GRB.INFINITY, ub=scenario_upper_bound, name="theta")
         z = theta_vars @ self.sample_path_weights
         coefficient_vars = self.generating_function.get_coefficient_var(model=master_model, coefficient_bound=coefficient_bound)
         for index, bound in (coefficient_bound_overrides or {}).items():
@@ -266,7 +266,7 @@ class ApproxQAgent(InfiniteRTAgent):
         return master_model, coefficient_vars, theta_vars
 
     def train_subproblem_builder_fn(self, env, scenario_id, init_state=None, initial_coefficients=None,
-                                    policy_centering=None):
+                                    policy_centering=None, cold_solve=True):
         sub_model = gp.Model(f"Subproblem_SA_Advance_{scenario_id}", env=env)
         sub_model.setParam("Method", 2)       # barrier for the one cold solve
         sub_model.setParam("Crossover", 1)    # crossover -> usable simplex basis
@@ -322,11 +322,12 @@ class ApproxQAgent(InfiniteRTAgent):
 
         sub_model.Params.OutputFlag = 0
         cold_solve_start = time.time()
-        sub_model.optimize()
+        if cold_solve:
+            sub_model.optimize()
         cold_solve_seconds = time.time() - cold_solve_start
         self.subproblem_cold_solve_seconds[scenario_id] = cold_solve_seconds
 
-        if sub_model.Status == GRB.OPTIMAL:
+        if cold_solve and sub_model.Status == GRB.OPTIMAL:
             self.subproblem_initial_cuts[scenario_id] = (
                 float(sub_model.ObjVal),
                 cut_gradient_fn(sub_model, seed_coefficients),
