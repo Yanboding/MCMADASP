@@ -23,7 +23,7 @@
 
 ## Shared interfaces
 
-Commands invoke `python -m experiments.figure1_po_run --params '<JSON>'`; CLI also accepts `--params_file` and `--job_id` for single_case.sh compatibility.
+Commands now invoke `python run.py --params '<JSON>'` with `run_type=figure1_repeated_po`; CLI also accepts `--params_file` and `--job_id` for single_case.sh compatibility. The original standalone executable remains a compatibility shim for previously generated campaigns.
 
 Parameter JSON fields: schema_version=1, config_id, batch_id, repetition (1..30), configuration (full unseeded env_args), initial_state, decision_set={first,future}, theta_domain={coefficient_bound:null,alp_value_floor:false,regularization:0,fixed_coefficients:{}}, seeds={env,arrival,stop_time,initial_state}, reference={coefficients,policy:'alp',source,source_sha256,source_uid}, sampling={sample_path_number:512,proposal:{type:'stratified_geometric',discount_factor_proposal:0.99,num_strata:256},tau_definition:'arrival_length_plus_one',weight_convention:'stratum_mass_over_count',quantile_clip:[1e-12,0.999999999999]}, solver={max_iterations,absolute_gap_tolerance,subproblem_time_limit_seconds,master_time_limit_seconds,workers:32}, output_dir.
 
@@ -44,7 +44,7 @@ Files: param_generation/generate_figure1_po.py, test/test_generate_figure1_po.py
 
 ## Task 2 — Certified PO runner (agent owned)
 
-Files: experiments/figure1_po_run.py, experiments/po_certificates.py, test/test_po_certificates.py; narrow training-builder extension only if required.
+Files: experiments/repeated_po_training.py, experiments/figure1_po_run.py (compatibility shim), experiments/po_certificates.py, test/test_po_certificates.py; narrow training-builder extension only if required.
 
 - [ ] Failing fake-model tests: MAX ObjBound rather than ObjVal; valid affine incumbent cuts; centered constant once; MIN lower certificate on interruptions; complete same-path records; no artificial coefficient/scenario cap; CLI parsing without solver initialization.
 - [ ] Use existing all-continuous train_subproblem_builder_fn, fixed ALP policy gradients, seed ALP and zero candidates, valid policy upper caps and upper cuts. Never add a lower objective restriction from a MIN incumbent.
@@ -71,3 +71,15 @@ Files: job_script.sh, resubmit_script.sh, experiments/configure_farm.py, test/te
 - [ ] Apply verified files to requested local project, reconcile Git branches without losing edits, commit code/instructions only and push.
 - [ ] Login Nibi (Pixel 8 root MFA if needed), preserve server edits/results, sync exact commit and command bundle, validate env/table/resource/token limits. Run a tiny checked test only if needed; then clean inactive old farm paths and submit latest 300-case table with safe concurrency.
 - [ ] Report commit, commands/jobs/token budget and job IDs. CI analysis waits for downloaded complete results; no automatic follow-up unless requested.
+
+## Follow-up — Integrate the command generator into the existing CLI
+
+User requests the existing `param_generation.cli` format. Add the direct recipe subcommand `figure1-repeated-po` to `generate_params.py`, matching the existing named recipe dispatch. Preserve all experiment parameters while updating command dispatch. Use `--dat` and `--manifest`, with the latter defaulting to `<dat-stem>.manifest.json`; retain `--output-bundle` for older callers. The standalone module delegates to this common parser rather than maintaining a separate argument parser. Preserve exclusive output creation because generic command writers append/reindex and would break the one-to-one campaign manifest.
+
+Further user instruction: generated commands must use `run.py`, not the standalone experiment entrypoint. Emit `python run.py --params ...` with the discriminator `run_type=figure1_repeated_po`. Add dispatch before legacy Gurobi environment allocation, preserve the reviewed batch/certificate implementation in a reusable backend, and retain the old executable shim for existing jobs. Reject mixed batch/legacy record lists before allocating any environments. The existing ordinary-training output omits the certificates required for this experiment, so routing to it without this extension would invalidate the saved-result contract.
+
+- [x] Add failing CLI tests: parser defaults, full 300-command parity, explicit/custom outputs, exclusive-write/conflict protections and standalone delegation.
+- [x] Extend the bundle writer with explicit destination paths; add the common parser/dispatch and replace the standalone parser with delegation.
+- [x] Integrate the dedicated batch record with `run.py` and verify params/file/list/job-id handling without duplicate Gurobi allocation.
+- [x] Update the usage example; run generator, CLI and certificate regression tests, compare generated command parameters, and obtain independent code review. Verification: 124 tests and 2 subtests passed; all 300 generated records match the submitted experiment apart from the entrypoint/discriminator, and the shared backend AST is unchanged. Independent review found no actionable issues and verified Meta Farm params-file conversion.
+- [ ] Apply verified integration to the requested local project and publish the code update without changing the already submitted experiment's parameters.

@@ -45,7 +45,8 @@ def test_manifest_commands_and_model_invariants(cache, tmp_path):
         assert p['theta_domain'] == {'coefficient_bound': None, 'alp_value_floor': False,
                                      'regularization': 0, 'fixed_coefficients': {}}
         argv = shlex.split(r['command'])
-        assert argv[1:3] == ['-m', 'experiments.figure1_po_run']
+        assert argv[:3] == ['python', 'run.py', '--params']
+        assert p['run_type'] == 'figure1_repeated_po'
         assert json.loads(argv[argv.index('--params') + 1]) == p
         assert p['reference']['source_uid'] == training_uid(p['configuration'])
     target = tmp_path / 'bundle'
@@ -93,4 +94,95 @@ def test_generation_never_initializes_solver(cache, monkeypatch, tmp_path):
     m = main(['--alp-cache-root', str(cache), '--server-project', '/server/project',
               '--server-results', '/server/results', '--output-bundle', str(tmp_path / 'out')])
     assert len(m['runs']) == 300
+
+
+def cli_arguments(cache):
+    return ['figure1-repeated-po', '--alp-cache-root', str(cache),
+            '--server-project', '/server/project', '--server-results', '/server/results']
+
+
+def test_common_cli_defaults(cache, tmp_path, monkeypatch):
+    from param_generation import cli
+
+    monkeypatch.chdir(tmp_path)
+    args = cli.build_parser().parse_args(cli_arguments(cache))
+    assert args.dat == 'table.dat'
+    assert args.workers == 32
+    manifest = cli.main(cli_arguments(cache))
+    assert manifest == build_manifest(cache, '/server/project', '/server/results')
+    assert json.loads((tmp_path / 'table.manifest.json').read_text()) == manifest
+    assert len((tmp_path / 'table.dat').read_text().splitlines()) == 300
+
+
+def test_common_cli_custom_outputs_match_existing_generator(cache, tmp_path, monkeypatch):
+    import gurobipy
+    from param_generation import cli
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError('command generation must not initialize Gurobi')
+
+    monkeypatch.setattr(gurobipy, 'Env', forbidden)
+    monkeypatch.setattr(gurobipy, 'Model', forbidden)
+    expected = build_manifest(cache, '/server/project', '/server/results', seed=1987,
+                              workers=4, max_iterations=1500, absolute_gap_tolerance=1e-6,
+                              subproblem_time_limit_seconds=60., master_time_limit_seconds=120.)
+    write_bundle(expected, tmp_path / 'legacy')
+    table = tmp_path / 'commands' / 'po.dat'
+    metadata = tmp_path / 'metadata' / 'po.json'
+    actual = cli.main(cli_arguments(cache) + [
+        '--dat', str(table), '--manifest', str(metadata), '--sample-paths-seed', '1987',
+        '--workers', '4', '--max-iterations', '1500', '--absolute-gap-tolerance', '1e-6',
+        '--subproblem-time-limit-seconds', '60', '--master-time-limit-seconds', '120'])
+    assert actual == expected
+    assert table.read_bytes() == (tmp_path / 'legacy' / 'table.dat').read_bytes()
+    assert metadata.read_bytes() == (tmp_path / 'legacy' / 'manifest.json').read_bytes()
+
+
+def test_common_cli_custom_table_default_manifest(cache, tmp_path):
+    from param_generation import cli
+
+    table = tmp_path / 'nested' / 'commands.dat'
+    manifest = cli.main(cli_arguments(cache) + ['--dat', str(table), '--seed', '987'])
+    assert json.loads(table.with_suffix('.manifest.json').read_text()) == manifest
+    assert manifest['seed_base'] == 987
+
+
+@pytest.mark.parametrize('existing_name', ['commands.dat', 'commands.manifest.json'])
+def test_common_cli_refuses_existing_outputs_without_writing_other_file(cache, tmp_path, existing_name):
+    from param_generation import cli
+
+    existing = tmp_path / existing_name
+    existing.write_text('keep this file')
+    with pytest.raises(FileExistsError):
+        cli.main(cli_arguments(cache) + ['--dat', str(tmp_path / 'commands.dat')])
+    assert existing.read_text() == 'keep this file'
+    assert {p.name for p in tmp_path.glob('commands.*')} == {existing_name}
+
+
+@pytest.mark.parametrize('options', [
+    ['--output-bundle', 'out', '--dat', 'table.dat'],
+    ['--output-bundle', 'out', '--manifest', 'manifest.json'],
+])
+def test_common_cli_rejects_conflicting_outputs_before_loading_cache(tmp_path, options):
+    from param_generation import cli
+
+    with pytest.raises(SystemExit) as exc:
+        cli.main(cli_arguments(tmp_path / 'missing-cache') + options)
+    assert exc.value.code == 2
+
+
+def test_bundle_writer_rejects_identical_output_paths_before_writing(tmp_path):
+    output = tmp_path / 'same.json'
+    with pytest.raises(ValueError, match='distinct'):
+        write_bundle({'runs': []}, dat_file=output, manifest_file=output)
+    assert not output.exists()
+
+
+def test_standalone_entrypoint_delegates_to_common_cli(monkeypatch):
+    from param_generation import cli, generate_figure1_po
+
+    captured = []
+    monkeypatch.setattr(cli, 'main', lambda argv: captured.append(argv) or 'delegated')
+    assert generate_figure1_po.main(['--help']) == 'delegated'
+    assert captured == [['figure1-repeated-po', '--help']]
 

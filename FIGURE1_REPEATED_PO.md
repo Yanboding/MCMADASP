@@ -9,15 +9,18 @@ The twelve displayed settings give ten unique environment configurations. Each c
 From the project root:
 
 ```bash
-python -m param_generation.generate_figure1_po \
+python generate_params.py figure1-repeated-po \
   --alp-cache-root /Users/yanboding/Desktop/PhdTopic/MCMADASP/experiments/results \
   --server-project /home/dingyanb/projects/def-sarhangi/dingyanb/MCMADASP \
   --server-results /home/dingyanb/projects/def-sarhangi/dingyanb/MCMADASP/experiments/results/figure1_repeated_po_20261018 \
-  --output-bundle /tmp/figure1_repeated_po_20261018 \
+  --dat /tmp/figure1_repeated_po_20261018/table.dat \
+  --manifest /tmp/figure1_repeated_po_20261018/manifest.json \
   --max-iterations 1500 --absolute-gap-tolerance 1e-6 --workers 32
 ```
 
-This writes 300 commands to `table.dat` and records all parameters and setting aliases in `manifest.json`. It does not initialize a solver or run training. The runner accepts `--params`, `--params_file` and `--job_id`, including Meta Farm's existing params-file conversion. Existing command bundles and batch results are not overwritten silently.
+This writes 300 `python run.py --params ...` commands to `table.dat` and records all parameters and setting aliases in `manifest.json`. It does not initialize a solver or run training. `run.py` recognizes `run_type=figure1_repeated_po` and dispatches to the shared batch-training implementation before allocating legacy solver environments. It accepts `--params`, `--params_file` and `--job_id`, including Meta Farm's existing params-file conversion. Existing command bundles and batch results are not overwritten silently.
+
+As with the other CLI subcommands, `--dat` defaults to `table.dat`. If `--manifest` is omitted, it defaults to `<dat-stem>.manifest.json` beside that table. `--sample-paths-seed` (alias `--seed`) sets the base seed. `--workers` controls subproblem workers within each job, not the number of Meta Farm jobs. The older generator module forwards to this same CLI; `--output-bundle DIR` remains available instead of `--dat`/`--manifest`. Previously generated commands remain supported for existing campaigns; do not replace a command table while its farm is active.
 
 ## Training and certificates
 

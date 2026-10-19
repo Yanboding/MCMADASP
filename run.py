@@ -17,6 +17,7 @@ from scipy.stats import geom
 
 from experiments.experiment_config import get_config_by_type
 from importance_sampling import build_proposal
+from experiments.repeated_po_training import run as run_repeated_po
 from importance_sampling.sample_path import SamplePath
 from utils import iter_to_tuple, get_uid, safe_open, RunningStats, encode, decode, get_solution_value, acquire_grb_env, read_lines_with_pattern
 from decision_maker import MyopicAgent, ALPRowGenerationAgent, ApproxQAgent
@@ -1225,12 +1226,12 @@ def evaluated_hindsight_policy_solving_time(uid,
     
 
 
-if __name__ == '__main__':
+def main(argv=None):
     parser = argparse.ArgumentParser(description="Example of using argparse to pass in a list of lists.")
     parser.add_argument('--params', help='Input JSON-encoded list of lists', type=str)
     parser.add_argument('--params_file', help='Path to JSON file containing params payload', type=str)
     parser.add_argument('--job_id', help='Input METAJOB_ID', type=str)
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     if args.params_file:
         with open(args.params_file, 'r') as f:
             params = json.load(f)
@@ -1241,6 +1242,17 @@ if __name__ == '__main__':
 
     if isinstance(params, dict):
         params = [params]
+    if not isinstance(params, list) or not params or any(not isinstance(p, dict) for p in params):
+        raise ValueError('Params must be a record or a nonempty list of records.')
+    unknown_types = [p['run_type'] for p in params if 'run_type' in p
+                     and p['run_type'] != 'figure1_repeated_po']
+    if unknown_types:
+        raise ValueError(f'Unknown run_type: {unknown_types!r}')
+    repeated = [p.get('run_type') == 'figure1_repeated_po' for p in params]
+    if any(repeated):
+        if not all(repeated):
+            raise ValueError('Cannot mix repeated PO and legacy records in one invocation.')
+        return [run_repeated_po(p, args.job_id) for p in params]
     grb_env = acquire_grb_env({"Threads": 1}, verbose=False, wait=15)
     # Dynamically allocate a pool of Gurobi tokens (envs) for the subproblems.
     # A Gurobi env is NOT thread-safe for concurrent optimization, so the
@@ -1355,3 +1367,7 @@ if __name__ == '__main__':
                 "(evaluation), 'init_state_mode' (penalty-coefficient training), "
                 "'init_state_index' (lower-bound training) or 'alp_training' in record."
             )
+
+
+if __name__ == '__main__':
+    main()

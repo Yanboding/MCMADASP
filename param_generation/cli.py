@@ -18,6 +18,7 @@ from param_generation.datasets import (
     offset_sample_generation_seeds,
 )
 from param_generation.experiment_specs import build_variation_test_env
+from param_generation.generate_figure1_po import build_manifest, write_bundle
 from param_generation.generating_functions import GENERATING_FUNCTION_CLASSES, build_generating_function, normalize_generating_function_spec
 from param_generation.mutators import mutate_initial_state_congestion
 from param_generation.partial_relaxation import partial_relaxation_records, warm_up_states
@@ -224,7 +225,7 @@ def recipe_saure_ejor_case_study(
 def build_parser():
     parser = argparse.ArgumentParser(
         prog='generate_params',
-        description='Generate run.py parameter (.dat) files for MCMADASP experiments.')
+        description='Generate run.py command (.dat) files for MCMADASP experiments.')
     sub = parser.add_subparsers(dest='command', required=True)
 
     train = sub.add_parser(
@@ -439,6 +440,31 @@ def build_parser():
     comparison.add_argument('--paths', type=int, default=4096)
     comparison.add_argument('--groups', type=int, default=500)
     comparison.add_argument('--dat', default='table.dat')
+
+    repeated_po = sub.add_parser(
+        'figure1-repeated-po',
+        help='Figure 1 repeated PO: 10 unique configurations, 30 batches each, 512 paths per batch.')
+    repeated_po.add_argument('--alp-cache-root', required=True, metavar='DIR',
+                             help='existing certified ALP caches; generation does not train or run a solver')
+    repeated_po.add_argument('--server-project', required=True, metavar='DIR',
+                             help='absolute project directory from which run.py will execute on the server')
+    repeated_po.add_argument('--server-results', required=True, metavar='DIR',
+                             help='absolute server result root for the new campaign')
+    destination = repeated_po.add_mutually_exclusive_group()
+    destination.add_argument('--dat', default='table.dat',
+                             help='new Meta Farm command table (default: table.dat; never appends or overwrites)')
+    destination.add_argument('--output-bundle', metavar='DIR',
+                             help='compatibility option: write table.dat and manifest.json in this directory')
+    repeated_po.add_argument('--manifest', metavar='JSON',
+                             help='run manifest (default: <dat-stem>.manifest.json; excludes --output-bundle)')
+    repeated_po.add_argument('--sample-paths-seed', '--seed', dest='seed', type=int, default=420000,
+                             help='base seed for independent repeated batches (default: 420000)')
+    repeated_po.add_argument('--workers', type=int, choices=range(1, 33), default=32, metavar='N',
+                             help='parallel subproblem workers per training job, 1--32 (default: 32)')
+    repeated_po.add_argument('--max-iterations', type=int, default=1000)
+    repeated_po.add_argument('--absolute-gap-tolerance', type=float, default=1e-5)
+    repeated_po.add_argument('--subproblem-time-limit-seconds', type=float)
+    repeated_po.add_argument('--master-time-limit-seconds', type=float)
 
     improvement = sub.add_parser(
         'improvement', help='Upper bound on the potential penalty improvement over theta_ALP.')
@@ -905,8 +931,28 @@ def _run_improvement(args):
     return records
 
 
+def _run_figure1_repeated_po(args):
+    manifest = build_manifest(
+        args.alp_cache_root, args.server_project, args.server_results,
+        seed=args.seed, workers=args.workers, max_iterations=args.max_iterations,
+        absolute_gap_tolerance=args.absolute_gap_tolerance,
+        subproblem_time_limit_seconds=args.subproblem_time_limit_seconds,
+        master_time_limit_seconds=args.master_time_limit_seconds)
+    if args.output_bundle is not None:
+        write_bundle(manifest, args.output_bundle)
+    else:
+        write_bundle(manifest, dat_file=args.dat, manifest_file=args.manifest)
+    print(f"Generated {len(manifest['runs'])} commands for {len(manifest['configurations'])} configurations")
+    return manifest
+
+
 def main(argv=None):
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if args.command == 'figure1-repeated-po':
+        if args.output_bundle is not None and args.manifest is not None:
+            parser.error('--output-bundle cannot be combined with --manifest')
+        return _run_figure1_repeated_po(args)
     if args.command == 'train':
         return _run_train(args)
     if args.command == 'eval':

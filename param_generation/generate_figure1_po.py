@@ -1,11 +1,11 @@
 """Prepare Figure 1 repeated PO inputs without fitting or initializing a solver."""
-import argparse
 import copy
 import hashlib
 import json
 import math
 from pathlib import Path, PurePosixPath
 import shlex
+import sys
 
 from param_generation.experiment_specs import build_variation_test_env
 from param_generation.registry import EXPERIMENT_SPECS
@@ -98,6 +98,7 @@ def build_manifest(cache_root, server_project, server_results, seed=420000,
             seeds = dict(zip(('env', 'arrival', 'stop_time', 'initial_state'),
                              range(seed + 4 * index, seed + 4 * index + 4)))
             params = {
+                'run_type': 'figure1_repeated_po',
                 'schema_version': 1, 'config_id': config['config_id'], 'batch_id': batch_id,
                 'repetition': repetition, 'configuration': copy.deepcopy(config['configuration']),
                 'initial_state': copy.deepcopy(config['initial_state']),
@@ -116,7 +117,7 @@ def build_manifest(cache_root, server_project, server_results, seed=420000,
                            'master_time_limit_seconds': master_time_limit_seconds, 'workers': workers},
                 'output_dir': str(PurePosixPath(server_results) / batch_id),
             }
-            command = shlex.join(['python', '-m', 'experiments.figure1_po_run', '--params',
+            command = shlex.join(['python', 'run.py', '--params',
                                   json.dumps(params, sort_keys=True, allow_nan=False)])
             runs.append({'case_id': index + 1, 'batch_id': batch_id, 'config_id': config['config_id'],
                          'repetition': repetition, 'seeds': seeds, 'output_dir': params['output_dir'],
@@ -127,13 +128,22 @@ def build_manifest(cache_root, server_project, server_results, seed=420000,
             'seed_base': seed, 'execution_working_directory': str(server_project)}
 
 
-def write_bundle(manifest, output_bundle):
+def write_bundle(manifest, output_bundle=None, *, dat_file=None, manifest_file=None):
     """Create new files exclusively, protecting an existing command table."""
-    destination = Path(output_bundle)
-    destination.mkdir(parents=True, exist_ok=True)
-    table, metadata = destination / 'table.dat', destination / 'manifest.json'
-    if table.exists() or metadata.exists():
-        raise FileExistsError(f'bundle already exists under {destination}')
+    if output_bundle is not None:
+        if dat_file is not None or manifest_file is not None:
+            raise ValueError('output_bundle cannot be combined with explicit output files')
+        table, metadata = Path(output_bundle) / 'table.dat', Path(output_bundle) / 'manifest.json'
+    else:
+        table = Path(dat_file if dat_file is not None else 'table.dat')
+        metadata = Path(manifest_file) if manifest_file is not None else table.with_suffix('.manifest.json')
+    if table.resolve() == metadata.resolve():
+        raise ValueError('command table and manifest must have distinct paths')
+    for path in (table, metadata):
+        if path.exists() or path.is_symlink():
+            raise FileExistsError(f'refusing to overwrite existing output: {path}')
+    table.parent.mkdir(parents=True, exist_ok=True)
+    metadata.parent.mkdir(parents=True, exist_ok=True)
     with metadata.open('x') as handle:
         json.dump(manifest, handle, indent=2, allow_nan=False)
         handle.write('\n')
@@ -143,25 +153,10 @@ def write_bundle(manifest, output_bundle):
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--alp-cache-root', required=True)
-    parser.add_argument('--server-project', required=True)
-    parser.add_argument('--server-results', required=True)
-    parser.add_argument('--output-bundle', required=True)
-    parser.add_argument('--seed', type=int, default=420000)
-    parser.add_argument('--workers', type=int, default=32)
-    parser.add_argument('--max-iterations', type=int, default=1000)
-    parser.add_argument('--absolute-gap-tolerance', type=float, default=1e-5)
-    parser.add_argument('--subproblem-time-limit-seconds', type=float)
-    parser.add_argument('--master-time-limit-seconds', type=float)
-    args = parser.parse_args(argv)
-    manifest = build_manifest(args.alp_cache_root, args.server_project, args.server_results,
-                              args.seed, args.max_iterations, args.absolute_gap_tolerance,
-                              args.subproblem_time_limit_seconds, args.master_time_limit_seconds,
-                              args.workers)
-    write_bundle(manifest, args.output_bundle)
-    print(f"Generated {len(manifest['runs'])} commands for {len(manifest['configurations'])} configurations")
-    return manifest
+    """Compatibility entrypoint; the shared CLI owns argument parsing."""
+    from param_generation.cli import main as cli_main
+
+    return cli_main(['figure1-repeated-po', *(sys.argv[1:] if argv is None else argv)])
 
 
 if __name__ == '__main__':
