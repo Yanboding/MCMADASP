@@ -35,17 +35,38 @@ def test_cut_and_centered_constant():
     assert centered_value(12., [3., -2.], [2., 1.], [1., 1.]) == 9
 
 
-def test_path_record_preserves_costs_weights_and_identity():
+def test_path_record_preserves_only_costs_bounds_weights_and_controls():
     import numpy as np
     p = SimpleNamespace(arrivals=np.array([[1, 0]]), length=1, periods=2,
                         terminal=SimpleNamespace(value='absorbed'), survival_weights=np.ones(2))
     ir = {'fitted': min_certificate(fake()), 'zero': min_certificate(fake(ObjVal=10.)),
           'alp': min_certificate(fake(ObjVal=11.))}
-    r = path_record(1, p, ([0], [0], [0, 0]), 2, .125, [1, 2], ir)
+    r = path_record(1, p, 2, .125, 3., 4., ir)
     assert r['weight'] == .125 and r['termination_time'] == 2
     assert r['raw_gap_fitted_minus_zero'] == 2
-    assert r['raw_gaps_are_incumbent_differences']
-    assert r['path_hash'] and r['initial_state_hash'] and r['ir'] == ir
+    assert r['raw_gap_fitted_minus_alp'] == 1
+    assert r['cv_adjusted_fitted_ir_cost'] == 9.
+    assert r['cv_adjusted_gap_fitted_minus_zero'] == -5.
+    assert r['cv_adjusted_gap_fitted_minus_alp'] == -2.
+    assert r['policy_control_variate'] == 3. and r['policy_penalty_at_reference'] == 4.
+    assert set(r) == {'path_id', 'stratum', 'weight', 'termination_time', 'policy_control_variate',
+                      'policy_penalty_at_reference', 'ir', 'raw_gap_fitted_minus_zero',
+                      'raw_gap_fitted_minus_alp', 'cv_adjusted_fitted_ir_cost',
+                      'cv_adjusted_gap_fitted_minus_zero', 'cv_adjusted_gap_fitted_minus_alp'}
+    for name, cert in ir.items():
+        assert r['ir'][name] == {k: cert[k] for k in ('objective', 'status')}
+    assert ir['fitted']['upper_bound'] == 12.  # serialization must not mutate solver certificates
+
+
+@pytest.mark.parametrize('missing', ['fitted', 'alp', 'zero'])
+def test_adjusted_path_values_require_their_incumbents(missing):
+    ir = {name: min_certificate(fake(ObjVal=value))
+          for name, value in [('fitted', 12.), ('alp', 11.), ('zero', 10.)]}
+    ir[missing] = min_certificate(fake(SolCount=0))
+    row = path_record(0, SimpleNamespace(periods=2), 0, 1., 3., 4., ir)
+    assert row['cv_adjusted_fitted_ir_cost'] == (None if missing == 'fitted' else 9.)
+    assert row['cv_adjusted_gap_fitted_minus_alp'] == (None if missing in ('fitted', 'alp') else -2.)
+    assert row['cv_adjusted_gap_fitted_minus_zero'] == (None if missing in ('fitted', 'zero') else -5.)
 
 
 def test_unavailable_gurobi_bound_is_conservative():

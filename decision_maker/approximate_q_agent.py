@@ -222,7 +222,9 @@ class ApproxQAgent(InfiniteRTAgent):
 
     def train_master_builder_fn(self, coefficient_bound=GRB.INFINITY, fixed_coefficients=None,
                                 coefficient_bound_overrides=None, policy_centering=None,
-                                alp_value_floors=None, scenario_upper_bound=1e8):
+                                alp_value_floors=None, scenario_upper_bound=None):
+        if scenario_upper_bound is None:
+            scenario_upper_bound = GRB.INFINITY if policy_centering is not None else 1e8
         master_model = gp.Model(f"SAA_train_Master", env=self.grb_env)
         # FORCES DUAL SIMPLEX (Crucial for Benders warm-starting)
         master_model.setParam("Method", 1)
@@ -475,8 +477,6 @@ class ApproxQAgent(InfiniteRTAgent):
                                     alp_value_floor_tolerance=1e-6,
                                     max_iterations=3000,
                                     absolute_gap_tolerance=1e-6,
-                                    save_path_certificates=False,
-                                    reference_coefficients=None,
                                     master_time_limit_seconds=None,
                                     subproblem_time_limit_seconds=None):
         overall_start = time.time()
@@ -485,8 +485,6 @@ class ApproxQAgent(InfiniteRTAgent):
         for limit in (master_time_limit_seconds, subproblem_time_limit_seconds):
             if limit is not None and (not np.isfinite(limit) or limit <= 0):
                 raise ValueError('training time limits must be positive finite values')
-        if save_path_certificates and (policy_centering is None or reference_coefficients is None):
-            raise ValueError('path certificates need policy_centering and reference_coefficients')
         self._training_subproblem_time_limit_seconds = subproblem_time_limit_seconds
         fixed_coefficients = dict(fixed_coefficients or {})
         self._training_policy_centering = policy_centering
@@ -525,11 +523,10 @@ class ApproxQAgent(InfiniteRTAgent):
         value_floors = (self.alp_value_floors(init_state, initial_coefficients)
                         if alp_value_floor else None)
         master_start = time.time()
-        audit_master_options = {'scenario_upper_bound': GRB.INFINITY} if save_path_certificates else {}
         master_model, coefficient_vars, theta_vars = self.train_master_builder_fn(
             coefficient_bound, fixed_coefficients=fixed_coefficients,
             coefficient_bound_overrides=coefficient_bound_overrides,
-            policy_centering=policy_centering, alp_value_floors=value_floors, **audit_master_options)
+            policy_centering=policy_centering, alp_value_floors=value_floors)
         if master_time_limit_seconds is not None:
             master_model.Params.TimeLimit = float(master_time_limit_seconds)
         master_time = time.time() - master_start
@@ -586,9 +583,7 @@ class ApproxQAgent(InfiniteRTAgent):
         self.is_trained = True
         generating_function = self._require_generating_function()
         generating_function.set_coefficients(self.coefficients)
-        final_options = {'capture_certificates': True} if save_path_certificates else {}
-        final = self._in_sample_values(self.coefficients, parallel, **final_options)
-        fitted_certificates = final.pop('certificates', None)
+        final = self._in_sample_values(self.coefficients, parallel)
         final_costs = final.pop('costs')
         if policy_centering is not None:
             self._add_centered_level(final['in_sample'], final_costs, self.coefficients, policy_centering)
@@ -636,58 +631,7 @@ class ApproxQAgent(InfiniteRTAgent):
                 'mean_policy_relaxation_gap': float(
                     np.asarray(self.sample_path_weights, dtype=float) @ (policy_values - final_costs)),
             }
-        if save_path_certificates:
-            info['audit'] = self._build_training_audit(self.coefficients, reference_coefficients,
-                                                      init_state, parallel, info, fitted_certificates)
         return info['in_sample']['mean'], self.coefficients, info
-
-    def _build_training_audit(self, fitted, reference, init_state, parallel, info, fitted_certificates=None):
-        from experiments.po_certificates import path_record
-        import copy
-        _, gradients, anchor = self._training_policy_centering
-        gradients, anchor = np.asarray(gradients, dtype=float), np.asarray(anchor, dtype=float)
-        fitted = np.asarray(fitted, dtype=float)
-        if np.asarray(reference).shape != fitted.shape or not np.isfinite(reference).all():
-            raise ValueError('reference_coefficients must match fitted coefficients')
-        raw_by_name, centered = {}, None
-        for name, theta in [('fitted', fitted), ('alp', np.asarray(reference, dtype=float)),
-                            ('zero', np.zeros_like(fitted))]:
-            if name == 'fitted' and fitted_certificates is not None:
-                certificates = copy.deepcopy(fitted_certificates)
-            else:
-                _, _, certificates = self.coefficient_model.evaluate_action_certificates(theta, parallel=parallel)
-            if name == 'fitted':
-                centered = copy.deepcopy(certificates)
-            shift = gradients @ (theta - anchor)
-            for sid, certificate in enumerate(certificates):
-                for field in ('objective', 'lower_bound', 'upper_bound'):
-                    if certificate[field] is not None:
-                        certificate[field] += float(shift[sid])
-            raw_by_name[name] = certificates
-        weights = np.asarray(self.sample_path_weights, dtype=float)
-        def weighted(field):
-            if any(row[field] is None for row in centered):
-                return None
-            return float(weights @ [row[field] for row in centered])
-        lower = weighted('lower_bound') if all(row['bound_valid'] for row in centered) else None
-        certificate = copy.deepcopy(self.coefficient_model.best_master_certificate)
-        if certificate is None:
-            certificate = dict(sense='maximize', status='NOT_SOLVED', objective=None,
-                               objective_bound=None, valid=False, reason='No unrestricted primary MAX solve')
-        upper = certificate['objective_bound'] if certificate['valid'] else None
-        if upper is not None and lower is not None and lower > upper + 1e-6 * max(1., abs(upper), abs(lower)):
-            raise RuntimeError('Certified candidate lower bound exceeds primary master upper bound')
-        gap = None if upper is None or lower is None else max(0., upper - lower)
-        init_state_for = self._resolve_init_state_per_scenario(init_state)
-        paths = [path_record(sid, path, init_state_for(sid),
-                    self.sample_path_strata[sid], weights[sid], gradients[sid],
-                    {name: rows[sid] for name, rows in raw_by_name.items()})
-                 for sid, path in enumerate(self.sample_paths)]
-        return dict(paths=paths, full_objective=weighted('objective'),
-                    full_objective_exact=all(row['exact'] for row in centered),
-                    objective_lower_bound=lower, objective_upper_bound=upper,
-                    master_certificate=certificate, termination_reason=info['termination_reason'],
-                    absolute_gap=gap, relative_gap=None if gap is None else gap / max(1e-12, abs(lower)))
 
     def weighted_objective_fn(self, weights):
         weights = np.asarray(weights, dtype=float)
@@ -724,17 +668,22 @@ class ApproxQAgent(InfiniteRTAgent):
         offset = np.asarray(coefficients, dtype=float) - np.asarray(anchor, dtype=float)
         return values + np.asarray(gradients, dtype=float) @ offset
 
-    def _in_sample_values(self, coefficients, parallel, capture_certificates=False):
-        certificates = None
-        if capture_certificates:
-            values, _, certificates = self.coefficient_model.evaluate_action_certificates(
-                np.asarray(coefficients, dtype=float), parallel=parallel)
+    def _in_sample_values(self, coefficients, parallel):
+        coefficients = np.asarray(coefficients, dtype=float)
+        workers = self.coefficient_model.workers[:self.sample_path_number]
+        # Training workers are rebuilt for each fit. Reuse only their most recent
+        # OPTIMAL solve at exactly these coefficients; a rejected minimum-norm
+        # trial may have left them at a different candidate.
+        if len(workers) == self.sample_path_number and all(
+                worker.last_certificate is not None
+                and worker.last_certificate['status'] == 'OPTIMAL'
+                and worker.last_certificate['objective'] is not None
+                and np.isfinite(worker.last_certificate['objective'])
+                and np.array_equal(worker.last_action, coefficients) for worker in workers):
+            values = [worker.last_certificate['objective'] for worker in workers]
         else:
-            values, _ = self.coefficient_model.evaluate_action(np.asarray(coefficients, dtype=float), parallel=parallel)
-        result = self._aggregate_in_sample(self._uncentered(values, coefficients), coefficients)
-        if capture_certificates:
-            result['certificates'] = certificates
-        return result
+            values, _ = self.coefficient_model.evaluate_action(coefficients, parallel=parallel)
+        return self._aggregate_in_sample(self._uncentered(values, coefficients), coefficients)
 
     def _add_centered_level(self, summary, costs, coefficients, policy_centering):
         # The centered level is measured from the anchor, unlike the paired difference where

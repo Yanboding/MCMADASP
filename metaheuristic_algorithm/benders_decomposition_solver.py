@@ -237,6 +237,8 @@ class SubproblemWorker:
         self.objective_builder_fn = objective_builder_fn
         self.cut_gradient_fn = cut_gradient_fn
         self.initial_cut = initial_cut
+        self.last_action = None
+        self.last_certificate = None
 
     def _set_output_flag(self, model, verbose: bool):
         model.Params.OutputFlag = 1 if verbose else 0
@@ -272,6 +274,7 @@ class SubproblemWorker:
             if self.model.IsMIP: relax_model.dispose()
 
     def solve(self, action_values, verbose: bool = False):
+        self.last_action = None
         if self.link_rows is not None and len(self.link_rows) > 0:
             set_link_rhs(self.link_rows, action_values)
         if self.objective_builder_fn is not None:
@@ -281,6 +284,7 @@ class SubproblemWorker:
         from experiments.po_certificates import min_certificate
         self.last_certificate = min_certificate(self.model)
         if self.model.Status == GRB.OPTIMAL:
+            self.last_action = np.array(action_values, dtype=float, copy=True)
             v = self.model.ObjVal
             if self.cut_gradient_fn is not None:
                 duals = np.asarray(self.cut_gradient_fn(self.model, action_values), dtype=float)
@@ -306,6 +310,7 @@ class SubproblemWorker:
             return False, v, ray
 
     def solve_pareto(self, action_values, core_point, epsilon=1e-4, verbose: bool = False):
+        self.last_action = None
         if self.link_rows is None or len(self.link_rows) == 0:
             return self.solve(action_values, verbose)
         set_link_rhs(self.link_rows, action_values)

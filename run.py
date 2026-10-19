@@ -936,7 +936,6 @@ def train_penalty_coefficients_for_env(
     grb_env,
     grb_sub_envs,
     job_id,
-    batch_metadata=None,
 ):
     solver_choice = os.environ.get('PENALTY_TRAIN_SOLVER', 'benders').strip().lower()
     if solver_choice != 'benders':
@@ -944,13 +943,7 @@ def train_penalty_coefficients_for_env(
             f"Unsupported PENALTY_TRAIN_SOLVER={solver_choice!r}; "
             "only Benders training is implemented. Use PENALTY_TRAIN_SOLVER=benders."
         )
-    if batch_metadata is not None:
-        from experiments.po_training_audit import validate_training_metadata
-        validate_training_metadata(batch_metadata, env_args, agent_args, sample_path_number,
-                                   init_state_mode, init_state, init_state_seed)
-    output_file = (os.path.join(batch_metadata['output_dir'], 'training.jsonl')
-                   if batch_metadata is not None else os.path.join(
-                       'experiments', 'results', experiment_name, f'{job_id}.jsonl'))
+    output_file = os.path.join('experiments', 'results', experiment_name, f'{job_id}.jsonl')
     os.makedirs(os.path.dirname(output_file), exist_ok=True)
     if jsonl_uid_exists(output_file, uid):
         print(f"Skip duplicate penalty-training result: uid={uid}")
@@ -969,10 +962,11 @@ def train_penalty_coefficients_for_env(
     )
 
     inner = dict((agent_args or {}).get('agent_args', {}))
-    # Solver/audit options belong to training, not to the agent constructor.
+    # Path output is handled here; only solver options reach the training method.
+    save_path_certificates = bool(inner.pop('save_path_certificates', False))
     training_options = {key: inner.pop(key) for key in (
-        'max_iterations', 'absolute_gap_tolerance', 'save_path_certificates',
-        'reference_coefficients', 'master_time_limit_seconds',
+        'max_iterations', 'absolute_gap_tolerance',
+        'master_time_limit_seconds',
         'subproblem_time_limit_seconds') if key in inner}
     inner.pop('workers', None)  # the shared pool is allocated once by main()
     for spec_key in _GENERATING_FUNCTION_SPEC_KEYS:
@@ -993,6 +987,8 @@ def train_penalty_coefficients_for_env(
     paths_per_state = inner.pop('paths_per_state', None)
     paths_per_state = None if paths_per_state is None else int(paths_per_state)
     policy_centering_enabled = bool(inner.pop('policy_centering', False))
+    if save_path_certificates and not policy_centering_enabled:
+        raise ValueError('save_path_certificates requires policy_centering for the fixed ALP reference')
     policy_cap_scenarios = int(inner.pop('policy_cap_scenarios', 64) or 64)
     cap_policy = inner.pop('cap_policy', None) or 'penalized_hindsight'
     if cap_policy not in ('alp', 'penalized_hindsight'):
@@ -1029,8 +1025,8 @@ def train_penalty_coefficients_for_env(
     else:
         raise ValueError(f"Unknown init_state_mode: {init_state_mode!r}")
 
-    # Reset RNGs so every command sees the *same* Monte-Carlo arrival sample
-    # paths (the pinned arrival/env seeds in env_args make them identical).
+    # Reset to this command's seeds so policy evaluation and all three penalties
+    # use the same paths; repeated commands supply different sampling seeds.
     env.reset_random_seeds()
 
     checkpoint_dir = os.path.join(os.path.dirname(output_file), 'benders_checkpoints')
@@ -1110,6 +1106,65 @@ def train_penalty_coefficients_for_env(
             policy_centering=policy_centering,
             **training_options,
         )
+        path_results = {}
+        if save_path_certificates:
+            from experiments.po_certificates import path_record
+
+            _, gradients, anchor = policy_centering
+            gradients, anchor = np.asarray(gradients, dtype=float), np.asarray(anchor, dtype=float)
+            fitted = np.asarray(coefficients, dtype=float)
+            if anchor.shape != fitted.shape or not np.isfinite(anchor).all():
+                raise ValueError('policy_centering anchor must match fitted coefficients')
+            # The final training evaluation already solved every path at the fitted
+            # coefficients. Snapshot it before reusing the workers for the two baselines.
+            centered = [copy.deepcopy(worker.last_certificate)
+                        for worker in agent.coefficient_model.workers[:sample_path_number]]
+            alp_initial_cuts = [agent.subproblem_initial_cuts.get(sid) for sid in range(sample_path_number)]
+            raw_by_name = {}
+            for name, theta in [('fitted', fitted), ('alp', anchor), ('zero', np.zeros_like(fitted))]:
+                if name == 'fitted':
+                    certificates = copy.deepcopy(centered)
+                elif name == 'alp' and all(
+                        cut is not None and np.isfinite(cut[0]) and np.array_equal(cut[2], anchor)
+                        for cut in alp_initial_cuts):
+                    # Initial cuts exist only for OPTIMAL cold solves; at the anchor,
+                    # their centered objective also equals the raw ALP baseline.
+                    certificates = [dict(objective=value, lower_bound=value, upper_bound=value,
+                                         status='OPTIMAL') for value, _, _ in alp_initial_cuts]
+                else:
+                    _, _, certificates = agent.coefficient_model.evaluate_action_certificates(theta, parallel=True)
+                # Workers solve the control-variate objective. Restore raw IR costs
+                # and their MIN bounds before computing the paired path differences.
+                shift = gradients @ (theta - anchor)
+                for sid, certificate in enumerate(certificates):
+                    for field in ('objective', 'lower_bound', 'upper_bound'):
+                        if certificate[field] is not None:
+                            certificate[field] += float(shift[sid])
+                raw_by_name[name] = certificates
+            weights = np.asarray(agent.sample_path_weights, dtype=float)
+
+            def weighted(field):
+                if any(row[field] is None for row in centered):
+                    return None
+                return float(weights @ [row[field] for row in centered])
+
+            lower = weighted('lower_bound') if all(row['bound_valid'] for row in centered) else None
+            certificate = copy.deepcopy(info.get('master_certificate'))
+            if certificate is None:
+                certificate = dict(sense='maximize', status='NOT_SOLVED', objective=None,
+                                   objective_bound=None, valid=False, reason='No unrestricted primary MAX solve')
+            upper = certificate['objective_bound'] if certificate['valid'] else None
+            if upper is not None and lower is not None and lower > upper + 1e-6 * max(1., abs(upper), abs(lower)):
+                raise RuntimeError('Certified candidate lower bound exceeds primary master upper bound')
+            policy_control_variates = gradients @ (fitted - anchor)
+            reference_policy_penalties = gradients @ anchor
+            paths = [path_record(sid, path, agent.sample_path_strata[sid], weights[sid],
+                        policy_control_variates[sid], reference_policy_penalties[sid],
+                        {name: rows[sid] for name, rows in raw_by_name.items()})
+                     for sid, path in enumerate(agent.sample_paths)]
+            path_results = dict(paths=paths, full_objective=weighted('objective'),
+                                objective_lower_bound=lower, objective_upper_bound=upper,
+                                master_status=certificate['status'], termination_reason=info['termination_reason'])
     except Exception:
         dispose_agent_models(agent)
         raise
@@ -1126,35 +1181,35 @@ def train_penalty_coefficients_for_env(
         'experiment_name': experiment_name,
         'mutate_val': mutate_val,
         'sample_path_number': sample_path_number,
-        'init_state_mode': init_state_mode,
-        'init_state_seed': init_state_seed,
         'tight_penalized_lower_bound': float(obj),
         'coefficients': coefficients_jsonable,
         'training_time_seconds': elapsed,
-        'coefficient_bound': None if coefficient_bound == GRB.INFINITY else coefficient_bound,
-        'coefficient_bound_overrides': coefficient_bound_overrides,
-        'policy_centering': policy_centering_enabled,
-        'cap_policy': cap_policy if policy_centering_enabled else None,
-        'policy_cap_scenarios': policy_cap_scenarios if policy_centering_enabled and cap_policy != 'alp' else None,
-        'policy_centering_info': info.get('policy_centering'),
-        'paths_per_state': paths_per_state,
-        'min_norm': info.get('min_norm'),
-        'min_norm_every_iteration': min_norm_every_iteration,
-        'alp_value_floor': alp_value_floor,
-        'alp_value_floor_info': info.get('alp_value_floor'),
-        'initial_coefficients_source': initial_coefficients_source,
-        'fixed_coefficients': fixed_coefficients,
-        'initial_in_sample': info.get('initial_in_sample'),
-        'improvement': info.get('improvement'),
-        'in_sample': info['in_sample'],
     }
-    try:
-        if batch_metadata is not None:
-            from experiments.po_training_audit import write_training_audit
-            write_training_audit(batch_metadata, coefficients, info, job_id, elapsed,
-                                 subproblem_environment_count=len(grb_sub_envs))
-    finally:
-        dispose_agent_models(agent)
+    if not save_path_certificates:
+        # Ordinary training keeps its existing summary; repeated PO saves the
+        # path data needed to recompute statistics instead of duplicating them.
+        record.update({
+            'init_state_mode': init_state_mode,
+            'init_state_seed': init_state_seed,
+            'coefficient_bound': None if coefficient_bound == GRB.INFINITY else coefficient_bound,
+            'coefficient_bound_overrides': coefficient_bound_overrides,
+            'policy_centering': policy_centering_enabled,
+            'cap_policy': cap_policy if policy_centering_enabled else None,
+            'policy_cap_scenarios': policy_cap_scenarios if policy_centering_enabled and cap_policy != 'alp' else None,
+            'policy_centering_info': info.get('policy_centering'),
+            'paths_per_state': paths_per_state,
+            'min_norm': info.get('min_norm'),
+            'min_norm_every_iteration': min_norm_every_iteration,
+            'alp_value_floor': alp_value_floor,
+            'alp_value_floor_info': info.get('alp_value_floor'),
+            'initial_coefficients_source': initial_coefficients_source,
+            'fixed_coefficients': fixed_coefficients,
+            'initial_in_sample': info.get('initial_in_sample'),
+            'improvement': info.get('improvement'),
+            'in_sample': info['in_sample'],
+        })
+    dispose_agent_models(agent)
+    record.update(path_results)
     with open(output_file, 'a') as f:
         f.write(json.dumps(record) + '\n')
     return record

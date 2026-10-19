@@ -3,7 +3,7 @@ import copy
 import hashlib
 import json
 import math
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 import shlex
 
 from param_generation.experiment_specs import build_variation_test_env
@@ -89,45 +89,52 @@ def figure1_training_group(cache_root):
     return configurations, display, variants
 
 
-def batch_metadata(config, repetition, index, seed, results_root, solver):
-    """Describe one ordinary training record without selecting an execution route."""
-    batch_id = f"{config['config_id']}_r{repetition:02d}"
-    return {
-        'schema_version': 1, 'config_id': config['config_id'], 'batch_id': batch_id,
-        'repetition': repetition, 'configuration': copy.deepcopy(config['configuration']),
-        'initial_state': copy.deepcopy(config['initial_state']),
-        'decision_set': {'first': 'continuous', 'future': 'continuous'},
-        'theta_domain': {'coefficient_bound': None, 'alp_value_floor': False,
-                         'regularization': 0, 'fixed_coefficients': {}},
-        'seeds': dict(zip(('env', 'arrival', 'stop_time', 'initial_state'),
-                          range(seed + 4 * index, seed + 4 * index + 4))),
-        'reference': copy.deepcopy(config['reference']),
-        'sampling': {'sample_path_number': 512, 'proposal': {
-            'type': 'stratified_geometric', 'discount_factor_proposal': .99, 'num_strata': 256},
-            'tau_definition': 'arrival_length_plus_one',
-            'weight_convention': 'stratum_mass_over_count',
-            'quantile_clip': [1e-12, .999999999999]},
-        'solver': copy.deepcopy(solver),
-        'output_dir': str(PurePosixPath(results_root) / batch_id),
-    }
-
-
-def build_manifest(configurations, display, records, server_project, results_root, seed,
-                   repetitions, sample_path_number):
-    """Index records already produced by the standard training generator."""
+def build_manifest(configurations, display, records, seed, repetitions, sample_path_number):
+    """Keep campaign labels and analysis metadata outside ordinary training records."""
+    if len(records) != len(configurations) * repetitions:
+        raise ValueError('training record count does not match configurations and repetitions')
     runs = []
     for index, record in enumerate(records):
-        metadata = record['batch_metadata']
+        config = configurations[index // repetitions]
+        repetition = index % repetitions + 1
+        # Sampling seeds differ across repetitions; the underlying configuration does not.
+        environment = copy.deepcopy(record['env_args'])
+        for field in ('env_random_seed', 'arrival_random_seed', 'stop_time_random_seed'):
+            environment[field] = config['configuration'][field]
+        if environment != config['configuration'] or record['init_state'] != config['initial_state']:
+            raise ValueError('training record order does not match the configuration manifest')
+        inner = record['agent_args']['agent_args']
         command = shlex.join(['python', 'run.py', '--params',
                               json.dumps(record, sort_keys=True, allow_nan=False)])
-        runs.append({'case_id': index + 1,
-                     **{key: copy.deepcopy(metadata[key]) for key in
-                        ('batch_id', 'config_id', 'repetition', 'seeds', 'output_dir')},
-                     'params': record, 'command': command})
+        runs.append({
+            'case_id': index + 1, 'schema_version': 1,
+            'config_id': config['config_id'],
+            'batch_id': f"{config['config_id']}_r{repetition:02d}", 'repetition': repetition,
+            'configuration': copy.deepcopy(config['configuration']),
+            'initial_state': copy.deepcopy(record['init_state']),
+            'decision_set': {'first': inner['current_decision_var_type'],
+                             'future': inner['future_decision_var_type']},
+            'theta_domain': {'coefficient_bound': inner.get('coefficient_bound'),
+                             'alp_value_floor': inner.get('alp_value_floor', False),
+                             'regularization': 0, 'fixed_coefficients': inner.get('fixed_coefficients', {})},
+            'reference': copy.deepcopy(config['reference']),
+            'sampling': {'sample_path_number': record['sample_path_number'],
+                         'proposal': copy.deepcopy(inner['sample_path_length_proposal']),
+                         'tau_definition': 'arrival_length_plus_one',
+                         'weight_convention': 'stratum_mass_over_count',
+                         'quantile_clip': [1e-12, .999999999999]},
+            'solver': {key: inner.get(key) for key in
+                       ('max_iterations', 'absolute_gap_tolerance', 'workers',
+                        'master_time_limit_seconds', 'subproblem_time_limit_seconds')},
+            'seeds': {'env': record['env_args']['env_random_seed'],
+                      'arrival': record['env_args']['arrival_random_seed'],
+                      'stop_time': record['env_args']['stop_time_random_seed'],
+                      'initial_state': record['init_state_seed']},
+            'parameters': record, 'command': command,
+        })
     return {'schema_version': 1, 'display_settings': display, 'configurations': configurations,
             'runs': runs, 'expected_batches': repetitions, 'expected_paths': sample_path_number,
-            'server_project': str(server_project), 'server_results': str(results_root),
-            'seed_base': seed, 'execution_working_directory': str(server_project)}
+            'seed_base': seed}
 
 
 def write_bundle(manifest, output_bundle=None, *, dat_file=None, manifest_file=None):

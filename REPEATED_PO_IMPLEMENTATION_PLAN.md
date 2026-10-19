@@ -15,22 +15,21 @@ The user's latest correction supersedes the earlier dedicated-driver design. Use
 - Fitted, zero and ALP penalties all use continuous decisions in every period, identical states, arrivals and weights.
 - Fixed configuration-matched ALP coefficients and nonanticipative ALP policy.
 - Unrestricted coefficient domain: no ALP floor, coefficient box, fixed intercept or regularization.
-- Seed block for case i (zero based): 420000+4i through 420003+4i for environment, arrivals, stopping and initial state.
+- Use the existing sample-path seed input: case i (zero based) uses 420000+i. The fixed initial state is unchanged; no new seed mapping or batch input is required.
 - 1500 maximum Benders iterations; absolute tolerance 1e-6; at most 32 subproblem environments plus one main environment.
 
 ## Minimal extensions
 
-1. Forward optional iteration, tolerance, time-limit and audit settings through the existing training function. Keep ordinary training defaults unchanged.
-2. Record primary MAX bounds before minimum-norm auxiliary solves. A temporarily pinned master cannot certify the unrestricted optimum. Do not use an artificial scenario cap for audited training; retain the valid fixed-policy cap.
-3. Reuse existing subproblem models and final fitted evaluation; record fitted/ALP/zero MIN certificates and paired path differences. Preserve optimal-only solver behavior and fail explicitly on interrupted solves.
-4. Add optional `batch_metadata` and a serialization helper to write `batch.json` alongside ordinary training results/checkpoints. Check metadata against actual execution settings.
+1. Forward optional iteration, tolerance and time-limit settings through the existing training function. Handle path-output settings in `train_penalty_coefficients_for_env`, outside the coefficient-fitting method.
+2. Record primary MAX bounds before minimum-norm auxiliary solves. A temporarily pinned master cannot certify the unrestricted optimum. Fixed-policy runs use the valid policy cap regardless of path-output settings; unrelated runs retain their historical scenario cap.
+3. After training, `train_penalty_coefficients_for_env` reuses the final fitted evaluation and existing subproblem models to calculate ALP/zero MIN certificates and paired path differences before disposing the models. Preserve optimal-only solver behavior and fail explicitly on interrupted solves.
+4. Restore the original training function inputs and result paths. Save compact path costs/bounds/statuses and master bounds in the existing JSONL record. Replace duplicated full path gradients with the two scalar products needed by local statistics; retain full gradients in the policy cache. Preserve cut logs and checkpoint metadata for resumption. Do not add an audit wrapper, Git lookup, runtime metadata or parameter fingerprint. Keep batch metadata only in the external manifest and join results by UID. Reuse the existing fixed-policy anchor for the ALP reference.
 5. Preserve the solver-free local inference code: 30 independent batch units, certified master upper bounds, correct ALP/zero reference constants, repeated-SAA intervals and optional batch-level CV. Never pool 30×512 fitted paths as independent observations.
 
 ## Validation and deployment
 
 - Test normal train routing, generation without license checkout, complete configuration/cache matching, independent seeds, metadata, certificate signs and constants, min-norm/pinned-master safeguards, and existing Benders behavior.
 - Use only a tiny bounded real-solver smoke test locally; do not run the formal M512 experiments locally.
-- Obtain independent code review; fix findings and verify before committing.
+- Obtain independent code review; fix findings and verify. Leave all changes uncommitted.
 - Git carries code/docs only. Generated commands, manifests, results and farm state stay out of Git.
-- Apply changes to `/Users/yanboding/Desktop/PhdTopic/MCMADASP`, push the reviewed experiment branch, and sync the exact commit plus a regenerated `table.dat` to Nibi while its farm is inactive. Preserve server modifications and prior outputs.
-- The user canceled all previous jobs with `kill.run`. **Do not restart jobs as part of this correction.** Leave the synchronized batch unsubmitted. Before any later submission, follow `NIBI_EXPERIMENT_WORKFLOW.md`, verify token budget and preserve then clear the four inactive farm entries.
+- Apply reviewed changes locally to `/Users/yanboding/Desktop/PhdTopic/MCMADASP`. **Do not commit, push, sync to the server, or submit jobs for this task.**

@@ -55,29 +55,6 @@ def test_evaluate_certificates_snapshots_order_and_values():
     assert certs[0]['objective'] == 2.
 
 
-def test_agent_audit_uses_existing_paths_and_shifts_raw_certificates_once():
-    agent = ApproxQAgent.__new__(ApproxQAgent)
-    agent.sample_path_weights = np.array([.25, .75])
-    agent.sample_path_strata = np.array([0, 1])
-    path = SimpleNamespace(arrivals=np.array([[1]]), terminal=SimpleNamespace(value='absorbed'),
-                           survival_weights=np.array([1.]), length=1, periods=2)
-    agent.sample_paths = [path, path]
-    agent._training_policy_centering = (np.array([100.,100.]), np.array([[2.],[4.]]), np.array([1.]))
-    def evaluate(theta, parallel):
-        v = [10.+float(theta[0]), 20.+float(theta[0])]
-        return np.array(v), 0., [dict(objective=x, lower_bound=x, upper_bound=x,
-                   exact=True, bound_valid=True, status='OPTIMAL') for x in v]
-    agent.coefficient_model = SimpleNamespace(evaluate_action_certificates=evaluate,
-                   best_master_certificate={'objective_bound': 25., 'valid':True})
-    audit = agent._build_training_audit([2.], [1.], ([0],[0],[0]), False,
-                                      {'termination_reason':'max_iterations'})
-    assert audit['full_objective'] == 19.5
-    assert audit['objective_lower_bound'] == 19.5
-    assert audit['objective_upper_bound'] == 25.
-    assert audit['absolute_gap'] == 5.5
-    assert audit['paths'][0]['ir']['fitted']['objective'] == 14.
-    assert audit['paths'][0]['ir']['alp']['objective'] == 11.
-    assert audit['paths'][0]['ir']['zero']['objective'] == 8.
 
 
 def test_primary_master_snapshot_precedes_min_norm_objective(monkeypatch):
@@ -107,7 +84,7 @@ def test_pinned_master_explicitly_suppresses_global_certificate():
     assert solver.action_vars.lb.tolist() == [-9.]
 
 
-def test_training_forwards_limits_and_keeps_policy_cap_with_unbounded_scenario_cap(monkeypatch):
+def test_training_forwards_limits_and_preserves_original_outputs(monkeypatch):
     import decision_maker.approximate_q_agent as module
     agent = ApproxQAgent.__new__(ApproxQAgent)
     agent.coefficient_model = None
@@ -123,33 +100,60 @@ def test_training_forwards_limits_and_keeps_policy_cap_with_unbounded_scenario_c
     agent._build_importance_sampling_info = Mock(return_value={})
     agent._require_generating_function = Mock(return_value=SimpleNamespace(set_coefficients=Mock()))
     agent._in_sample_values = lambda *a, **kw: {'in_sample': {'mean': 9.}, 'costs':np.array([9.])}
-    agent._build_training_audit = Mock(return_value={'paths': []})
     solver = SimpleNamespace(solve=Mock(return_value=(11., {'action':[2.], 'termination_reason':'max_iterations'})))
     monkeypatch.setattr(module, 'BendersDecompositionSolver', Mock(return_value=solver))
     centering = (np.array([20.]), np.array([[1.]]), np.array([1.]))
     objective, coeff, info = agent.benders_decomposition_train(
         init_state=([0],[0],[0]), policy_centering=centering,
-        max_iterations=17, absolute_gap_tolerance=.02, save_path_certificates=True,
-        reference_coefficients=[1.], master_time_limit_seconds=4., subproblem_time_limit_seconds=3.)
+        max_iterations=17, absolute_gap_tolerance=.02,
+        master_time_limit_seconds=4., subproblem_time_limit_seconds=3.)
     options = solver.solve.call_args.kwargs
     assert options['max_iter'] == 17 and options['tol'] == .02
     assert options['min_norm_action'] is True
     assert master.Params.TimeLimit == 4.
     assert agent._training_subproblem_time_limit_seconds == 3.
     master_options = agent.train_master_builder_fn.call_args.kwargs
-    assert master_options['scenario_upper_bound'] == GRB.INFINITY
+    assert 'scenario_upper_bound' not in master_options
     assert master_options['policy_centering'] is centering
-    assert info['audit'] == {'paths': []} and objective == 9.
+    assert 'audit' not in info and objective == 9.
+    assert info['in_sample']['mean'] == 9.
+    assert info['in_sample']['centered_mean'] == 8.
+    assert coeff == [2.]
+    assert 'paths' not in info and 'full_objective' not in info
 
 
-def test_final_value_evaluation_can_capture_certificates_without_an_extra_solve():
-    agent = ApproxQAgent.__new__(ApproxQAgent)
-    certificates = [{'objective':3.}]
-    certified = Mock(return_value=(np.array([3.]),3.,certificates))
-    agent.coefficient_model = SimpleNamespace(evaluate_action_certificates=certified,
-                                               evaluate_action=Mock(side_effect=AssertionError('extra solve')))
-    agent._training_policy_centering = None
-    agent._aggregate_in_sample = lambda v,t: {'costs':v}
-    result = agent._in_sample_values([1.], False, capture_certificates=True)
-    assert result['certificates'] == certificates
-    certified.assert_called_once()
+
+
+def test_training_has_no_baseline_flags_or_extra_reference_inputs():
+    import inspect
+    parameters = inspect.signature(ApproxQAgent.benders_decomposition_train).parameters
+    assert 'reference_coefficients' not in parameters
+    assert 'save_path_certificates' not in parameters
+    assert not hasattr(ApproxQAgent, '_training_path_results')
+    assert 'capture_certificates' not in inspect.signature(ApproxQAgent._in_sample_values).parameters
+
+
+
+
+def test_master_uses_fixed_policy_cost_cap_even_above_historical_default():
+    import gurobipy as gp
+    with gp.Env(empty=True) as license_env:
+        license_env.setParam('OutputFlag', 0)
+        license_env.start()
+        agent = ApproxQAgent.__new__(ApproxQAgent)
+        agent.grb_env = license_env
+        agent.sample_path_number = 2
+        agent.sample_path_weights = np.array([.5,.5])
+        agent.generating_function = SimpleNamespace(get_coefficient_var=lambda model, coefficient_bound:
+            model.addMVar(1, lb=-coefficient_bound, ub=coefficient_bound))
+        costs = np.array([2.e8,5.e7])
+        model, _, theta = agent.train_master_builder_fn(policy_centering=(costs, np.zeros((2,1)),np.zeros(1)))
+        try:
+            np.testing.assert_array_equal(theta.UB, costs)
+        finally:
+            model.dispose()
+        model, _, theta = agent.train_master_builder_fn()
+        try:
+            np.testing.assert_array_equal(theta.UB, [1.e8,1.e8])
+        finally:
+            model.dispose()

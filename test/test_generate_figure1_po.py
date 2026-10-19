@@ -1,3 +1,4 @@
+import inspect
 import json
 import shlex
 from collections import Counter
@@ -24,7 +25,6 @@ def cache(tmp_path):
 
 def arguments(cache, tmp_path, *options):
     return ['train', 'figure1', '--alp-cache-root', str(cache),
-            '--server-project', '/server/project', '--results-root', '/server/results',
             '--dat', str(tmp_path / 'table.dat'), *options]
 
 
@@ -66,31 +66,38 @@ def test_train_group_emits_existing_training_records_and_manifest(cache, tmp_pat
     assert manifest['expected_batches'] == 30 and manifest['expected_paths'] == 512
     assert manifest['seed_base'] == 420000
     assert len({r['uid'] for r in records}) == 300
-    counts = Counter(r['batch_metadata']['config_id'] for r in records)
+    assert not {'server_project', 'server_results', 'execution_working_directory'} & manifest.keys()
+    counts = Counter(r['config_id'] for r in manifest['runs'])
     assert len(counts) == 10 and set(counts.values()) == {30}
     lines = (tmp_path / 'table.dat').read_text().splitlines()
     assert len(lines) == 300
     for index, (record, run, line) in enumerate(zip(records, manifest['runs'], lines)):
         argv = shlex.split(line)
         assert argv[:4] == [str(index + 1), 'python', 'run.py', '--params']
-        assert json.loads(argv[4]) == record == run['params']
+        assert json.loads(argv[4]) == record == run['parameters']
         assert shlex.split(run['command']) == argv[1:]
         assert record['init_state_mode'] == 'shared' and 'run_type' not in record
         assert record['sample_path_number'] == 512
-        metadata = record['batch_metadata']
+        assert 'batch_metadata' not in record and 'sampling_seeds' not in record
+        metadata = run
         assert 'run_type' not in metadata
         assert record['init_state'] == metadata['initial_state']
-        assert metadata['seeds'] == dict(env=420000 + 4 * index, arrival=420001 + 4 * index,
-                                         stop_time=420002 + 4 * index, initial_state=420003 + 4 * index)
+        assert metadata['seeds'] == dict(env=420000 + index, arrival=420000 + index,
+                                         stop_time=420000 + index, initial_state=12345)
         for stream, field in [('env', 'env_random_seed'), ('arrival', 'arrival_random_seed'),
                               ('stop_time', 'stop_time_random_seed')]:
             assert record['env_args'][field] == metadata['seeds'][stream]
         assert record['init_state_seed'] == metadata['seeds']['initial_state']
-        assert metadata['output_dir'] == '/server/results/' + metadata['batch_id']
+        assert 'output_dir' not in metadata and 'output_dir' not in record
+        assert record['experiment_name'] in {
+            'toy_lb_occupancy_alp', 'toy_lb_type1_share_alp',
+            'toy_lb_type2_target_alp', 'toy_lb_type1_cost_alp'}
         inner = record['agent_args']['agent_args']
         assert inner['current_decision_var_type'] == inner['future_decision_var_type'] == 'continuous'
         assert inner['sample_path_length_proposal'] == metadata['sampling']['proposal']
-        assert inner['initial_coefficients'] == inner['reference_coefficients'] == metadata['reference']['coefficients']
+        assert inner['initial_coefficients'] == metadata['reference']['coefficients']
+        assert 'reference_coefficients' not in inner
+        assert set(inner['initial_coefficients_source']) == {'file', 'uid'}
         assert inner['policy_centering'] is True and inner['cap_policy'] == 'alp'
         assert inner['save_path_certificates'] is True
         assert inner['max_iterations'] == 1500 and inner['absolute_gap_tolerance'] == 1e-6
@@ -106,12 +113,15 @@ def test_train_group_uses_common_options(cache, tmp_path):
     records = cli.main(arguments(cache, tmp_path, '--num-path-seeds', '2', '--sample-paths-seed', '1977',
         '--workers', '4', '--max-iterations', '50', '--absolute-gap-tolerance', '0.001',
         '--subproblem-time-limit-seconds', '60', '--master-time-limit-seconds', '120',
+        '--init-state-seed', '70',
         '--manifest', str(tmp_path / 'custom.json')))
     manifest = json.loads((tmp_path / 'custom.json').read_text())
     assert len(records) == 20 and manifest['expected_batches'] == 2
     assert not (tmp_path / 'table.manifest.json').exists()
-    assert records[-1]['batch_metadata']['seeds']['initial_state'] == 1977 + 79
-    solver = records[0]['batch_metadata']['solver']
+    assert records[-1]['env_args']['arrival_random_seed'] == 1977 + 19
+    assert {record['init_state_seed'] for record in records} == {70}
+    assert {run['seeds']['initial_state'] for run in manifest['runs']} == {70}
+    solver = manifest['runs'][0]['solver']
     assert solver == dict(workers=4, max_iterations=50, absolute_gap_tolerance=.001,
                          subproblem_time_limit_seconds=60., master_time_limit_seconds=120.)
 
@@ -171,3 +181,15 @@ def test_bundle_writer_rejects_identical_output_paths_before_writing(tmp_path):
     with pytest.raises(ValueError, match='distinct'):
         write_bundle({'runs': []}, dat_file=output, manifest_file=output)
     assert not output.exists()
+
+
+def test_training_generator_keeps_original_signature():
+    from param_generation.datasets import generate_penalty_coefficient_training_env
+    assert list(inspect.signature(generate_penalty_coefficient_training_env).parameters) == [
+        'test_envs', 'dat_file', 'init_state', 'sample_path_number', 'init_state_seed', 'sample_paths_seed']
+
+
+@pytest.mark.parametrize('option', ['--server-project', '--results-root'])
+def test_train_rejects_removed_output_overrides(option):
+    with pytest.raises(SystemExit):
+        cli.build_parser().parse_args(['train', 'figure1', '--alp-cache-root', '/cache', option, '/unused'])

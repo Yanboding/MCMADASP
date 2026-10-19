@@ -2,7 +2,6 @@ import argparse
 import copy
 import json
 import math
-from pathlib import PurePosixPath
 import os
 import shutil
 import time
@@ -21,7 +20,7 @@ from param_generation.datasets import (
 )
 from param_generation.experiment_specs import build_variation_test_env
 from param_generation.generate_figure1_po import (
-    batch_metadata, build_manifest, figure1_training_group, write_bundle,
+    build_manifest, figure1_training_group, write_bundle,
 )
 from param_generation.generating_functions import GENERATING_FUNCTION_CLASSES, build_generating_function, normalize_generating_function_spec
 from param_generation.mutators import mutate_initial_state_congestion, mutate_stratified_geometric_scenario
@@ -244,7 +243,7 @@ def build_parser():
     train.add_argument('--sample-paths-seed', type=int, default=None,
                        help='first sample-path seed; with --num-path-seeds M '
                             'the seeds seed, seed+1, ..., seed+M-1 are used (default 42); '
-                            'figure1 uses four separate streams per batch (default 420000)')
+                            'figure1 advances seeds across all configurations (default 420000)')
     train.add_argument(
         '--num-init-states', type=int, default=0, metavar='K',
         help='emit K commands per variant, each training on ONE fixed initial '
@@ -350,10 +349,6 @@ def build_parser():
     train.add_argument('--master-time-limit-seconds', type=float)
     train.add_argument('--alp-cache-root', metavar='DIR',
                        help='figure1: existing certified ALP caches; never trains missing fits')
-    train.add_argument('--server-project', metavar='DIR',
-                       help='figure1: absolute directory from which run.py will execute')
-    train.add_argument('--results-root', metavar='DIR',
-                       help='figure1: absolute result root for separate batch directories')
     train.add_argument('--manifest', metavar='JSON',
                        help='figure1: audit manifest (default <dat-stem>.manifest.json)')
 
@@ -708,17 +703,15 @@ def _figure1_train_inputs(args):
                     or args.intercept_bound is not None or args.alp_value_floor
                     or args.alp_value_floor_tolerance is not None or args.min_norm_slack
                     or args.min_norm_every_iteration or args.init_coefficients is not None
-                    or args.name is not None or args.init_state_seed != 12345
+                    or args.name is not None
                     or args.penalty_function not in (None, 'absorption_alp_penalty')
                     or args.cap_policy not in (None, 'alp')
                     or args.sample_path_number not in (None, 512))
     if incompatible:
         raise ValueError('figure1 requires fixed reset states, continuous decisions, 512 paths, '
                          'the certified ALP reference, and unrestricted coefficients')
-    if not args.alp_cache_root or not args.server_project or not args.results_root:
-        raise ValueError('train figure1 needs --alp-cache-root, --server-project and --results-root')
-    if not all(PurePosixPath(path).is_absolute() for path in (args.server_project, args.results_root)):
-        raise ValueError('server project and result roots must be absolute paths')
+    if not args.alp_cache_root:
+        raise ValueError('train figure1 needs --alp-cache-root')
     args.reset_init_state = True
     args.penalty_function = 'absorption_alp_penalty'
     args.policy_centering = True
@@ -737,12 +730,9 @@ def _figure1_train_inputs(args):
         variant['agent_args']['agent_args'].update(
             current_decision_var_type='continuous', future_decision_var_type='continuous',
             initial_coefficients=copy.deepcopy(reference['coefficients']),
-            reference_coefficients=copy.deepcopy(reference['coefficients']),
-            initial_coefficients_source={'file': reference['source'], 'uid': reference['source_uid'],
-                                         'sha256': reference['source_sha256'],
-                                         'certificate': copy.deepcopy(reference['certificate'])},
+            initial_coefficients_source={'file': reference['source'], 'uid': reference['source_uid']},
             save_path_certificates=True)
-    return configs, display, by_uid, test_envs
+    return configs, display, test_envs
 
 
 def _run_train(args):
@@ -755,12 +745,12 @@ def _run_train(args):
     if args.num_path_seeds < 1:
         raise ValueError('--num-path-seeds must be positive')
     if figure1:
-        configs, display, by_uid, test_envs = _figure1_train_inputs(args)
-        if args.sample_paths_seed < 0 or args.sample_paths_seed + 4 * len(configs) * args.num_path_seeds > 2**32:
+        configs, display, test_envs = _figure1_train_inputs(args)
+        if args.sample_paths_seed < 0 or args.sample_paths_seed + len(configs) * args.num_path_seeds > 2**32:
             raise ValueError('seed range must fit unsigned 32-bit generator seeds')
     else:
         if any(getattr(args, key) is not None for key in
-               ('alp_cache_root', 'server_project', 'results_root', 'manifest')):
+               ('alp_cache_root', 'manifest')):
             raise ValueError('ALP cache and manifest options currently describe the figure1 experiment group')
         test_envs = _select_variants(
             build_variation_test_env(EXPERIMENT_SPECS[args.experiment]), args.variants)
@@ -833,29 +823,20 @@ def _run_train(args):
             env = get_config_by_type('infinite_custom', args=variant['env_args']).env
             init_states = [alp_expected_initial_state(env)]
         for init_state in init_states:
-            for repetition, path_seed in enumerate(path_seeds, start=1):
-                extras = {}
-                init_state_seed = args.init_state_seed
-                record_key = key
+            for path_seed in path_seeds:
                 if figure1:
-                    config = by_uid[get_uid(json.loads(json.dumps(variant['env_args'])))]
-                    metadata = batch_metadata(config, repetition, len(records), args.sample_paths_seed,
-                                              args.results_root, solver)
-                    extras = {'sampling_seeds': metadata['seeds'], 'batch_metadata': metadata}
-                    init_state_seed = metadata['seeds']['initial_state']
-                    record_key = (key[0], 'figure1/' + config['config_id'], key[2])
+                    path_seed = args.sample_paths_seed + len(records)
                 records.extend(generate_penalty_coefficient_training_env(
-                    {record_key: variant},
+                    {key: variant},
                     dat_file=None,
                     init_state=init_state,
                     sample_path_number=sample_path_number,
-                    init_state_seed=init_state_seed,
+                    init_state_seed=args.init_state_seed,
                     sample_paths_seed=path_seed,
-                    **extras,
                 ))
     if figure1:
-        manifest = build_manifest(configs, display, records, args.server_project, args.results_root,
-                                  args.sample_paths_seed, args.num_path_seeds, args.sample_path_number)
+        manifest = build_manifest(configs, display, records, args.sample_paths_seed,
+                                  args.num_path_seeds, args.sample_path_number)
         write_bundle(manifest, dat_file=args.dat, manifest_file=args.manifest)
         print(f"Generated {len(records)} training commands for {len(configs)} configurations")
     else:

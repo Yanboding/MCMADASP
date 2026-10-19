@@ -1,6 +1,4 @@
 """Solver-independent certificate extraction and paired-path serialization."""
-import hashlib
-import json
 import math
 
 # Numeric/infeasible/unbounded/error statuses do not establish a finite certificate.
@@ -57,21 +55,19 @@ def affine_cut(value, gradient, theta):
     return float(value - sum(g * t for g, t in zip(gradient, theta))), list(map(float, gradient))
 
 
-def stable_hash(value):
-    def default(item):
-        return item.tolist() if hasattr(item, 'tolist') else item.value
-    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(',', ':'), default=default,
-                                     allow_nan=False).encode()).hexdigest()
-
-
-def path_record(path_id, path, state, stratum, weight, gradient, ir):
-    def difference(other):
+def path_record(path_id, path, stratum, weight, policy_control_variate, policy_penalty_at_reference, ir):
+    def difference(other, adjustment=0.):
         a, b = ir['fitted']['objective'], ir[other]['objective']
-        return None if a is None or b is None else a - b
-    return dict(path_id=int(path_id), path_hash=stable_hash(dict(arrivals=path.arrivals,
-                terminal=path.terminal.value, survival_weights=path.survival_weights)),
-                initial_state_hash=stable_hash(state), stratum=int(stratum), weight=float(weight),
-                arrival_length=int(path.length), termination_time=int(path.periods), terminal=path.terminal.value,
-                policy_gradient=list(map(float, gradient)), ir=ir,
+        return None if a is None or b is None else a - b - adjustment
+    fitted = ir['fitted']['objective']
+    return dict(path_id=int(path_id), stratum=int(stratum), weight=float(weight),
+                termination_time=int(path.periods),
+                policy_control_variate=float(policy_control_variate),
+                policy_penalty_at_reference=float(policy_penalty_at_reference),
+                ir={name: dict(objective=row['objective'],
+                               status=row['status']) for name, row in ir.items()},
                 raw_gap_fitted_minus_zero=difference('zero'), raw_gap_fitted_minus_alp=difference('alp'),
-                raw_gaps_are_incumbent_differences=not all(v['exact'] for v in ir.values()))
+                cv_adjusted_fitted_ir_cost=None if fitted is None else fitted - policy_control_variate,
+                cv_adjusted_gap_fitted_minus_alp=difference('alp', policy_control_variate),
+                # At theta=0 the adjusted zero baseline is V_zero + g_pi @ anchor.
+                cv_adjusted_gap_fitted_minus_zero=difference('zero', policy_control_variate + policy_penalty_at_reference))

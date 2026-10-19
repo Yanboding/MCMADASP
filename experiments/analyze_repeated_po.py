@@ -8,7 +8,7 @@ from pathlib import Path
 import numpy as np
 from scipy.stats import geom, t
 
-from experiments.repeated_po_schema import match_manifest, validate_batch, validate_group
+from experiments.repeated_po_schema import batch_from_training_record, match_manifest, validate_batch, validate_group
 
 
 def expected_tau(sampling):
@@ -41,7 +41,8 @@ def batch_observation(batch):
             value = record['lower_bound']
             substitutions[name] += int(not record['exact'])
             if name == 'zero':
-                value += float(np.asarray(path['policy_gradient']) @ anchor)
+                value += (path['policy_penalty_at_reference'] if 'policy_penalty_at_reference' in path
+                          else float(np.asarray(path['policy_gradient']) @ anchor))
             baseline[name] += path['weight'] * value
             gap = path[f'raw_gap_fitted_minus_{name}']
             if gap is None:
@@ -152,6 +153,29 @@ def analyze(manifest, results_root, mode='baseline', half_width_threshold=None,
             raise ValueError(f'duplicate result for {identity}')
         match_manifest(batch, expected[identity])
         found[identity] = batch
+    runs_by_uid = {}
+    for run in manifest['runs']:
+        if 'parameters' not in run:
+            continue
+        uid = run['parameters'].get('uid')
+        if not isinstance(uid, str) or not uid:
+            raise ValueError('missing manifest training UID')
+        if uid in runs_by_uid:
+            raise ValueError('duplicate manifest training UIDs')
+        runs_by_uid[uid] = run
+    for path in sorted(Path(results_root).rglob('*.jsonl')):
+        with path.open() as stream:
+            for line in stream:
+                if not line.strip():
+                    continue
+                record = json.loads(line)
+                run = runs_by_uid.get(record.get('uid'))
+                if run is None:  # ordinary results folders can contain other experiments
+                    continue
+                identity = run['batch_id']
+                if identity in found:
+                    raise ValueError(f'duplicate result for {identity}')
+                found[identity] = batch_from_training_record(record, run)
     missing = sorted(set(expected) - set(found))
     if missing:
         raise ValueError(f'missing {len(missing)} batches; no CI produced: {missing[:10]}')
