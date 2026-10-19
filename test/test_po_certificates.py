@@ -152,7 +152,7 @@ def test_unavailable_gurobi_bound_is_conservative():
 
 
 def test_generator_default_limits_validate_without_solving(monkeypatch):
-    from experiments import generate_figure1_po as generator
+    from param_generation import generate_figure1_po as generator
     from experiments.figure1_po_run import validate_params
     monkeypatch.setattr(generator, '_reference', lambda *args: dict(coefficients=[1], policy='alp'))
     manifest = generator.build_manifest('/unused', '/server/project', '/server/results')

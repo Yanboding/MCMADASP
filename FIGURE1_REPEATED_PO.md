@@ -9,7 +9,7 @@ The twelve displayed settings give ten unique environment configurations. Each c
 From the project root:
 
 ```bash
-python -m experiments.generate_figure1_po \
+python -m param_generation.generate_figure1_po \
   --alp-cache-root /Users/yanboding/Desktop/PhdTopic/MCMADASP/experiments/results \
   --server-project /home/dingyanb/projects/def-sarhangi/dingyanb/MCMADASP \
   --server-results /home/dingyanb/projects/def-sarhangi/dingyanb/MCMADASP/experiments/results/figure1_repeated_po_20261018 \

@@ -3,7 +3,7 @@ import shlex
 
 import pytest
 
-from experiments.generate_figure1_po import build_manifest, write_bundle, figure1_configurations
+from param_generation.generate_figure1_po import build_manifest, write_bundle, figure1_configurations
 from param_generation.caching import training_uid
 
 
@@ -83,7 +83,7 @@ def test_noncertified_and_nonfinite_coefficients_rejected(cache):
 
 def test_generation_never_initializes_solver(cache, monkeypatch, tmp_path):
     import gurobipy
-    from experiments.generate_figure1_po import main
+    from param_generation.generate_figure1_po import main
 
     def forbidden(*args, **kwargs):
         raise AssertionError('generation must not create Gurobi environments or models')

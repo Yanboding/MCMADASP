@@ -35,7 +35,7 @@ Manifest fields: schema_version=1, display_settings (12 entries with label/confi
 
 ## Task 1 — Generator (agent owned)
 
-Files: experiments/generate_figure1_po.py, test/test_generate_figure1_po.py.
+Files: param_generation/generate_figure1_po.py, test/test_generate_figure1_po.py.
 
 - [ ] Test 12→10 configuration dedup, correct ALP UID lookup, malformed/missing cache rejection, 300 commands with unique seeds/output directories, actual CLI compatibility, complete manifests and preserved model/proposal/weights.
 - [ ] Build from existing toy_lb_* registry and explicit ALP cache root. Read-only generation; never initialize licenses or solve models.
