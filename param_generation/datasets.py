@@ -127,7 +127,7 @@ def _warn_initial_state_mismatch(coefficients_source, is_random_initial_state):
               "use --init-occupancy to match the training state instead.")
 
 
-def generate_test_paths_and_init_state(test_envs, test_sample_path_num, warm_up_periods=0, num_periods=None, dat_file=None, num_groups=None, is_require_penalty_coefficients=True, is_random_initial_state=False, policy_ids=None, warm_up_policy_id=None, evaluation_proposal_spec=None, penalty_coefficients_dir=None, warm_up_paths=None, sample_gen_seed_offset=1001, penalty_ratios=None, alp_coefficients=None, alp_penalty=False, policy_centering=False, alp_policy_coefficients=None):
+def generate_test_paths_and_init_state(test_envs, test_sample_path_num, warm_up_periods=0, num_periods=None, dat_file=None, num_groups=None, is_require_penalty_coefficients=True, is_random_initial_state=False, policy_ids=None, warm_up_policy_id=None, evaluation_proposal_spec=None, penalty_coefficients_dir=None, warm_up_paths=None, sample_gen_seed_offset=1001, penalty_ratios=None, alp_coefficients=None, alp_penalty=False, policy_centering=False, alp_policy_coefficients=None, relax_first_decision=False):
     policy_ids = list(policy_ids or [])
     policy_id_set = set(policy_ids)
     if alp_penalty and (penalty_ratios is not None or penalty_coefficients_dir is not None):
@@ -418,6 +418,8 @@ def generate_test_paths_and_init_state(test_envs, test_sample_path_num, warm_up_
                 save_params['alp_coefficients'] = [float(value) for value in alp_coefficients]
             if policy_centering:
                 save_params['policy_centering'] = True
+            if relax_first_decision:
+                save_params['relax_first_decision'] = True
             if warm_up_policy_id is not None:
                 save_params['warm_up_policy_id'] = warm_up_policy_id
             if penalty_ratios is not None:

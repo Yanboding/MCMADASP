@@ -427,13 +427,13 @@ def calculate_policy_costs_with_penalty(uid,
 
 def information_relaxation_bounds(env, generating_function_spec, penalty_ratios, state, sample_path_tail,
                                   period_weights, terminal, grb_env, grb_sub_envs, remove_path_noise=False,
-                                  fixed_actions=None):
+                                  fixed_actions=None, relax_first_decision=False):
     bounds = {}
     for penalty_ratio in penalty_ratios:
         agent = ApproxQAgent(
             env,
             discount_factor=env.discount_factor,
-            current_decision_var_type='integer',
+            current_decision_var_type='continuous' if relax_first_decision else 'integer',
             future_decision_var_type='continuous',
             generating_function=_build_generating_function(env=env, spec=generating_function_spec),
             penalty_ratio=penalty_ratio,
@@ -617,7 +617,7 @@ def _policy_centered_relaxation_fields(env, generating_function_spec, init_state
 
 def _centered_relaxation_fields(env, generating_function_spec, alp_coefficients, init_state,
                                 sample_path_tail, period_weights, terminal, uncentered_fitted,
-                                grb_env, grb_sub_envs):
+                                grb_env, grb_sub_envs, relax_first_decision=False):
     # The centering term vanishes at the anchor, so the centered ALP value is the plain ALP
     # relaxation value. Neither uses remove_path_noise: centering already removes the policy's
     # sampled penalty variation, and stacking both would subtract the action-independent part
@@ -630,7 +630,7 @@ def _centered_relaxation_fields(env, generating_function_spec, alp_coefficients,
         env, alp_spec, init_state, sample_path_tail, period_weights, terminal, grb_env, grb_sub_envs)
     centered_alp = float(information_relaxation_bounds(
         env, alp_spec, [1.0], init_state, sample_path_tail, period_weights, terminal,
-        grb_env, grb_sub_envs)[1.0])
+        grb_env, grb_sub_envs, relax_first_decision=relax_first_decision)[1.0])
     centered_fitted = float(uncentered_fitted) - float(gradient @ (fitted - anchor))
     return {
         'centered_fitted_information_relaxation_cost': centered_fitted,
@@ -662,7 +662,8 @@ def evaluate_policy_costs_with_information_relaxation(uid,
                                                       remove_path_noise=False,
                                                       alp_coefficients=None,
                                                       policy_centering=False,
-                                                      terminal=None):
+                                                      terminal=None,
+                                                      relax_first_decision=False):
     init_state = tuple(np.array(item) for item in init_state)
     sample_path = np.array(sample_path)
     sample_path_tail = sample_path[warm_up_periods:]
@@ -683,6 +684,10 @@ def evaluate_policy_costs_with_information_relaxation(uid,
         'path_weight': path_weight,
         'path_stratum': path_stratum,
     }
+    if relax_first_decision:
+        base_record['relax_first_decision'] = True
+        base_record['information_relaxation_decision_types'] = {
+            'current': 'continuous', 'future': 'continuous'}
     ordered_policy_specs = _order_policy_specs_for_warm_up(policy_specs, warm_up_policy_id)
     if policy_centering and ordered_policy_specs:
         raise ValueError('policy_centering centers the information-relaxation-only bound; the record '
@@ -691,7 +696,7 @@ def evaluate_policy_costs_with_information_relaxation(uid,
     if not ordered_policy_specs:
         bounds = None if skip_information_relaxation else information_relaxation_bounds(
             env, generating_function_spec, ratios, init_state, sample_path_tail, period_weights, terminal,
-            grb_env, grb_sub_envs, remove_path_noise)
+            grb_env, grb_sub_envs, remove_path_noise, relax_first_decision=relax_first_decision)
         centered = {}
         if policy_centering and bounds is not None:
             if remove_path_noise:
@@ -706,7 +711,8 @@ def evaluate_policy_costs_with_information_relaxation(uid,
                                  'policy cost centering already removes the sampled penalty')
             centered = _centered_relaxation_fields(
                 env, generating_function_spec, alp_coefficients, init_state, sample_path_tail,
-                period_weights, terminal, bounds[1.0], grb_env, grb_sub_envs)
+                period_weights, terminal, bounds[1.0], grb_env, grb_sub_envs,
+                relax_first_decision=relax_first_decision)
         record = {
             **base_record,
             'policy_id': 'information_relaxation_only',
@@ -758,7 +764,7 @@ def evaluate_policy_costs_with_information_relaxation(uid,
         if not skip_information_relaxation and state_key not in bounds_by_state:
             bounds_by_state[state_key] = information_relaxation_bounds(
                 env, generating_function_spec, ratios, warmup_state, sample_path_tail, period_weights, terminal,
-                grb_env, grb_sub_envs, remove_path_noise)
+                grb_env, grb_sub_envs, remove_path_noise, relax_first_decision=relax_first_decision)
         bounds = bounds_by_state.get(state_key)
         policy_result.update({
             **base_record,

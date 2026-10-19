@@ -414,6 +414,10 @@ def build_parser():
         'lowerbound', help='Information-relaxation lower bounds only (no policies).')
     add_eval_arguments(lower)
     lower.add_argument(
+        '--relax-first-decision', action='store_true',
+        help='use continuous decisions in every period of the information-relaxation bound; '
+             'by default the first decision is integer and future decisions are continuous')
+    lower.add_argument(
         '--alp-penalty', action='store_true',
         help="use each variant's certified ALP coefficients theta*_ALP (fitted and cached by "
              'train_alp_coefficients, as for row_gen_alp) as the penalty of the penalized bound; needs '
@@ -966,6 +970,7 @@ def _evaluation_records(args, policy_ids):
         alp_coefficients=alp_coefficients,
         alp_penalty=alp_penalty,
         policy_centering=getattr(args, 'policy_centering', False),
+        relax_first_decision=getattr(args, 'relax_first_decision', False),
         alp_policy_coefficients=_load_initial_coefficients(args.alp_policy_coefficients)[0],
     )
     if args.skip_ir:
