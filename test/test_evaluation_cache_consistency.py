@@ -136,6 +136,33 @@ class EvaluationRecordUidTest(unittest.TestCase):
                     evaluation_proposal_spec={'type': 'fixed', 'max_length': 1})
         return datasets.generate_test_paths_and_init_state(**{**args, **changes})[0]
 
+    @mock.patch('importance_sampling.proposals.fixed.FixedLengthProposal.sample_arrival_paths',
+                new=lambda self, arrival_generator, size:
+                ([np.zeros((1, 2), dtype=int) for _ in range(size)], np.ones(size, dtype=int)))
+    def test_repeated_draws_have_distinct_reproducible_uids(self):
+        args = dict(test_envs=make_test_envs(), test_sample_path_num=2,
+                    is_require_penalty_coefficients=False, policy_ids=[],
+                    evaluation_proposal_spec={'type': 'fixed', 'max_length': 1})
+        records = datasets.generate_test_paths_and_init_state(**args)
+        self.assertEqual(records[0]['sample_path'], records[1]['sample_path'])
+        self.assertEqual(records[0]['init_state'], records[1]['init_state'])
+        self.assertNotEqual(records[0]['uid'], records[1]['uid'])
+        repeated = datasets.generate_test_paths_and_init_state(**args)
+        self.assertEqual([row['uid'] for row in records], [row['uid'] for row in repeated])
+
+    @mock.patch('importance_sampling.proposals.fixed.FixedLengthProposal.sample_arrival_paths',
+                new=lambda self, arrival_generator, size:
+                ([np.zeros((1, 2), dtype=int) for _ in range(size)], np.ones(size, dtype=int)))
+    def test_different_sampling_seeds_keep_identical_draws_distinct(self):
+        args = dict(test_envs=make_test_envs(), test_sample_path_num=1,
+                    is_require_penalty_coefficients=False, policy_ids=[],
+                    evaluation_proposal_spec={'type': 'fixed', 'max_length': 1})
+        first = datasets.generate_test_paths_and_init_state(**args, sample_gen_seed_offset=1001)[0]
+        second = datasets.generate_test_paths_and_init_state(**args, sample_gen_seed_offset=1002)[0]
+        self.assertEqual(first['sample_path'], second['sample_path'])
+        self.assertEqual(first['init_state'], second['init_state'])
+        self.assertNotEqual(first['uid'], second['uid'])
+
     def test_terminal_and_weights_are_part_of_uid(self):
         baseline = self.generate()
         for field, value in (('terminal', 'absorbed'), ('period_weights', [1.0, 2.0])):

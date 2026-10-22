@@ -4,6 +4,7 @@ import json
 import math
 import os
 import shutil
+import sys
 import time
 
 from scipy.stats import geom
@@ -14,6 +15,7 @@ from experiments import get_config_by_type
 from param_generation.caching import load_trained_coefficients_from_folder
 from param_generation.command_files import read_command_file_records, write_command_file, write_grouped_command_file
 from param_generation.datasets import (
+    generate_alp_coefficient_training_env,
     generate_penalty_coefficient_training_env,
     generate_test_paths_and_init_state,
     offset_sample_generation_seeds,
@@ -232,9 +234,11 @@ def build_parser():
     sub = parser.add_subparsers(dest='command', required=True)
 
     train = sub.add_parser(
-        'train', help='Penalty-coefficient training commands (one per variant); '
-                      "each variant's scenario count comes from its agent_args.")
+        'train', help='ALP or PO coefficient-training commands (default: PO).')
     train.add_argument('experiment', choices=sorted([*EXPERIMENT_SPECS, 'figure1']))
+    train.add_argument('--method', choices=('po', 'alp'), default='po',
+                       help='alp emits one ALP fit per variant without local training; '
+                            'only --variants, --name and --dat apply in ALP mode')
     train.add_argument('--variants', default=None,
                        help='comma-separated mutate_val values to keep '
                             '(default: all variants of the experiment)')
@@ -587,14 +591,27 @@ def _load_initial_coefficients(path):
     if path is None:
         return None, None
     path = os.path.normpath(path)
+    cached = None
     with open(path, encoding='utf-8') as handle:
         for line in handle:
             record = json.loads(line) if line.strip() else {}
-            if isinstance(record.get('coefficients'), list):
+            coefficients = record.get('coefficients')
+            nested = not isinstance(coefficients, list)
+            if nested:
+                coefficients = record.get('result', {}).get('args', {}).get('coefficients')
+            if isinstance(coefficients, list):
                 source = {'file': path, 'uid': record.get('uid')}
                 if 'mutate_val' in record:
                     source['mutate_val'] = record['mutate_val']
-                return [float(value) for value in record['coefficients']], source
+                candidate = [float(value) for value in coefficients], source
+                if not nested:
+                    return candidate
+                if cached is not None and cached != candidate:
+                    raise ValueError(f'{path} holds multiple distinct coefficient records; '
+                                     'provide a file containing only the intended ALP record')
+                cached = candidate
+    if cached is not None:
+        return cached
     raise ValueError(f'{path} holds no record with a coefficients list')
 
 
@@ -737,6 +754,18 @@ def _figure1_train_inputs(args):
             initial_coefficients_source={'file': reference['source'], 'uid': reference['source_uid']},
             save_path_certificates=True)
     return configs, display, test_envs
+
+
+def _run_alp_train(args):
+    if args.experiment == 'figure1':
+        raise ValueError('--method alp requires a registered experiment, not the figure1 PO group')
+    test_envs = _select_variants(
+        build_variation_test_env(EXPERIMENT_SPECS[args.experiment]), args.variants)
+    if args.name is not None:
+        if len(test_envs) != 1:
+            raise ValueError('--name requires a single variant')
+        test_envs = {(key[0], args.name, key[2]): variant for key, variant in test_envs.items()}
+    return generate_alp_coefficient_training_env(test_envs, dat_file=args.dat)
 
 
 def _run_train(args):
@@ -1008,8 +1037,17 @@ def _run_improvement(args):
 
 def main(argv=None):
     parser = build_parser()
+    argv = list(sys.argv[1:] if argv is None else argv)
     args = parser.parse_args(argv)
     if args.command == 'train':
+        if args.method == 'alp':
+            # Reject explicitly supplied PO options, including default-valued ones.
+            allowed = {'--method', '--variants', '--name', '--dat'}
+            incompatible = sorted({arg.split('=', 1)[0] for arg in argv
+                                   if arg.startswith('--') and arg.split('=', 1)[0] not in allowed})
+            if incompatible:
+                raise ValueError(f"--method alp does not support: {', '.join(incompatible)}")
+            return _run_alp_train(args)
         return _run_train(args)
     if args.command == 'eval':
         policy_ids = [p for p in args.policies.split(',') if p]

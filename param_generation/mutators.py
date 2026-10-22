@@ -60,6 +60,51 @@ def mutate_toy_lb_type1_cost(env_args, cost):
     mutate_toy_lb_occupancy(env_args, 0.5)
 
 
+def _set_additional_toy_lb_initial_state(env_args, waitlist=TOY_LB_WAITLIST):
+    treatment_pattern = str2treatment_patterns(env_args['patterns'])
+    horizon = env_args['booking_window_size'] + treatment_pattern.shape[0] - 1
+    # Preserve the six occupied baseline days when the horizon grows.
+    env_args['reset_params'] = {
+        'init_state': ([5] * 6 + [0] * (horizon - 6), [0] * horizon, list(waitlist)),
+    }
+    env_args['maximum_total_arrival'] = 9
+
+
+def _rebuild_toy_lb_waiting_costs(env_args, costs):
+    env_args['holding_cost_by_day_by_type'] = [
+        [0] * len(costs) for _ in range(env_args['booking_window_size'])]
+    for type_index, cost in enumerate(costs):
+        _set_waiting_cost(env_args, type_index, 1, cost)
+
+
+def mutate_toy_lb_treatment_pattern(env_args, days):
+    env_args['patterns'] = [f'{days} * 1', '1 * 2']
+    _set_additional_toy_lb_initial_state(env_args)
+
+
+def mutate_toy_lb_arrival_rates(env_args, factor):
+    env_args['arrival_rates'] = [rate * factor for rate in env_args['arrival_rates']]
+    _set_additional_toy_lb_initial_state(env_args)
+
+
+def mutate_toy_lb_pattern_arrival_rates(env_args, factor):
+    mutate_toy_lb_treatment_pattern(env_args, 3)
+    mutate_toy_lb_arrival_rates(env_args, factor)
+
+
+def mutate_toy_lb_booking_window(env_args, window):
+    env_args['booking_window_size'] = window
+    _rebuild_toy_lb_waiting_costs(env_args, [100, 10])
+    _set_additional_toy_lb_initial_state(env_args)
+
+
+def mutate_toy_lb_waiting_costs(env_args, val):
+    env_args['patterns'] = ['1 * 3'] * 3 + ['1 * 2'] * 3
+    env_args['arrival_rates'] = [1 / 3] * 3 + [2 / 3] * 3
+    _rebuild_toy_lb_waiting_costs(env_args, [150, 100, 50, 15, 10, 5])
+    _set_additional_toy_lb_initial_state(env_args, [0, 1, 0, 0, 2, 0])
+
+
 def mutate_initial_state_congestion_05_const(env_args, val):
     mutate_initial_state_congestion(env_args, 0.5)
 

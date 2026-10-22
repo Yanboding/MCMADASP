@@ -394,7 +394,7 @@ def calculate_policy_costs_with_penalty(uid,
     result = {
         'policy_id': policy_id,
         'agent_name': agent_name,
-        'agent_args': serializable_agent_args,
+        'agent_args': signature_payload['agent_args'],
         'penalized_cost': penalized_cost,
         'total_cost': total_cost,
         'total_penalty': total_penalty,
@@ -1221,23 +1221,8 @@ def train_penalty_coefficients_for_env(
     return record
 
 def train_alp_coefficients_for_env(uid, experiment_name, env_args, grb_env, grb_sub_envs, job_id):
-    output_file = os.path.join('experiments', 'results', experiment_name, f'{job_id}.jsonl')
-    os.makedirs(os.path.dirname(output_file), exist_ok=True)
-    if jsonl_uid_exists(output_file, uid):
-        print(f"Skip duplicate ALP training result: uid={uid}")
-        return None
-    start = time.time()
-    objective, coefficients = train_alp_coefficients(env_args=env_args, experiment_name=experiment_name)
-    record = {
-        'uid': uid,
-        'experiment_name': experiment_name,
-        'alp_objective': float(objective),
-        'coefficients': [float(value) for value in coefficients],
-        'training_time_seconds': time.time() - start,
-    }
-    with open(output_file, 'a') as f:
-        f.write(json.dumps(record) + '\n')
-    return record
+    # The training cache is the single ALP output, reused across job IDs.
+    return train_alp_coefficients(env_args=env_args, experiment_name=experiment_name)
 
 
 def evaluated_hindsight_policy_solving_time(uid,

@@ -9,6 +9,7 @@ from importance_sampling.sample_path import sample_path_from_record
 from utils import get_uid, is_single_init_state
 
 from param_generation.caching import (
+    training_uid,
     load_trained_coefficient_record_from_folder as _load_trained_coefficient_record_from_folder,
     load_trained_coefficients_from_folder as _load_trained_coefficients_from_folder,
     training_result_path as _training_result_path,
@@ -433,6 +434,9 @@ def generate_test_paths_and_init_state(test_envs, test_sample_path_num, warm_up_
             weights = np.ones(tail.periods) if tail.survival_weights is None else tail.survival_weights
             save_params['uid'] = get_uid({
                 'cache_version': 2,
+                # Identical realizations from separate draws must retain their sample weight.
+                'sample_gen_seed_offset': sample_gen_seed_offset,
+                'path_index': path_index,
                 **save_params,
                 'terminal': tail.terminal.value,
                 'period_weights': weights.tolist(),
@@ -490,6 +494,21 @@ def generate_train_env(
             })
             results.append(save_params)
 
+    write_command_file(results, dat_file)
+    return results
+
+
+def generate_alp_coefficient_training_env(test_envs, dat_file=None):
+    """Emit run.py ALP records without training or generating sample paths."""
+    results = []
+    for (_, experiment_name, _), variant in test_envs.items():
+        env_args = copy.deepcopy(variant['env_args'])
+        results.append({
+            'uid': training_uid(env_args),
+            'experiment_name': experiment_name,
+            'env_args': env_args,
+            'alp_training': True,
+        })
     write_command_file(results, dat_file)
     return results
 

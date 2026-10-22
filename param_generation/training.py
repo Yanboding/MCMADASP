@@ -1,4 +1,5 @@
 from pprint import pprint
+from time import perf_counter
 
 import numpy as np
 from gurobipy import GRB
@@ -125,6 +126,7 @@ def train_alp_coefficients(env_args, experiment_name):
         print(f"Use cached ALP coefficients for env_uid={cached.get('uid')}")
         return cached_obj, cached_coefficients
 
+    start = perf_counter()
     config_for_train = get_config_by_type('infinite_custom', args=env_args)
     env = config_for_train.env
     alp_agent = ALPRowGenerationAgent(env=env, discount_factor=env.discount_factor)
@@ -141,7 +143,8 @@ def train_alp_coefficients(env_args, experiment_name):
         obj_val=obj,
         coefficients=coefficients,
         info={'converged': True, 'max_bellman_violation': float(solver.max_violation),
-              'iterations': solver.iterations, 'tolerance': ALP_BELLMAN_TOLERANCE},
+              'iterations': solver.iterations, 'tolerance': ALP_BELLMAN_TOLERANCE,
+              'training_time_seconds': perf_counter() - start},
     )
     return obj, coefficients
 

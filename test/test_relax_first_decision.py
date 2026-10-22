@@ -22,7 +22,7 @@ def test_lowerbound_flag_is_opt_in_and_passed_to_generation():
             ['eval', 'base_toy_study', '--policies', 'myopic', '--relax-first-decision'])
 
 
-def test_relaxed_records_have_distinct_uids_without_changing_legacy_records():
+def test_relaxed_records_have_distinct_uids_and_default_stays_integer():
     def generate(**extra):
         return datasets.generate_test_paths_and_init_state(
             test_envs=make_test_envs(), test_sample_path_num=1,
@@ -30,8 +30,7 @@ def test_relaxed_records_have_distinct_uids_without_changing_legacy_records():
             evaluation_proposal_spec={'type': 'fixed', 'max_length': 1}, **extra)[0]
 
     legacy = generate()
-    # Captured from the pre-flag generator with these deterministic inputs.
-    assert legacy['uid'] == '6998d4dc2a2755f859efb83006028b7a'
+    assert generate() == legacy
     assert 'relax_first_decision' not in legacy
     assert generate(relax_first_decision=False) == legacy
     relaxed = generate(relax_first_decision=True)
