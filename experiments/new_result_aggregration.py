@@ -1492,6 +1492,7 @@ def report_information_relaxation_lower_bounds(experiment_name, config_type='ejo
         rows.append({
             'group_id': group_id, 'mutate_val': mutate_val, 'n': zero.n,
             'zero_mean': zero.mean, 'zero_half_window': zero.half_window(confidence),
+            'zero_variance_of_mean': zero.variance_of_mean(),
             'penalized_mean': penalized.mean,
             'penalized_half_window': penalized.half_window(confidence),
             'improvement_mean': improvement.mean,
@@ -1750,6 +1751,97 @@ TOY_LOWER_BOUND_SENSITIVITY_PANELS = (
     ('type1_cost', 'toy_lb_type1_cost', '(d) Type-1 waiting-cost parameter', None),
 )
 TOY_LOWER_BOUND_BASELINE = ('toy_lb_occupancy', 0.5)
+
+
+def training_potential_improvement_rows(experiment_name, expected_batches=30, expected_paths=512):
+    """Summarize independent optimized training batches, never pooled fitted paths."""
+    groups, seen = defaultdict(list), set()
+    pattern = os.path.join('experiments', 'results', experiment_name, '*.jsonl')
+    for file_path in sorted(glob.glob(pattern)):
+        with open(file_path) as handle:
+            for line in handle:
+                if not line.strip():
+                    continue
+                record = json.loads(line)
+                if 'policy_id' in record or 'paths' not in record:
+                    continue
+                uid = record.get('uid')
+                if not uid or uid in seen:
+                    raise ValueError(f'{file_path}: missing or duplicate training UID {uid}')
+                seen.add(uid)
+                try:
+                    paths = record['paths']
+                    if (len(paths) != expected_paths or record['sample_path_number'] != expected_paths
+                            or {p['path_id'] for p in paths} != set(range(expected_paths))):
+                        raise ValueError('missing or duplicate training paths')
+                    if (record['master_status'] != 'OPTIMAL'
+                            or record['termination_reason'] != 'absolute_gap_tolerance'):
+                        raise ValueError('uncertified training master')
+                    upper, lower = float(record['objective_upper_bound']), float(record['objective_lower_bound'])
+                    if not np.isfinite([upper, lower]).all() or not -1e-6 <= upper - lower <= 1.01e-6:
+                        raise ValueError('invalid training master bounds')
+                    weights = np.array([p['weight'] for p in paths], dtype=float)
+                    if (not np.isfinite(weights).all() or np.any(weights <= 0)
+                            or not np.isclose(weights.sum(), 1., rtol=0, atol=1e-10)):
+                        raise ValueError('invalid training path weights')
+                    if any(p['ir'][name]['status'] != 'OPTIMAL'
+                           for p in paths for name in ('fitted', 'alp', 'zero')):
+                        raise ValueError('nonoptimal training path')
+                    costs = np.array([[p['ir'][name]['objective'] for name in ('fitted', 'alp', 'zero')]
+                                      for p in paths], dtype=float)
+                    anchor = np.array([p['policy_penalty_at_reference'] for p in paths], dtype=float)
+                    control = np.array([p['policy_control_variate'] for p in paths], dtype=float)
+                    full = float(record['full_objective'])
+                    if not all(np.isfinite(a).all() for a in (costs, anchor, control, np.array([full]))):
+                        raise ValueError('nonfinite training values')
+                    if abs(weights @ (costs[:, 0] - control) - full) > 1e-5 or abs(full - lower) > 1e-5:
+                        raise ValueError('inconsistent centered training objective')
+                    # At theta=0, centering against the fixed ALP anchor adds g_pi @ anchor.
+                    gain = upper - float(weights @ (costs[:, 2] + anchor))
+                    source = record['experiment_name']
+                    domain = 'alp_floor_constrained' if '_floor_' in source else 'unrestricted'
+                    groups[record['mutate_val']].append((gain, source, domain))
+                except (KeyError, TypeError, ValueError) as exc:
+                    raise ValueError(f'{file_path}, training UID {uid}: {exc}') from exc
+    if not groups:
+        raise ValueError(f'{experiment_name}: no saved training batches')
+    result = {}
+    for mutate_val, batches in groups.items():
+        if len(batches) != expected_batches:
+            raise ValueError(f'{experiment_name}={mutate_val}: {len(batches)} of {expected_batches} training batches')
+        if expected_batches < 2 or len({domain for _, _, domain in batches}) != 1:
+            raise ValueError(f'{experiment_name}={mutate_val}: inconsistent training batches')
+        values = np.array([gain for gain, _, _ in batches])
+        result[mutate_val] = {
+            'potential_improvement_mean': float(values.mean()),
+            'potential_improvement_variance_of_mean': float(values.var(ddof=1) / len(values)),
+            'potential_training_batches': len(values), 'potential_training_paths': expected_paths,
+            'potential_training_source': ', '.join(sorted({source for _, source, _ in batches})),
+            'potential_training_domain': batches[0][2],
+        }
+    return result
+
+
+def relative_potential_improvement(training_row, zero_mean, zero_variance_of_mean, confidence=0.95):
+    """Independent-sample delta interval, using the evaluation zero denominator."""
+    from scipy.stats import t
+    mean = training_row['potential_improvement_mean']
+    variance = training_row['potential_improvement_variance_of_mean']
+    batches = training_row['potential_training_batches']
+    if (not np.isfinite([mean, variance, zero_mean, zero_variance_of_mean]).all()
+            or variance < 0 or zero_variance_of_mean < 0 or batches < 2):
+        raise ValueError('invalid potential-improvement summary')
+    row = {'potential_relative_improvement_pct': None,
+           'potential_relative_improvement_half_window_pct': None}
+    if zero_mean <= 0:
+        return row
+    ratio_variance = variance / zero_mean ** 2 + mean ** 2 * zero_variance_of_mean / zero_mean ** 4
+    row['potential_relative_improvement_pct'] = 100 * mean / zero_mean
+    row['potential_relative_improvement_half_window_pct'] = float(
+        100 * t.ppf((1 + confidence) / 2, batches - 1) * np.sqrt(ratio_variance))
+    return row
+
+
 _TOY_LOWER_BOUND_SUMMARY_COLUMNS = (
     'panel', 'mutate_val', 'source', 'n', 'alp_objective', 'alp_max_bellman_violation',
     'zero_mean', 'zero_half_window', 'approximate_value_mean', 'policy_centered_mean', 'policy_centered_half_window',
@@ -1760,6 +1852,10 @@ _TOY_LOWER_BOUND_SUMMARY_COLUMNS = (
     'alp_policy_cost_mean', 'alp_policy_cost_half_window',
     'penalized_mean', 'penalized_half_window', 'improvement_mean', 'improvement_half_window',
     'penalized_minus_approximate_mean', 'penalized_minus_approximate_half_window',
+    'potential_relative_improvement_pct', 'potential_relative_improvement_half_window_pct',
+    'potential_improvement_mean', 'potential_improvement_variance_of_mean',
+    'potential_training_batches', 'potential_training_paths', 'potential_training_source', 'potential_training_domain',
+    'zero_variance_of_mean',
 )
 
 
@@ -1775,7 +1871,7 @@ def toy_lower_bound_sensitivity(is_reuse=False, expected_paths=4096, confidence=
                              'env_uid': get_uid(variant['env_args'])}
                 for (group_id, experiment_name, mutate_val), variant in alp_penalty_test_envs(spec_name).items()}
 
-    reports = {}
+    reports, training_reports = {}, {}
 
     def evaluated_row(spec_name, mutate_val, variant):
         experiment_name = variant['experiment_name']
@@ -1823,6 +1919,19 @@ def toy_lower_bound_sensitivity(is_reuse=False, expected_paths=4096, confidence=
             if row is None:
                 raise ValueError(f"{spec_name}={mutate_val} has no results in {variant['experiment_name']} "
                                  'and differs from the baseline')
+            training_name = spec_name + '_alp'
+            if training_name not in training_reports:
+                training_reports[training_name] = training_potential_improvement_rows(training_name)
+            training_row = training_reports[training_name].get(mutate_val)
+            if training_row is None and variant['env_uid'] == baseline_variant['env_uid']:
+                training_row = training_reports[baseline_spec + '_alp'][baseline_val]
+            if training_row is None:
+                raise ValueError(f'{spec_name}={mutate_val} has no matching training repetitions')
+            relative = relative_potential_improvement(
+                training_row, row['zero_mean'], row['zero_variance_of_mean'], confidence)
+            if row['zero_mean'] - row['zero_half_window'] <= 0:
+                relative = {key: None for key in relative}
+            row = {**row, **training_row, **relative}
             rows.append({**row, 'panel': panel, 'mutate_val': mutate_val})
     os.makedirs(os.path.dirname(csv_path) or '.', exist_ok=True)
     with open(csv_path, 'w', newline='') as handle:
@@ -1914,6 +2023,8 @@ _TOY_LB_IMPROVEMENT_SERIES = (
      '#2f6df6', 'Penalized vs. Zero'),
     ('policy_centered_relative_to_approximate_pct', 'policy_centered_relative_to_approximate_half_window_pct',
      '#e8590c', 'Penalized vs. ALP'),
+    ('potential_relative_improvement_pct', 'potential_relative_improvement_half_window_pct',
+     '#278d57', 'Potential vs. Zero'),
 )
 
 
@@ -1933,12 +2044,19 @@ def plot_toy_lower_bound_improvements(rows, save_file):
         span = max(upper - lower, 1e-8)
         text_offset = 0.03 * span
         ax.set_facecolor('#fafafa')
-        for mean, half_window, color, label in series:
-            ax.plot(x, mean, marker='o', markersize=10, linewidth=3, color=color, label=label, zorder=3)
+        annotation_positions = defaultdict(list)
+        for series_index, (mean, half_window, color, label) in enumerate(series):
+            marker, linestyle = ('^', '--') if series_index == 2 else ('o', '-')
+            ax.plot(x, mean, marker=marker, linestyle=linestyle, markersize=10, linewidth=3,
+                    color=color, label=label, zorder=3)
             ax.fill_between(x, mean - half_window, mean + half_window, color=color, alpha=0.18, zorder=2)
             for position, value in zip(x, mean):
                 if not np.isnan(value):
-                    ax.text(position, value + text_offset, f'{value:.3f}', ha='center', va='bottom', fontsize=18,
+                    label_y = value + text_offset
+                    while any(abs(label_y - other) < 0.11 * span for other in annotation_positions[position]):
+                        label_y += 0.11 * span
+                    annotation_positions[position].append(label_y)
+                    ax.text(position, label_y, f'{value:.3f}', ha='center', va='bottom', fontsize=18,
                             color=color, zorder=4,
                             bbox=dict(boxstyle='round,pad=0.25', facecolor='white', edgecolor='none', alpha=0.85))
         ax.set_xticks(x)
@@ -1951,7 +2069,7 @@ def plot_toy_lower_bound_improvements(rows, save_file):
         ax.spines['top'].set_visible(False)
         ax.spines['right'].set_visible(False)
     handles, labels = axes.flat[0].get_legend_handles_labels()
-    figure.legend(handles, labels, loc='lower center', ncol=2, frameon=False, fontsize=24)
+    figure.legend(handles, labels, loc='lower center', ncol=3, frameon=False, fontsize=24)
     figure.tight_layout(rect=(0, 0.06, 1, 1), h_pad=2.5)
     _save_toy_lb_figure(figure, save_file)
     plt.close(figure)
