@@ -123,3 +123,24 @@ def test_policy_branch_relaxes_bounds_without_modifying_policy_arguments(grb_env
                for call in agent.call_args_list)
     assert 'relax_first_decision' not in policy.call_args.kwargs
     assert policy.call_args.kwargs['agent_args'] == {}
+
+
+@pytest.mark.parametrize('relax_first_decision', [False, True])
+def test_ir_cost_uses_barrier_with_requested_integrality(grb_env, monkeypatch, relax_first_decision):
+    from decision_maker import approximate_q_agent
+
+    solve = approximate_q_agent.solve_and_handle_errors
+    def check_and_solve(model, **kwargs):
+        model.update()
+        assert model.Params.Method == 2
+        assert (model.NumIntVars > 0) is (not relax_first_decision)
+        return solve(model, **kwargs)
+
+    monkeypatch.setattr(approximate_q_agent, 'solve_and_handle_errors', check_and_solve)
+    env = get_config_by_type('toy').env
+    state = (np.zeros(env.planning_horizon), np.zeros(env.planning_horizon), np.array([0.5, 1.5]))
+    bounds = run.information_relaxation_bounds(
+        env, {'name': 'absorption_alp_penalty'}, [0.0, 1.0], state,
+        np.zeros((0, env.num_types)), [1.0], 'absorbed', grb_env, [],
+        relax_first_decision=relax_first_decision)
+    assert all(np.isfinite(value) for value in bounds.values())

@@ -743,6 +743,7 @@ class ApproxQAgent(InfiniteRTAgent):
         model, theta, Phi, _ = self._information_relaxation_model(
             state, sample_path, period_weights, terminal, first_action, fixed_actions)
         try:
+            model.setParam("Method", 2)
             if not solve_and_handle_errors(model, verbose=verbose):
                 raise RuntimeError("Direct model optimal solution not found")
             if not remove_path_noise:
