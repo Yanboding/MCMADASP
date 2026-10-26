@@ -507,7 +507,7 @@ def estimate_potential_improvement(uid, experiment_name, mutate_val, group_id, e
 
 def partial_information_relaxation_for_path(uid, source_uid, experiment_name, mutate_val, group_id, env_args,
                                             init_state, arrival_stream, path_weight, path_stratum, grb_env,
-                                            grb_sub_envs, job_id):
+                                            grb_sub_envs, job_id, policy_ids=None):
     output_file = _result_file(experiment_name, job_id)
     if jsonl_uid_exists(output_file, uid):
         print(f"Skip existing partial-relaxation path uid={uid}")
@@ -522,6 +522,7 @@ def partial_information_relaxation_for_path(uid, source_uid, experiment_name, mu
     record = {
         'uid': uid,
         'source_uid': source_uid,
+        'policy_ids': policy_ids,
         'experiment_name': experiment_name,
         'group_id': group_id,
         'mutate_val': mutate_val,
@@ -786,110 +787,6 @@ def evaluate_policy_costs_with_information_relaxation(uid,
         )})
 
     return summary_rows
-
-def train_lowerbound_for_init_state(
-    uid,
-    experiment_name,
-    mutate_val,
-    sample_path_number,
-    init_state_index,
-    init_state,
-    env_args,
-    agent_args,
-    grb_env,
-    grb_sub_envs,
-    job_id,
-    training_generating_function_spec=None,
-):
-    output_file = os.path.join(
-        'experiments', 'results', experiment_name, f'{job_id}.jsonl'
-    )
-    os.makedirs(os.path.dirname(output_file), exist_ok=True)
-    if jsonl_uid_exists(output_file, uid):
-        print(
-            f"Skip duplicate training result: uid={uid}, "
-            f"init_state_index={init_state_index}"
-        )
-        return None
-
-    config = get_config_by_type('infinite_custom', args=env_args)
-    env = config.env
-    # Build the generating function solely from the self-contained training
-    # spec. Coefficients are trained, not given: drop any that slipped into the
-    # spec so the trainer always optimizes them from scratch.
-    training_generating_function_spec = _normalize_generating_function_spec(
-        training_generating_function_spec
-    )
-    training_generating_function_spec.pop('coefficients', None)
-    generating_function = _build_generating_function(
-        env=env,
-        spec=training_generating_function_spec,
-    )
-
-    inner = dict((agent_args or {}).get('agent_args', {}))
-    for spec_key in _GENERATING_FUNCTION_SPEC_KEYS:
-        inner.pop(spec_key, None)
-    inner['generating_function'] = generating_function
-    _set_sample_path_proposal(inner)
-    inner['sample_path_number'] = sample_path_number
-
-    agent = ApproxQAgent(
-        env=env,
-        discount_factor=env.discount_factor,
-        grb_env=grb_env,
-        subproblem_grb_envs=grb_sub_envs,
-        **inner,
-    )
-
-    init_state_tuple = tuple(np.array(item) for item in init_state)
-    # Reset RNGs so every command (every init_state) sees the *same*
-    # Monte-Carlo arrival sample paths. The pinned env_random_seed /
-    # arrival_random_seed in env_args (set by generate_train_env) ensures the
-    # underlying generators are identical across commands; this call rewinds
-    # them to the start before sampling.
-    env.reset_random_seeds()
-
-    print(
-        f"Training tight penalized lower bound for uid={uid}, "
-        f"init_state_index={init_state_index}, "
-        f"sample_path_number={sample_path_number}"
-    )
-    start = time.time()
-    checkpoint_dir = os.path.join(
-        'experiments', 'results', experiment_name, 'benders_checkpoints'
-    )    
-    os.makedirs(checkpoint_dir, exist_ok=True)
-    checkpoint_path = os.path.join(
-        checkpoint_dir,
-        f'{uid}-{init_state_index}-checkpoint.pickle'
-    )
-    obj, coefficients, info = agent.benders_decomposition_train(coefficient_bound=GRB.INFINITY, init_state=init_state_tuple, checkpoint_path=checkpoint_path, resume_checkpoint_path=checkpoint_path)
-    elapsed = time.time() - start
-    print(
-        f"  obj={obj}, elapsed={elapsed:.1f}s"
-    )
-
-    init_state_jsonable = [np.asarray(item).tolist() for item in init_state]
-    if hasattr(coefficients, 'tolist'):
-        coefficients_jsonable = coefficients.tolist()
-    else:
-        coefficients_jsonable = list(coefficients)
-
-    record = {
-        'uid': uid,
-        'experiment_name': experiment_name,
-        'mutate_val': mutate_val,
-        'init_state_index': init_state_index,
-        'init_state': init_state_jsonable,
-        'sample_path_number': sample_path_number,
-        'tight_penalized_lower_bound': float(obj),
-        'coefficients': coefficients_jsonable,
-        'training_time_seconds': elapsed,
-    }
-
-    with open(output_file, 'a') as f:
-        f.write(json.dumps(record) + '\n')
-    return record
 
 def _draw_per_scenario_init_states(env_args, init_state_seed, sample_path_number, paths_per_state=None, strata=None):
     state_number = sample_path_number
@@ -1225,73 +1122,6 @@ def train_alp_coefficients_for_env(uid, experiment_name, env_args, grb_env, grb_
     return train_alp_coefficients(env_args=env_args, experiment_name=experiment_name)
 
 
-def evaluated_hindsight_policy_solving_time(uid,
-                                            experiment_name,
-                                            mutate_val,
-                                            sample_path_number,
-                                            init_state_index,
-                                            init_state,
-                                            env_args,
-                                            agent_args,
-                                            grb_env,
-                                            grb_sub_envs,
-                                            job_id):
-    output_file = os.path.join(
-        'experiments', 'results', experiment_name, f'{job_id}.jsonl'
-    )
-    os.makedirs(os.path.dirname(output_file), exist_ok=True)
-    if jsonl_uid_exists(output_file, uid):
-        print(
-            f"Skip duplicate training result: uid={uid}, "
-            f"init_state_index={init_state_index}"
-        )
-        return None
-    config = get_config_by_type(case_type='infinite_custom', args=env_args)
-    env = config.env
-    policy_spec = dict(agent_args or {})
-    agent_name = policy_spec.get('agent_name', 'approx_penalized_hindsight')
-    policy_id = policy_spec.get('policy_id', agent_name)
-    runtime_agent_args = dict(policy_spec.get('agent_args', {}))
-    policy_generating_function_spec = _normalize_generating_function_spec(
-        runtime_agent_args.pop('generating_function_spec', None)
-    )
-    runtime_agent_args['generating_function'] = _build_generating_function(
-            env=env,
-            spec=policy_generating_function_spec,
-        )
-    _set_sample_path_proposal(runtime_agent_args)
-    agent_instance = ApproxQAgent(env, discount_factor=env.discount_factor,
-                                    grb_env=grb_env,
-                                    subproblem_grb_envs=grb_sub_envs,
-                                    **runtime_agent_args
-                                )
-    obj, action_t, info = agent_instance.solve(tuple(np.array(item) for item in init_state), init_state_index)
-
-    start = time.time()
-    obj, action_t, info = agent_instance.solve(tuple(np.array(item) for item in init_state), init_state_index)
-    elapsed = time.time() - start
-
-    init_state_jsonable = [np.asarray(item).tolist() for item in init_state]
-
-    record = {
-        'uid': uid,
-        'experiment_name': experiment_name,
-        'mutate_val': mutate_val,
-        'policy_id': policy_id,
-        'agent_name': agent_name,
-        'objective': float(obj),
-        'init_state_index': init_state_index,
-        'init_state': init_state_jsonable,
-        'action': [np.asarray(part).tolist() for part in action_t],
-        'sample_path_number': sample_path_number,
-        'training_time_seconds': elapsed,
-    }
-    with open(output_file, 'a') as f:
-        f.write(json.dumps(record) + '\n')
-    return record
-    
-
-
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Example of using argparse to pass in a list of lists.")
     parser.add_argument('--params', help='Input JSON-encoded list of lists', type=str)
@@ -1358,10 +1188,6 @@ def main(argv=None):
         for _ in range(num_sub_envs):
             grb_sub_envs.append(acquire_grb_env({"Threads": 1}, verbose=False, wait=15))
         print('grb_sub_envs:',len(grb_sub_envs))
-        def _is_hindsight_timing_record(param):
-            spec = ((param.get('agent_args') or {}).get('agent_args') or {}).get('generating_function_spec')
-            return isinstance(spec, dict) and 'coefficients' in spec
-
         for param in params:
             # Dispatch on the shape of the params record:
             #   * generate_test_paths_and_init_state -> contains 'policy_specs'
@@ -1369,9 +1195,6 @@ def main(argv=None):
             #   * generate_penalty_coefficient_training_env -> contains
             #     'init_state_mode' -> train one set of penalty coefficients per env
             #     over sample_path_number scenarios.
-            #   * generate_train_env -> contains 'init_state_index' (and no
-            #     'policy_specs') -> train the tight penalized lower bound at a
-            #     single initial state and emit one (X, Y) record.
             if param.pop('matched_state_decision', False):
                 matched_state_decisions(
                     **param,
@@ -1401,22 +1224,8 @@ def main(argv=None):
                     grb_sub_envs=grb_sub_envs,
                     job_id=args.job_id,
                 )
-            elif _is_hindsight_timing_record(param):
-                evaluated_hindsight_policy_solving_time(
-                    **param,
-                    grb_env=grb_env,
-                    grb_sub_envs=grb_sub_envs,
-                    job_id=args.job_id,
-                )
             elif 'init_state_mode' in param:
                 train_penalty_coefficients_for_env(
-                    **param,
-                    grb_env=grb_env,
-                    grb_sub_envs=grb_sub_envs,
-                    job_id=args.job_id,
-                )
-            elif 'init_state_index' in param:
-                train_lowerbound_for_init_state(
                     **param,
                     grb_env=grb_env,
                     grb_sub_envs=grb_sub_envs,
@@ -1431,9 +1240,9 @@ def main(argv=None):
                 )
             else:
                 raise ValueError(
-                    "Unrecognized params payload: expected 'policy_specs' "
-                    "(evaluation), 'init_state_mode' (penalty-coefficient training), "
-                    "'init_state_index' (lower-bound training) or 'alp_training' in record."
+                    "Unrecognized params payload: expected 'matched_state_decision', 'policy_specs' "
+                    "(evaluation), 'partial_information_relaxation', 'potential_improvement', "
+                    "'init_state_mode' (penalty-coefficient training) or 'alp_training' in record."
                 )
     finally:
         for environment in reversed(grb_sub_envs):

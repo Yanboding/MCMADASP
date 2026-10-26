@@ -48,12 +48,6 @@ def offset_sample_generation_seeds(env_args, seed_offset):
     return sample_gen_args
 
 
-def _make_sampler_env(base_env_args, init_state_rng):
-    sampler_env_args = copy.deepcopy(base_env_args)
-    sampler_env_args['env_random_seed'] = int(init_state_rng.integers(0, 2**31 - 1))
-    return get_config_by_type('infinite_custom', args=sampler_env_args).env
-
-
 def _state_to_jsonable(state):
     return [np.asarray(component).tolist() for component in state]
 
@@ -450,54 +444,6 @@ def generate_test_paths_and_init_state(test_envs, test_sample_path_num, warm_up_
     return results
 
 
-def generate_train_env(
-    test_envs,
-    dat_file=None,
-    num_init_states=256,
-    sample_path_number=256,
-    init_state_seed=12345,
-    sample_paths_seed=42,
-):
-    results = []
-    for (env_uid, experiment_name, mutate_val), variant in test_envs.items():
-        init_state_rng = np.random.default_rng(init_state_seed)
-        base_env_args = copy.deepcopy(variant['env_args'])
-        agent_args = copy.deepcopy(variant.get('agent_args', {}))
-
-        _pin_sampling_seeds(base_env_args, sample_paths_seed)
-        sampler_env = _make_sampler_env(base_env_args, init_state_rng)
-
-        for k in range(num_init_states):
-            init_state = sampler_env.generate_initial_state()
-            init_state = tuple(np.array(item).tolist() for item in init_state)
-
-            env_args_k = copy.deepcopy(base_env_args)
-            env_args_k['reset_params'] = dict(env_args_k.get('reset_params', {}))
-            env_args_k['reset_params']['init_state'] = init_state
-
-            save_params = {
-                'experiment_name': experiment_name,
-                'mutate_val': mutate_val,
-                'sample_path_number': sample_path_number,
-                'init_state_index': k,
-                'init_state': init_state,
-                'env_args': env_args_k,
-                'agent_args': agent_args,
-                'training_generating_function_spec': _normalize_generating_function_spec(
-                    agent_args.get('agent_args', {}).get('generating_function_spec')
-                ),
-            }
-            save_params['uid'] = get_uid({
-                'env_args': env_args_k,
-                'agent_args': agent_args,
-                'init_state': init_state,
-            })
-            results.append(save_params)
-
-    write_command_file(results, dat_file)
-    return results
-
-
 def generate_alp_coefficient_training_env(test_envs, dat_file=None):
     """Emit run.py ALP records without training or generating sample paths."""
     results = []
@@ -553,63 +499,6 @@ def generate_penalty_coefficient_training_env(
             'sample_path_number': sample_path_number,
         })
         results.append(save_params)
-
-    write_command_file(results, dat_file)
-    return results
-
-
-def generate_policy_efficiency_data(
-    test_envs,
-    is_require_penalty_coefficients=False,
-    dat_file=None,
-    num_init_states=256,
-    sample_path_number=256,
-    init_state_seed=12345,
-    sample_paths_seed=42,
-):
-    results = []
-    for (env_uid, experiment_name, mutate_val), variant in test_envs.items():
-        init_state_rng = np.random.default_rng(init_state_seed)
-        base_env_args = copy.deepcopy(variant['env_args'])
-        env = get_config_by_type('infinite_custom', args=base_env_args).env
-        agent_args = copy.deepcopy(variant.get('agent_args', {}))
-        direct_coefficients = _zero_penalty_coefficients(env)
-        if is_require_penalty_coefficients:
-            agent_args = copy.deepcopy(variant['agent_args'])
-            _, direct_coefficients, _ = train_penalty_coefficients(
-                env_args=base_env_args,
-                agent_args=agent_args,
-                experiment_name=experiment_name,
-            )
-        agent_args['agent_args']['generating_function_spec']['coefficients'] = direct_coefficients
-        agent_args['agent_args']['solver_name'] = 'approx_penalized_hindsight'
-
-        _pin_sampling_seeds(base_env_args, sample_paths_seed)
-        sampler_env = _make_sampler_env(base_env_args, init_state_rng)
-
-        for k in range(num_init_states):
-            init_state = sampler_env.generate_initial_state()
-            init_state = tuple(np.array(item).tolist() for item in init_state)
-
-            env_args_k = copy.deepcopy(base_env_args)
-            env_args_k['reset_params'] = dict(env_args_k.get('reset_params', {}))
-            env_args_k['reset_params']['init_state'] = init_state
-
-            save_params = {
-                'experiment_name': experiment_name,
-                'mutate_val': mutate_val,
-                'sample_path_number': sample_path_number,
-                'init_state_index': k,
-                'init_state': init_state,
-                'env_args': env_args_k,
-                'agent_args': agent_args
-            }
-            save_params['uid'] = get_uid({
-                'env_args': env_args_k,
-                'agent_args': agent_args,
-                'init_state': init_state,
-            })
-            results.append(save_params)
 
     write_command_file(results, dat_file)
     return results

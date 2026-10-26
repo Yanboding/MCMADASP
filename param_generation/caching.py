@@ -88,16 +88,14 @@ def load_trained_coefficient_record_from_folder(
                 ):
                     continue
 
-                init_state_index = record.get('init_state_index')
-                sort_index = init_state_index if isinstance(init_state_index, int) else 10**9
-                candidates.append((sort_index, file_path, line_number, record))
+                candidates.append((file_path, line_number, record))
 
     if not candidates:
         return None
 
-    candidates.sort(key=lambda x: (x[0], x[1], x[2]))
-    record = dict(candidates[0][3])
-    record['file'] = candidates[0][1]
+    candidates.sort(key=lambda x: (x[0], x[1]))
+    record = dict(candidates[0][2])
+    record['file'] = candidates[0][0]
     return record
 
 

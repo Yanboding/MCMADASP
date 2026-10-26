@@ -14,6 +14,7 @@ def default_partial_relaxation_horizon(discount_factor, quantile=0.9999):
 
 
 def warm_up_states(results_dir, uids):
+    """Post-warm-up state of each policy on each path: {uid: {policy_id: state}}."""
     wanted = set(uids)
     states = {}
     for path in sorted(glob.glob(os.path.join(results_dir, '[0-9]*.jsonl'))):
@@ -23,9 +24,11 @@ def warm_up_states(results_dir, uids):
                 uid = record.get('uid')
                 if uid not in wanted or record.get('warmup_state') is None:
                     continue
-                if states.setdefault(uid, record['warmup_state']) != record['warmup_state']:
-                    raise ValueError(f'path {uid} reaches different post-warm-up states across policies in '
-                                     f'{results_dir}; the partial bound needs one shared warm-up trajectory')
+                by_policy = states.setdefault(uid, {})
+                policy_id = record.get('policy_id')
+                if by_policy.setdefault(policy_id, record['warmup_state']) != record['warmup_state']:
+                    raise ValueError(f'path {uid} has two different post-warm-up states for {policy_id} in '
+                                     f'{results_dir}')
     return states
 
 
@@ -54,18 +57,25 @@ def partial_relaxation_records(source_records, states, experiment_name, horizon=
         missing = periods - 1 - len(tail)
         if missing > 0:
             tail = np.concatenate([tail, generator.rvs(missing, rng=np.random.default_rng(int(uid[:15], 16)))])
-        record = {
-            'partial_information_relaxation': True,
-            'source_uid': uid,
-            'experiment_name': experiment_name,
-            'mutate_val': source['mutate_val'],
-            'group_id': group_id,
-            'env_args': source['env_args'],
-            'init_state': states[uid],
-            'arrival_stream': tail[:periods - 1].tolist(),
-            'path_weight': source['path_weight'],
-            'path_stratum': source['path_stratum'],
-        }
-        record['uid'] = get_uid(record)
-        records[uid] = record
+        # Policies that warm up on their own reach different states; each distinct state gets its own
+        # bound over the same extended arrivals, tagged with the policies that start from it.
+        policies_by_state = {}
+        for policy_id, state in states[uid].items():
+            policies_by_state.setdefault(json.dumps(state), (state, []))[1].append(policy_id)
+        for state, policy_ids in policies_by_state.values():
+            record = {
+                'partial_information_relaxation': True,
+                'source_uid': uid,
+                'policy_ids': sorted(policy_ids, key=str),
+                'experiment_name': experiment_name,
+                'mutate_val': source['mutate_val'],
+                'group_id': group_id,
+                'env_args': source['env_args'],
+                'init_state': state,
+                'arrival_stream': tail[:periods - 1].tolist(),
+                'path_weight': source['path_weight'],
+                'path_stratum': source['path_stratum'],
+            }
+            record['uid'] = get_uid(record)
+            records[record['uid']] = record
     return list(records.values())

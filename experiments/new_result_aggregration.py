@@ -962,6 +962,7 @@ def _metric_cell(stats, confidence, mean_decimals=0, hw_decimals=1, bold=False):
 
 
 def partial_relaxation_costs(partial_folder):
+    """{(source_uid, policy_id): cost}; policy_id is None for records that cover every policy of the path."""
     costs = {}
     horizons = {}
     for path in sorted(glob.glob(os.path.join(partial_folder, '[0-9]*.jsonl'))):
@@ -970,8 +971,10 @@ def partial_relaxation_costs(partial_folder):
                 record = json.loads(line)
                 source_uid = record['source_uid']
                 cost = record['partial_information_relaxation_cost']
-                if costs.setdefault(source_uid, cost) != cost:
-                    raise ValueError(f'path {source_uid} has two different partial-relaxation costs in {partial_folder}')
+                for policy_id in record.get('policy_ids') or [None]:
+                    if costs.setdefault((source_uid, policy_id), cost) != cost:
+                        raise ValueError(f'path {source_uid} has two different partial-relaxation costs for '
+                                         f'{policy_id} in {partial_folder}')
                 horizons.setdefault(record['group_id'], set()).add(record['horizon'])
     mixed = {group_id: sorted(values) for group_id, values in horizons.items() if len(values) > 1}
     if mixed:
@@ -981,14 +984,15 @@ def partial_relaxation_costs(partial_folder):
 
 def partial_relaxation_gaps(ser, partial_costs, group_id, policy_id, confidence=0.95):
     policy_costs = ser.cost_by_uid[(group_id, policy_id)]
-    missing = policy_costs.keys() - partial_costs.keys()
+    bounds = {uid: partial_costs.get((uid, policy_id), partial_costs.get((uid, None))) for uid in policy_costs}
+    missing = [uid for uid, cost in bounds.items() if cost is None]
     if missing:
         raise ValueError(f'{len(missing)} of {len(policy_costs)} paths of {policy_id} have no partial-relaxation cost')
     uids = list(policy_costs)
     weights, strata = _uid_weights_and_strata(
         uids, ser.weight_by_uid.get((group_id, policy_id), {}), ser.stratum_by_uid.get((group_id, policy_id), {}))
     policy = np.array([policy_costs[uid] for uid in uids], dtype=float)
-    bound = np.array([partial_costs[uid] for uid in uids], dtype=float)
+    bound = np.array([bounds[uid] for uid in uids], dtype=float)
     bound_stats = _stratified_stats(bound, weights, strata)
     gap_stats = _stratified_stats(policy - bound, weights, strata)
     relative, relative_half_window = _stratified_relative_improvement(policy - bound, bound, weights, strata, confidence)
