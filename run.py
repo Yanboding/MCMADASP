@@ -1,4 +1,5 @@
 import argparse
+import glob
 import json
 import pickle
 import os
@@ -126,6 +127,22 @@ def jsonl_uid_exists(path, uid):
                 continue
             if row.get('uid') == uid:
                 return True
+    return False
+
+def partial_relaxation_written(folder, uid):
+    key = f'"uid": "{uid}"'
+    for path in glob.glob(os.path.join(folder, '*.jsonl')):
+        with open(path) as handle:
+            for line in handle:
+                if key not in line:
+                    continue
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                cost = row.get('partial_information_relaxation_cost')
+                if row.get('uid') == uid and isinstance(cost, (int, float)) and np.isfinite(cost):
+                    return True
     return False
 
 def load_pickle_if_exists(path):
@@ -510,7 +527,7 @@ def partial_information_relaxation_for_path(uid, source_uid, experiment_name, mu
                                             grb_sub_envs, job_id, policy_ids=None,
                                             future_decision_var_type='continuous'):
     output_file = _result_file(experiment_name, job_id)
-    if jsonl_uid_exists(output_file, uid):
+    if partial_relaxation_written(os.path.dirname(output_file), uid):
         print(f"Skip existing partial-relaxation path uid={uid}")
         return None
     start = time.time()

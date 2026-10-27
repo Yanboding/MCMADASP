@@ -226,3 +226,30 @@ def test_integer_future_bound_is_at_least_the_relaxed_bound(monkeypatch):
     assert integer['future_decision_var_type'] == 'integer' and integer['solver_status'] == 2
     assert integer['partial_information_relaxation_objective'] >= integer['partial_information_relaxation_cost'] - 1e-6
     assert 'future_decision_var_type' not in records['continuous']
+
+
+def test_partial_bound_is_skipped_when_another_job_already_wrote_it(monkeypatch):
+    _, env_args = _toy()
+    with tempfile.TemporaryDirectory() as tmp:
+        monkeypatch.chdir(tmp)
+        os.makedirs(os.path.join('experiments', 'results', 'x'))
+        with open(os.path.join('experiments', 'results', 'x', 'old_7.jsonl'), 'w') as handle:
+            handle.write(json.dumps({'uid': 'p', 'partial_information_relaxation_cost': 1.0}) + '\n')
+        assert run.partial_information_relaxation_for_path(
+            uid='p', source_uid='s', experiment_name='x', mutate_val=0.5, group_id='g', env_args=env_args,
+            init_state=STATE, arrival_stream=[[0, 0]], path_weight=1.0, path_stratum=0, grb_env=None,
+            grb_sub_envs=[], job_id='new_1') is None
+
+
+def test_only_a_complete_row_with_a_cost_counts_as_written():
+    with tempfile.TemporaryDirectory() as tmp:
+        with open(os.path.join(tmp, 'old_7.jsonl'), 'w') as handle:
+            handle.write('{"uid": "p", "partial_information_relax')
+        assert not run.partial_relaxation_written(tmp, 'p')
+        with open(os.path.join(tmp, 'old_8.jsonl'), 'w') as handle:
+            handle.write(json.dumps({'uid': 'p'}) + '\n')
+        assert not run.partial_relaxation_written(tmp, 'p')
+        with open(os.path.join(tmp, 'old_9.jsonl'), 'w') as handle:
+            handle.write(json.dumps({'uid': 'p', 'partial_information_relaxation_cost': 1.0}) + '\n')
+        assert run.partial_relaxation_written(tmp, 'p')
+        assert not run.partial_relaxation_written(tmp, 'q')
