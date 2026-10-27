@@ -755,6 +755,20 @@ class ApproxQAgent(InfiniteRTAgent):
         finally:
             model.dispose()
 
+    def information_relaxation_bound(self, state, sample_path, period_weights, terminal):
+        model, _, _, _ = self._information_relaxation_model(state, sample_path, period_weights, terminal)
+        try:
+            model.setParam("Method", 2)
+            model.optimize()
+            if model.Status not in (GRB.OPTIMAL, GRB.TIME_LIMIT):
+                raise RuntimeError(f"information relaxation bound not found (status {model.Status})")
+            return {'bound': float(model.ObjBound),
+                    'objective': float(model.ObjVal) if model.SolCount else None,
+                    'gap': float(model.MIPGap) if model.IsMIP and model.SolCount else 0.0,
+                    'status': int(model.Status)}
+        finally:
+            model.dispose()
+
     def policy_cost_and_gradient(self, state, sample_path, period_weights=None, terminal=None,
                                  fixed_actions=None, verbose=False):
         model, theta, Phi, _ = self._information_relaxation_model(

@@ -453,6 +453,8 @@ def build_parser():
     partial.add_argument('--horizon', type=int, default=None, metavar='T',
                          help='decision periods of the truncated discounted horizon (default: the 0.9999 quantile '
                               "of Geom(1 - gamma) of each path's environment)")
+    partial.add_argument('--integer-future', action='store_true',
+                         help='keep every decision integer instead of relaxing decisions after the first period')
     partial.add_argument('--groups', type=int, default=None, help='command lines (default: one path per line)')
     partial.add_argument('--dat', default='table.dat')
 
@@ -1011,10 +1013,11 @@ def _evaluation_records(args, policy_ids):
 def _run_partial_ir(args):
     source_records = read_command_file_records(args.source_dat)
     states = warm_up_states(args.source_results, [record['uid'] for record in source_records])
-    records = partial_relaxation_records(source_records, states, args.name, args.horizon)
+    name = f'{args.name}_int' if args.integer_future else args.name
+    records = partial_relaxation_records(source_records, states, name, args.horizon, args.integer_future)
     write_grouped_command_file(results=records, num_groups=args.groups, dat_file=args.dat)
     horizons = sorted({len(record['arrival_stream']) + 1 for record in records})
-    print(f'{args.name}: {len(records)} paths, horizon {horizons} decision periods')
+    print(f'{name}: {len(records)} paths, horizon {horizons} decision periods')
     return records
 
 

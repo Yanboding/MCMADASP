@@ -197,3 +197,32 @@ def test_improvement_plot_tolerates_a_panel_without_values():
     with tempfile.TemporaryDirectory() as tmp:
         plot_toy_lower_bound_improvements(rows, os.path.join(tmp, 'figure.svg'))
         assert os.path.exists(os.path.join(tmp, 'figure.svg'))
+
+
+def test_integer_future_records_keep_the_arrivals_and_states_and_only_add_the_decision_type():
+    _, env_args = _toy()
+    source = _source(env_args)
+    (relaxed,) = partial_relaxation_records([source], {source['uid']: SHARED}, 'x', horizon=10)
+    (integer,) = partial_relaxation_records([source], {source['uid']: SHARED}, 'x', horizon=10, integer_future=True)
+    assert 'future_decision_var_type' not in relaxed and integer['future_decision_var_type'] == 'integer'
+    assert integer['uid'] != relaxed['uid']
+    assert {k: v for k, v in integer.items() if k not in ('uid', 'future_decision_var_type')} == \
+        {k: v for k, v in relaxed.items() if k != 'uid'}
+
+
+def test_integer_future_bound_is_at_least_the_relaxed_bound(monkeypatch):
+    env, env_args = _toy()
+    arrivals, _ = _toy_path(env, 12)
+    with tempfile.TemporaryDirectory() as tmp:
+        monkeypatch.chdir(tmp)
+        records = {
+            kind: run.partial_information_relaxation_for_path(
+                uid=kind, source_uid='s', experiment_name='x', mutate_val=0.5, group_id='g', env_args=env_args,
+                init_state=STATE, arrival_stream=arrivals.tolist(), path_weight=1.0, path_stratum=0, grb_env=None,
+                grb_sub_envs=[], job_id='1', future_decision_var_type=kind)
+            for kind in ('continuous', 'integer')}
+    integer = records['integer']
+    assert integer['partial_information_relaxation_cost'] >= records['continuous']['partial_information_relaxation_cost'] - 1e-6
+    assert integer['future_decision_var_type'] == 'integer' and integer['solver_status'] == 2
+    assert integer['partial_information_relaxation_objective'] >= integer['partial_information_relaxation_cost'] - 1e-6
+    assert 'future_decision_var_type' not in records['continuous']

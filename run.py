@@ -507,7 +507,8 @@ def estimate_potential_improvement(uid, experiment_name, mutate_val, group_id, e
 
 def partial_information_relaxation_for_path(uid, source_uid, experiment_name, mutate_val, group_id, env_args,
                                             init_state, arrival_stream, path_weight, path_stratum, grb_env,
-                                            grb_sub_envs, job_id, policy_ids=None):
+                                            grb_sub_envs, job_id, policy_ids=None,
+                                            future_decision_var_type='continuous'):
     output_file = _result_file(experiment_name, job_id)
     if jsonl_uid_exists(output_file, uid):
         print(f"Skip existing partial-relaxation path uid={uid}")
@@ -516,9 +517,21 @@ def partial_information_relaxation_for_path(uid, source_uid, experiment_name, mu
     env = get_config_by_type(case_type='infinite_custom', args=env_args).env
     stream = np.array(arrival_stream)
     period_weights = (env.discount_factor ** np.arange(len(stream) + 1)).tolist()
-    cost = information_relaxation_bounds(
-        env, {'name': 'absorption_alp_penalty'}, [0.0], tuple(np.array(component) for component in init_state),
-        stream, period_weights, 'absorbed', grb_env, grb_sub_envs)[0.0]
+    state = tuple(np.array(component) for component in init_state)
+    integer_fields = {}
+    if future_decision_var_type == 'integer':
+        agent = ApproxQAgent(env, discount_factor=env.discount_factor, current_decision_var_type='integer',
+                             future_decision_var_type='integer',
+                             generating_function=_build_generating_function(env=env, spec={'name': 'absorption_alp_penalty'}),
+                             penalty_ratio=0.0, grb_env=grb_env, subproblem_grb_envs=grb_sub_envs)
+        solve = agent.information_relaxation_bound(state, stream, period_weights, 'absorbed')
+        cost = solve['bound']
+        integer_fields = {'partial_information_relaxation_objective': solve['objective'], 'mip_gap': solve['gap'],
+                          'solver_status': solve['status'], 'future_decision_var_type': 'integer'}
+    else:
+        cost = information_relaxation_bounds(
+            env, {'name': 'absorption_alp_penalty'}, [0.0], state, stream, period_weights, 'absorbed', grb_env,
+            grb_sub_envs)[0.0]
     record = {
         'uid': uid,
         'source_uid': source_uid,
@@ -528,6 +541,7 @@ def partial_information_relaxation_for_path(uid, source_uid, experiment_name, mu
         'mutate_val': mutate_val,
         'policy_id': 'partial_information_relaxation',
         'partial_information_relaxation_cost': float(cost),
+        **integer_fields,
         'horizon': len(period_weights),
         'path_weight': path_weight,
         'path_stratum': path_stratum,

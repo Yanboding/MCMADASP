@@ -32,7 +32,7 @@ def warm_up_states(results_dir, uids):
     return states
 
 
-def partial_relaxation_records(source_records, states, experiment_name, horizon=None):
+def partial_relaxation_records(source_records, states, experiment_name, horizon=None, integer_future=False):
     if not source_records:
         raise ValueError('the source command file holds no evaluation records')
     if horizon is not None and horizon < 2:
@@ -76,6 +76,8 @@ def partial_relaxation_records(source_records, states, experiment_name, horizon=
                 'path_weight': source['path_weight'],
                 'path_stratum': source['path_stratum'],
             }
+            if integer_future:
+                record['future_decision_var_type'] = 'integer'
             record['uid'] = get_uid(record)
             records[record['uid']] = record
     return list(records.values())
