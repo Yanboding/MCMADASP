@@ -105,6 +105,14 @@ def mutate_toy_lb_waiting_costs(env_args, val):
     _set_additional_toy_lb_initial_state(env_args, [0, 1, 0, 0, 2, 0])
 
 
+def mutate_toy_scaled(env_args, scale):
+    env_args['arrival_rates'] = [scale, 2 * scale]
+    env_args['regular_capacity'] = 6 * scale
+    env_args['overtime_capacity'] = 4 * scale
+    env_args['maximum_total_arrival'] = 9 * scale
+    mutate_initial_state_congestion(env_args, 0.5)
+
+
 def mutate_initial_state_congestion_05_const(env_args, val):
     mutate_initial_state_congestion(env_args, 0.5)
 

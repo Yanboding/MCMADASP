@@ -12,7 +12,7 @@ from scipy.stats import geom
 import numpy as np
 
 from experiments import get_config_by_type
-from param_generation.caching import load_trained_coefficients_from_folder
+from param_generation.caching import load_trained_coefficient_record_from_folder, load_trained_coefficients_from_folder
 from param_generation.command_files import read_command_file_records, write_command_file, write_grouped_command_file
 from param_generation.datasets import (
     generate_alp_coefficient_training_env,
@@ -26,7 +26,11 @@ from param_generation.generate_figure1_po import (
 )
 from param_generation.generating_functions import GENERATING_FUNCTION_CLASSES, build_generating_function, normalize_generating_function_spec
 from param_generation.mutators import mutate_initial_state_congestion, mutate_stratified_geometric_scenario
-from param_generation.partial_relaxation import partial_relaxation_records, warm_up_states
+from param_generation.partial_relaxation import (
+    attach_partial_information_arrivals,
+    partial_relaxation_records,
+    warm_up_states,
+)
 from param_generation.potential_improvement import generate_potential_improvement_records
 from param_generation.registry import EXPERIMENT_SPECS
 from param_generation.training import train_alp_coefficients
@@ -363,8 +367,13 @@ def build_parser():
                                      '(default: all variants of the experiment)')
         sub_parser.add_argument('--paths', type=int, default=4096)
         sub_parser.add_argument('--warm-up', type=int, default=0)
-        sub_parser.add_argument('--groups', type=int, default=500)
+        sub_parser.add_argument('--groups', default='500', metavar='G | VAL:G,...',
+                                help='number of command lines; VAL:G,... splits each variant (mutate_val VAL) '
+                                     'into its own G lines')
         sub_parser.add_argument('--dat', default='table.dat')
+        sub_parser.add_argument('--name', default=None,
+                                help='experiment name, i.e. results folder, written into every record; the '
+                                     'record uids keep the generated name')
         sub_parser.add_argument('--random-init', action='store_true')
         sub_parser.add_argument('--warm-up-policy', default=None)
         sub_parser.add_argument('--penalty-dir', default=None)
@@ -383,15 +392,20 @@ def build_parser():
         sub_parser.add_argument(
             '--alp-coefficients', default=None, metavar='PATH',
             help='jsonl file holding theta*_ALP (e.g. '
-                 'experiments/results/toy_alp_train/alp_penalty.jsonl). On lowerbound it adds the '
+                 'experiments/results/toy_alp_train/alp_penalty.jsonl), or a folder with one such record '
+                 'per mutate_val for several variants. On lowerbound it adds the '
                  'policy-cost-centered fields around that anchor; on eval it is also the penalty '
                  'of the alp_penalized_hindsight policy')
         sub_parser.add_argument('--skip-ir', action='store_true',
                                 help='mark records skip_information_relaxation')
+        sub_parser.add_argument('--partial-ir', action='store_true',
+                                help='also solve the zero-penalty partial information relaxation from each '
+                                     "policy's post-warm-up state over the arrivals extended to the 0.9999 "
+                                     'quantile of the absorption time, as generate_params partial-ir does')
         sub_parser.add_argument(
             '--alp-policy-coefficients', default=None, metavar='JSONL',
             help='coefficients of the row_gen_alp policy, read from the first record with a coefficients list '
-                 'in this jsonl file, instead of fitting or loading the ALP through train_alp_coefficients')
+                 'in this jsonl file (or, for a folder, the record of each variant\'s mutate_val), instead of fitting or loading the ALP through train_alp_coefficients')
         sub_parser.add_argument(
             '--penalty-function', choices=sorted(GENERATING_FUNCTION_CLASSES), default=None,
             help='generating function of the bound and the policies: linear_penalty '
@@ -401,7 +415,7 @@ def build_parser():
                  'policy_id / experiment_name with _bh')
         sub_parser.add_argument(
             '--policy-spec', default=None, metavar='JSON',
-            help='JSON file mapping policy_id -> agent_args overrides, '
+            help='JSON file, or inline JSON object, mapping policy_id -> agent_args overrides, '
                  'deep-merged into every variant\'s agent_args before '
                  'generation (changes the variant uid; see --allow-retrain)')
         sub_parser.add_argument(
@@ -899,9 +913,12 @@ def _apply_init_occupancy(test_envs, occupancy):
     return updated
 
 
-def _apply_policy_spec(test_envs, policy_spec_path, policy_ids):
-    with open(policy_spec_path, encoding='utf-8') as handle:
-        spec = json.load(handle)
+def _apply_policy_spec(test_envs, policy_spec, policy_ids):
+    if policy_spec.lstrip().startswith('{'):
+        spec = json.loads(policy_spec)
+    else:
+        with open(policy_spec, encoding='utf-8') as handle:
+            spec = json.load(handle)
     unknown = sorted(set(spec) - set(policy_ids))
     if unknown:
         raise ValueError(
@@ -963,17 +980,64 @@ def _parse_penalty_ratios(text):
 
 def _run_eval(args, policy_ids):
     records = _evaluation_records(args, policy_ids)
-    write_grouped_command_file(results=records, num_groups=args.groups,
-                               dat_file=args.dat)
+    if ':' not in args.groups:
+        write_grouped_command_file(results=records, num_groups=int(args.groups), dat_file=args.dat)
+        return records
+    write_command_file(_groups_by_variant(records, args.groups), dat_file=args.dat)
     return records
 
 
+def _groups_by_variant(records, text):
+    counts = dict(item.split(':') for item in text.split(','))
+    by_variant = {}
+    for record in records:
+        by_variant.setdefault(str(record['mutate_val']), []).append(record)
+    if set(counts) != set(by_variant):
+        raise ValueError(f'--groups {text} must give one count per variant; the variants are {sorted(by_variant)}')
+    return [variant_records[i::int(counts[value])]
+            for value, variant_records in by_variant.items()
+            for i in range(min(int(counts[value]), len(variant_records)))]
+
+
+def _per_variant_coefficients(path, test_envs):
+    if path is None or not os.path.isdir(path):
+        return {key: _load_initial_coefficients(path)[0] for key in test_envs}
+    coefficients = {}
+    for key in test_envs:
+        record = load_trained_coefficient_record_from_folder(None, mutate_val=key[2], folder_path=path)
+        if record is None:
+            raise ValueError(f'{path} holds no coefficients record for mutate_val {key[2]}')
+        coefficients[key] = [float(value) for value in record['coefficients']]
+    return coefficients
+
+
 def _evaluation_records(args, policy_ids):
-    penalty_ratios = _parse_penalty_ratios(getattr(args, 'penalty_ratios', None))
-    alp_coefficients, _ = _load_initial_coefficients(getattr(args, 'alp_coefficients', None))
-    alp_penalty = getattr(args, 'alp_penalty', False)
     test_envs = _select_variants(
         build_variation_test_env(EXPERIMENT_SPECS[args.experiment]), args.variants)
+    alp_path = getattr(args, 'alp_coefficients', None)
+    alp_policy_path = args.alp_policy_coefficients
+    if not any(path is not None and os.path.isdir(path) for path in (alp_path, alp_policy_path)):
+        return _rename(_variant_evaluation_records(args, policy_ids, test_envs, _load_initial_coefficients(
+            alp_path)[0], _load_initial_coefficients(alp_policy_path)[0]), args.name)
+    alp_coefficients = _per_variant_coefficients(alp_path, test_envs)
+    alp_policy_coefficients = _per_variant_coefficients(alp_policy_path, test_envs)
+    records = []
+    for key, variant in test_envs.items():
+        records += _variant_evaluation_records(args, policy_ids, {key: variant}, alp_coefficients[key],
+                                               alp_policy_coefficients[key])
+    return _rename(records, args.name)
+
+
+def _rename(records, name):
+    if name is not None:
+        for record in records:
+            record['experiment_name'] = name
+    return records
+
+
+def _variant_evaluation_records(args, policy_ids, test_envs, alp_coefficients, alp_policy_coefficients):
+    penalty_ratios = _parse_penalty_ratios(getattr(args, 'penalty_ratios', None))
+    alp_penalty = getattr(args, 'alp_penalty', False)
     if args.init_occupancy is not None:
         test_envs = _apply_init_occupancy(test_envs, args.init_occupancy)
     if args.policy_spec:
@@ -1002,11 +1066,13 @@ def _evaluation_records(args, policy_ids):
         alp_penalty=alp_penalty,
         policy_centering=getattr(args, 'policy_centering', False),
         relax_first_decision=getattr(args, 'relax_first_decision', False),
-        alp_policy_coefficients=_load_initial_coefficients(args.alp_policy_coefficients)[0],
+        alp_policy_coefficients=alp_policy_coefficients,
     )
     if args.skip_ir:
         for record in records:
             record['skip_information_relaxation'] = True
+    if getattr(args, 'partial_ir', False):
+        attach_partial_information_arrivals(records)
     return records
 
 

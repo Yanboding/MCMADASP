@@ -32,6 +32,26 @@ def warm_up_states(results_dir, uids):
     return states
 
 
+def partial_information_arrival_stream(source, env, horizon=None):
+    periods = horizon if horizon is not None else default_partial_relaxation_horizon(env.discount_factor)
+    generator = env.arrival_generator
+    tail = np.asarray(source['sample_path'][source['warm_up_periods']:], dtype=int).reshape(-1, generator.num_types)
+    missing = periods - 1 - len(tail)
+    if missing > 0:
+        tail = np.concatenate([tail, generator.rvs(missing, rng=np.random.default_rng(int(source['uid'][:15], 16)))])
+    return tail[:periods - 1].tolist()
+
+
+def attach_partial_information_arrivals(records, horizon=None):
+    envs = {}
+    for record in records:
+        if record['group_id'] not in envs:
+            envs[record['group_id']] = get_config_by_type('infinite_custom', args=record['env_args']).env
+        record['partial_information_arrival_stream'] = partial_information_arrival_stream(
+            record, envs[record['group_id']], horizon)
+    return records
+
+
 def partial_relaxation_records(source_records, states, experiment_name, horizon=None, integer_future=False):
     if not source_records:
         raise ValueError('the source command file holds no evaluation records')
@@ -51,12 +71,7 @@ def partial_relaxation_records(source_records, states, experiment_name, horizon=
         if group_id not in envs:
             envs[group_id] = get_config_by_type('infinite_custom', args=source['env_args']).env
         env = envs[group_id]
-        periods = horizon if horizon is not None else default_partial_relaxation_horizon(env.discount_factor)
-        generator = env.arrival_generator
-        tail = np.asarray(source['sample_path'][source['warm_up_periods']:], dtype=int).reshape(-1, generator.num_types)
-        missing = periods - 1 - len(tail)
-        if missing > 0:
-            tail = np.concatenate([tail, generator.rvs(missing, rng=np.random.default_rng(int(uid[:15], 16)))])
+        arrival_stream = partial_information_arrival_stream(source, env, horizon)
         # Policies that warm up on their own reach different states; each distinct state gets its own
         # bound over the same extended arrivals, tagged with the policies that start from it.
         policies_by_state = {}
@@ -72,7 +87,7 @@ def partial_relaxation_records(source_records, states, experiment_name, horizon=
                 'group_id': group_id,
                 'env_args': source['env_args'],
                 'init_state': state,
-                'arrival_stream': tail[:periods - 1].tolist(),
+                'arrival_stream': arrival_stream,
                 'path_weight': source['path_weight'],
                 'path_stratum': source['path_stratum'],
             }

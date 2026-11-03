@@ -16,6 +16,7 @@ from experiments.new_result_aggregration import (
 )
 from param_generation.command_files import read_command_file_records, write_grouped_command_file
 from param_generation.partial_relaxation import (
+    attach_partial_information_arrivals,
     default_partial_relaxation_horizon,
     partial_relaxation_records,
     warm_up_states,
@@ -253,3 +254,70 @@ def test_only_a_complete_row_with_a_cost_counts_as_written():
             handle.write(json.dumps({'uid': 'p', 'partial_information_relaxation_cost': 1.0}) + '\n')
         assert run.partial_relaxation_written(tmp, 'p')
         assert not run.partial_relaxation_written(tmp, 'q')
+
+
+def test_evaluation_records_carry_the_same_extended_arrivals_as_the_partial_records():
+    _, env_args = _toy()
+    source = _source(env_args)
+    (partial,) = partial_relaxation_records([source], {source['uid']: SHARED}, 'x', horizon=10)
+    (evaluation,) = attach_partial_information_arrivals([dict(source)], horizon=10)
+    assert evaluation['partial_information_arrival_stream'] == partial['arrival_stream']
+    assert {k: v for k, v in evaluation.items() if k != 'partial_information_arrival_stream'} == source
+    (default,) = attach_partial_information_arrivals([dict(source)])
+    assert len(default['partial_information_arrival_stream']) == 916
+
+
+def _evaluation_record(env_args, arrival_stream=None):
+    record = {'uid': 'e' * 32, 'experiment_name': 'x', 'mutate_val': 0.5, 'init_state': STATE,
+              'sample_path': [[1, 1], [0, 2], [1, 0], [0, 1]], 'warm_up_periods': 2, 'env_args': env_args,
+              'policy_specs': [{'policy_id': 'myopic', 'agent_name': 'myopic', 'agent_args': {}}],
+              'group_id': 'g', 'generating_function_spec': {'name': 'absorption_alp_penalty',
+                                                            'coefficients': [0.0] * 17},
+              'period_weights': [1.0, 0.99, 0.99], 'terminal': 'absorbed', 'path_weight': 1.0, 'path_stratum': 0,
+              'warm_up_policy_id': 'myopic'}
+    if arrival_stream is not None:
+        record['partial_information_arrival_stream'] = arrival_stream
+    return record
+
+
+def _evaluation_rows(env_args, arrival_stream=None):
+    run.evaluate_policy_costs_with_information_relaxation(
+        **_evaluation_record(env_args, arrival_stream), grb_env=None, grb_sub_envs=[], job_id='1')
+    with open(os.path.join('experiments', 'results', 'x', '1.jsonl')) as handle:
+        return [json.loads(line) for line in handle]
+
+
+def test_evaluation_record_solves_the_partial_bound_from_the_post_warm_up_state(monkeypatch):
+    env, env_args = _toy()
+    arrivals, _ = _toy_path(env, 12)
+    with tempfile.TemporaryDirectory() as tmp:
+        monkeypatch.chdir(tmp)
+        (row,) = _evaluation_rows(env_args, arrivals.tolist())
+        separate = run.partial_information_relaxation_for_path(
+            uid='p', source_uid=row['uid'], experiment_name='y', mutate_val=0.5, group_id='g', env_args=env_args,
+            init_state=row['warmup_state'], arrival_stream=arrivals.tolist(), path_weight=1.0, path_stratum=0,
+            grb_env=None, grb_sub_envs=[], job_id='1')
+    assert row['warmup_state'] != STATE
+    assert np.isclose(row['partial_information_relaxation_cost'], separate['partial_information_relaxation_cost'])
+    assert row['partial_information_relaxation_horizon'] == 12
+
+
+def test_evaluation_record_without_partial_arrivals_keeps_its_fields(monkeypatch):
+    _, env_args = _toy()
+    with tempfile.TemporaryDirectory() as tmp:
+        monkeypatch.chdir(tmp)
+        (row,) = _evaluation_rows(env_args)
+    assert 'partial_information_relaxation_cost' not in row
+
+
+def test_eval_command_with_partial_ir_attaches_the_extended_arrivals(monkeypatch):
+    from param_generation import cli
+    _, env_args = _toy()
+    source = _source(env_args)
+    monkeypatch.setattr(cli, 'generate_test_paths_and_init_state', lambda **kwargs: [dict(source)])
+    args = cli.build_parser().parse_args(['eval', 'base_toy_study', '--policies', 'myopic', '--partial-ir'])
+    (record,) = cli._evaluation_records(args, ['myopic'])
+    (expected,) = attach_partial_information_arrivals([dict(source)])
+    assert record == expected
+    args = cli.build_parser().parse_args(['eval', 'base_toy_study', '--policies', 'myopic'])
+    assert cli._evaluation_records(args, ['myopic']) == [source]

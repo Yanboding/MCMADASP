@@ -522,6 +522,13 @@ def estimate_potential_improvement(uid, experiment_name, mutate_val, group_id, e
     return record
 
 
+def partial_information_relaxation_cost(env, state, arrival_stream, grb_env, grb_sub_envs):
+    period_weights = (env.discount_factor ** np.arange(len(arrival_stream) + 1)).tolist()
+    return information_relaxation_bounds(
+        env, {'name': 'absorption_alp_penalty'}, [0.0], state, np.array(arrival_stream), period_weights, 'absorbed',
+        grb_env, grb_sub_envs)[0.0]
+
+
 def partial_information_relaxation_for_path(uid, source_uid, experiment_name, mutate_val, group_id, env_args,
                                             init_state, arrival_stream, path_weight, path_stratum, grb_env,
                                             grb_sub_envs, job_id, policy_ids=None,
@@ -546,9 +553,7 @@ def partial_information_relaxation_for_path(uid, source_uid, experiment_name, mu
         integer_fields = {'partial_information_relaxation_objective': solve['objective'], 'mip_gap': solve['gap'],
                           'solver_status': solve['status'], 'future_decision_var_type': 'integer'}
     else:
-        cost = information_relaxation_bounds(
-            env, {'name': 'absorption_alp_penalty'}, [0.0], state, stream, period_weights, 'absorbed', grb_env,
-            grb_sub_envs)[0.0]
+        cost = partial_information_relaxation_cost(env, state, stream, grb_env, grb_sub_envs)
     record = {
         'uid': uid,
         'source_uid': source_uid,
@@ -695,7 +700,8 @@ def evaluate_policy_costs_with_information_relaxation(uid,
                                                       alp_coefficients=None,
                                                       policy_centering=False,
                                                       terminal=None,
-                                                      relax_first_decision=False):
+                                                      relax_first_decision=False,
+                                                      partial_information_arrival_stream=None):
     init_state = tuple(np.array(item) for item in init_state)
     sample_path = np.array(sample_path)
     sample_path_tail = sample_path[warm_up_periods:]
@@ -768,6 +774,7 @@ def evaluate_policy_costs_with_information_relaxation(uid,
     summary_rows = []
     shared_warm_up_trajectory = None
     bounds_by_state = {}
+    partial_costs_by_state = {}
     for policy_spec in ordered_policy_specs:
         is_warm_up_policy = warm_up_policy_id is not None and policy_spec['policy_id'] == warm_up_policy_id
         policy_result = calculate_policy_costs_with_penalty(
@@ -798,6 +805,12 @@ def evaluate_policy_costs_with_information_relaxation(uid,
                 env, generating_function_spec, ratios, warmup_state, sample_path_tail, period_weights, terminal,
                 grb_env, grb_sub_envs, remove_path_noise, relax_first_decision=relax_first_decision)
         bounds = bounds_by_state.get(state_key)
+        if partial_information_arrival_stream is not None:
+            if state_key not in partial_costs_by_state:
+                partial_costs_by_state[state_key] = float(partial_information_relaxation_cost(
+                    env, warmup_state, partial_information_arrival_stream, grb_env, grb_sub_envs))
+            policy_result['partial_information_relaxation_cost'] = partial_costs_by_state[state_key]
+            policy_result['partial_information_relaxation_horizon'] = len(partial_information_arrival_stream) + 1
         policy_result.update({
             **base_record,
             **information_relaxation_cost_fields(bounds),

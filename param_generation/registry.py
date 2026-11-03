@@ -21,6 +21,7 @@ from param_generation.mutators import (
     mutate_toy_lb_type1_cost,
     mutate_toy_lb_type1_share,
     mutate_toy_lb_type2_target,
+    mutate_toy_scaled,
 )
 
 OCCUPANCY_LEVELS = [0.3, 0.5, 0.9]
@@ -136,6 +137,7 @@ EXPERIMENT_SPECS = {
         ExperimentSpec(name='toy_lb_waiting_costs', config_type='toy', val_args=[6],
                        mutate=mutate_toy_lb_waiting_costs),
         ExperimentSpec(name='small_lb', config_type='small', val_args=[6]),
+        ExperimentSpec(name='toy_scaled', config_type='toy', val_args=[1, 5, 10], mutate=mutate_toy_scaled),
         ExperimentSpec(
             name='steady_state_toy_study',
             config_type='toy',
