@@ -100,3 +100,44 @@ def test_bounds_need_po_coefficients_for_every_setting(forbid_solver, tmp_path):
     folder = write_po_folder(tmp_path / 'po', [0.2, 0.5])
     with pytest.raises(ValueError, match='mutate_val 0.9'):
         cli.main(bounds_argv(tmp_path, '--penalty-coefficients', str(folder)))
+
+
+@pytest.mark.parametrize('regular', [6, 7, 8])
+def test_toy64_capacity_split_keeps_total_capacity_and_the_base_state(forbid_solver, regular):
+    assert EXPERIMENT_SPECS['toy64_lb_capacity'].val_args == [6, 7, 8]
+    env_args = environments('toy64_lb_capacity')[regular]
+    assert (env_args['regular_capacity'], env_args['overtime_capacity']) == (regular, 10 - regular)
+    regular_bookings, overtime_bookings, waitlist = env_args['reset_params']['init_state']
+    assert list(regular_bookings) == [5] * 6 + [0] and list(overtime_bookings) == [0] * 7
+    assert list(waitlist) == [1, 2]
+
+
+def test_toy64_capacity_split_six_four_is_the_base_case(forbid_solver):
+    base = environments('toy64_lb_occupancy')[0.5]
+    assert training_uid(json.loads(json.dumps(environments('toy64_lb_capacity')[6]))) == \
+        training_uid(json.loads(json.dumps(base)))
+
+
+def write_capacity_alp_cache(path):
+    with path.open('w') as handle:
+        for value, env_args in environments('toy64_lb_capacity').items():
+            handle.write(json.dumps({'uid': training_uid(json.loads(json.dumps(env_args))), 'result': {
+                'agent_name': 'row_gen_alp', 'obj_val': 1.0, 'args': {'coefficients': [float(value)] * 17},
+                'info': {'converged': True}}}) + '\n')
+    return path
+
+
+def test_train_takes_each_variants_alp_fit_and_agent_overrides(forbid_solver, tmp_path):
+    cache = write_capacity_alp_cache(tmp_path / 'alp_train.jsonl')
+    overrides = '{"current_decision_var_type": "continuous", "save_path_certificates": true}'
+    records = cli.main(['train', 'toy64_lb_capacity', '--variants', '7,8', '--penalty-function',
+                        'absorption_alp_penalty', '--reset-init-state', '--init-coefficients', str(cache),
+                        '--policy-centering', '--cap-policy', 'alp', '--alp-value-floor', '--sample-path-number',
+                        '512', '--agent-args', overrides, '--dat', str(tmp_path / 'train.dat')])
+    assert sorted(r['mutate_val'] for r in records) == [7, 8]
+    for record in records:
+        inner = record['agent_args']['agent_args']
+        assert inner['initial_coefficients'] == [float(record['mutate_val'])] * 17
+        assert inner['alp_value_floor'] and inner['save_path_certificates']
+        assert inner['current_decision_var_type'] == 'continuous'
+        assert record['sample_path_number'] == 512

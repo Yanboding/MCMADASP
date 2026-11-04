@@ -105,6 +105,13 @@ def mutate_toy_lb_waiting_costs(env_args, val):
     _set_additional_toy_lb_initial_state(env_args, [0, 1, 0, 0, 2, 0])
 
 
+def mutate_toy_lb_capacity(env_args, regular_capacity):
+    total_capacity = env_args['regular_capacity'] + env_args['overtime_capacity']
+    env_args['regular_capacity'] = regular_capacity
+    env_args['overtime_capacity'] = total_capacity - regular_capacity
+    mutate_toy_lb_occupancy(env_args, 0.5)
+
+
 def mutate_toy_scaled(env_args, scale):
     env_args['arrival_rates'] = [scale, 2 * scale]
     env_args['regular_capacity'] = 6 * scale

@@ -14,6 +14,7 @@ from param_generation.mutators import (
     mutate_stratified_geometric_scenario,
     mutate_toy_lb_arrival_rates,
     mutate_toy_lb_booking_window,
+    mutate_toy_lb_capacity,
     mutate_toy_lb_pattern_arrival_rates,
     mutate_toy_lb_treatment_pattern,
     mutate_toy_lb_waiting_costs,
@@ -143,6 +144,8 @@ EXPERIMENT_SPECS = {
         *TOY_LB_SPECS,
         *[ExperimentSpec(name=spec.name.replace('toy_lb_', 'toy64_lb_', 1), config_type='toy64',
                          val_args=spec.val_args, mutate=spec.mutate) for spec in TOY_LB_SPECS],
+        ExperimentSpec(name='toy64_lb_capacity', config_type='toy64', val_args=[6, 7, 8],
+                       mutate=mutate_toy_lb_capacity),
         ExperimentSpec(name='small_lb', config_type='small', val_args=[6]),
         ExperimentSpec(name='toy_scaled', config_type='toy', val_args=[1, 5, 10], mutate=mutate_toy_scaled),
         ExperimentSpec(

@@ -333,6 +333,9 @@ def build_parser():
         help='generate mode only: draw sample_path_number / K initial states and give '
              'each of them K sample paths; mutually exclusive with the shared-state options')
     train.add_argument(
+        '--agent-args', default=None, metavar='JSON',
+        help='JSON object deep-merged into every variant\'s agent_args before training settings are applied')
+    train.add_argument(
         '--init-coefficients', default=None, metavar='JSONL',
         help='warm-start the Benders master at the coefficients of the first record '
              'with a coefficients list in this jsonl file (e.g. the ALP coefficients)')
@@ -841,12 +844,24 @@ def _run_train(args):
             raise ValueError('--init-occupancy only takes effect with --reset-init-state')
         test_envs = _apply_init_occupancy(test_envs, args.init_occupancy)
     test_envs = _apply_coefficient_bound(test_envs, args.coefficient_bound)
-    initial_coefficients, initial_coefficients_source = _load_initial_coefficients(args.init_coefficients)
-    test_envs = _apply_training_settings(
-        test_envs, initial_coefficients, initial_coefficients_source, args.fix_intercept,
-        args.intercept_bound, args.paths_per_state, args.min_norm_slack,
-        args.min_norm_every_iteration, args.alp_value_floor, args.alp_value_floor_tolerance,
-        args.fix_block, args.policy_centering, args.policy_cap_scenarios, args.cap_policy)
+    if args.agent_args:
+        for variant in test_envs.values():
+            _deep_update(variant['agent_args']['agent_args'], json.loads(args.agent_args))
+    if args.init_coefficients is not None and _is_training_cache(args.init_coefficients):
+        coefficients = _coefficients_by_training_uid(args.init_coefficients, test_envs)
+        sources = {key: {'file': os.path.normpath(args.init_coefficients), 'mutate_val': key[2]} for key in test_envs}
+    else:
+        loaded = _load_initial_coefficients(args.init_coefficients)
+        coefficients = {key: loaded[0] for key in test_envs}
+        sources = {key: loaded[1] for key in test_envs}
+    test_envs = {
+        updated_key: updated
+        for key, variant in test_envs.items()
+        for updated_key, updated in _apply_training_settings(
+            {key: variant}, coefficients[key], sources[key], args.fix_intercept,
+            args.intercept_bound, args.paths_per_state, args.min_norm_slack,
+            args.min_norm_every_iteration, args.alp_value_floor, args.alp_value_floor_tolerance,
+            args.fix_block, args.policy_centering, args.policy_cap_scenarios, args.cap_policy).items()}
     if args.name is not None:
         if len(test_envs) != 1:
             raise ValueError(f'--name needs exactly one variant; got {len(test_envs)}')
