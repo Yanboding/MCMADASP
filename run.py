@@ -762,6 +762,10 @@ def evaluate_policy_costs_with_information_relaxation(uid,
             'gap_to_penalized_information_relaxation': 0.0,
             'warmup_state': tuple(np.array(item).tolist() for item in init_state),
         }
+        if partial_information_arrival_stream is not None:
+            record['partial_information_relaxation_cost'] = float(partial_information_relaxation_cost(
+                env, init_state, partial_information_arrival_stream, grb_env, grb_sub_envs))
+            record['partial_information_relaxation_horizon'] = len(partial_information_arrival_stream) + 1
         if penalty_ratios is not None:
             record['penalty_ratios'] = ratios
             record['information_relaxation_cost_by_penalty_ratio'] = (

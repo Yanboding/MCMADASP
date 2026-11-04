@@ -130,15 +130,13 @@ def small_case_config():
     }
     return custom_case_config(**env_args)
 
-def toy_case_config():
+def toy_case_config(regular_capacity=7, overtime_capacity=3):
     booking_window_size = 7
     treatment_patterns = ["1 * 3", 
                           "1 * 2"]
     arrival_rates = [1, 2]
     l = [[(0, 1, 0), (1, booking_window_size, 100)],
          [(0, 1, 0), (1, booking_window_size, 10)]]
-    regular_capacity = 7
-    overtime_capacity = 3
     holding_cost = [wait_time(l[i]) for i in range(len(treatment_patterns))]
     holding_cost = np.array(holding_cost).T
     treatment_pattern = str2treatment_patterns(treatment_patterns)
@@ -338,6 +336,8 @@ def get_config_by_type(case_type, args=None):
         config = small_case_config()
     elif case_type == 'toy':
         config = toy_case_config()
+    elif case_type == 'toy64':
+        config = toy_case_config(regular_capacity=6, overtime_capacity=4)
     elif case_type == 'infinite_custom':
         config = custom_case_config(**args)
     return config

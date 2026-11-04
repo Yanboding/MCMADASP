@@ -122,9 +122,12 @@ def _warn_initial_state_mismatch(coefficients_source, is_random_initial_state):
               "use --init-occupancy to match the training state instead.")
 
 
-def generate_test_paths_and_init_state(test_envs, test_sample_path_num, warm_up_periods=0, num_periods=None, dat_file=None, num_groups=None, is_require_penalty_coefficients=True, is_random_initial_state=False, policy_ids=None, warm_up_policy_id=None, evaluation_proposal_spec=None, penalty_coefficients_dir=None, warm_up_paths=None, sample_gen_seed_offset=1001, penalty_ratios=None, alp_coefficients=None, alp_penalty=False, policy_centering=False, alp_policy_coefficients=None, relax_first_decision=False):
+def generate_test_paths_and_init_state(test_envs, test_sample_path_num, warm_up_periods=0, num_periods=None, dat_file=None, num_groups=None, is_require_penalty_coefficients=True, is_random_initial_state=False, policy_ids=None, warm_up_policy_id=None, evaluation_proposal_spec=None, penalty_coefficients_dir=None, warm_up_paths=None, sample_gen_seed_offset=1001, penalty_ratios=None, alp_coefficients=None, alp_penalty=False, policy_centering=False, alp_policy_coefficients=None, relax_first_decision=False, penalty_coefficients=None):
     policy_ids = list(policy_ids or [])
     policy_id_set = set(policy_ids)
+    if penalty_coefficients is not None and (alp_penalty or penalty_coefficients_dir is not None or len(test_envs) > 1):
+        raise ValueError('penalty_coefficients fix the penalized bound of a single environment; they exclude '
+                         'alp_penalty and penalty_coefficients_dir.')
     if alp_penalty and (penalty_ratios is not None or penalty_coefficients_dir is not None):
         raise ValueError('alp_penalty takes the penalty from the ALP fit; it excludes penalty_ratios and '
                          'penalty_coefficients_dir.')
@@ -241,6 +244,8 @@ def generate_test_paths_and_init_state(test_envs, test_sample_path_num, warm_up_
             print(f"ALP penalty for experiment={experiment_name}, mutate_val={mutate_val}: objective "
                   f"{alp_objective}, maximum Bellman violation {certificate['max_bellman_violation']:.3e} "
                   f"after {certificate['iterations']} iterations.")
+        elif penalty_coefficients is not None:
+            direct_coefficients = [float(value) for value in penalty_coefficients]
         elif is_require_penalty_coefficients:
             sample_path_number = variant.get('agent_args', {}).get('agent_args', {}).get('sample_path_number')
             if penalty_ratios is not None:

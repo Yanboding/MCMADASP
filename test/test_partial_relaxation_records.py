@@ -321,3 +321,20 @@ def test_eval_command_with_partial_ir_attaches_the_extended_arrivals(monkeypatch
     assert record == expected
     args = cli.build_parser().parse_args(['eval', 'base_toy_study', '--policies', 'myopic'])
     assert cli._evaluation_records(args, ['myopic']) == [source]
+
+
+def test_bound_only_record_solves_the_partial_bound_from_its_initial_state(monkeypatch):
+    env, env_args = _toy()
+    arrivals, _ = _toy_path(env, 12)
+    record = {key: value for key, value in _evaluation_record(env_args, arrivals.tolist()).items()
+              if key not in ('policy_specs', 'warm_up_policy_id')}
+    with tempfile.TemporaryDirectory() as tmp:
+        monkeypatch.chdir(tmp)
+        (row,) = run.evaluate_policy_costs_with_information_relaxation(
+            **record, policy_specs=[], grb_env=None, grb_sub_envs=[], job_id='1')
+        separate = run.partial_information_relaxation_for_path(
+            uid='p', source_uid=row['uid'], experiment_name='y', mutate_val=0.5, group_id='g', env_args=env_args,
+            init_state=STATE, arrival_stream=arrivals.tolist(), path_weight=1.0, path_stratum=0,
+            grb_env=None, grb_sub_envs=[], job_id='1')
+    assert np.isclose(row['partial_information_relaxation_cost'], separate['partial_information_relaxation_cost'])
+    assert row['partial_information_relaxation_horizon'] == 12

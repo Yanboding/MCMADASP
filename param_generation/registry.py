@@ -29,6 +29,28 @@ OCCUPANCY_EPSILONS = [0.1, 0.125, 0.2, 0.3, 0.5, 1.0]  # 1.0 = no importance sam
 OCCUPANCY_SCENARIO_NUMBERS = [256, 512, 1024]
 
 
+TOY_LB_SPECS = [
+    ExperimentSpec(name='toy_lb_occupancy', config_type='toy', val_args=[0.2, 0.5, 0.9],
+                   mutate=mutate_toy_lb_occupancy),
+    ExperimentSpec(name='toy_lb_type1_share', config_type='toy', val_args=[0.3, 0.5, 0.9],
+                   mutate=mutate_toy_lb_type1_share),
+    ExperimentSpec(name='toy_lb_type2_target', config_type='toy', val_args=[1, 3, 5],
+                   mutate=mutate_toy_lb_type2_target),
+    ExperimentSpec(name='toy_lb_type1_cost', config_type='toy', val_args=[10, 100, 200],
+                   mutate=mutate_toy_lb_type1_cost),
+    ExperimentSpec(name='toy_lb_treatment_pattern', config_type='toy', val_args=[3],
+                   mutate=mutate_toy_lb_treatment_pattern),
+    ExperimentSpec(name='toy_lb_arrival_rates', config_type='toy', val_args=[9 / 7],
+                   mutate=mutate_toy_lb_arrival_rates),
+    ExperimentSpec(name='toy_lb_pattern_arrival_rates', config_type='toy', val_args=[9 / 7],
+                   mutate=mutate_toy_lb_pattern_arrival_rates),
+    ExperimentSpec(name='toy_lb_booking_window', config_type='toy', val_args=[21],
+                   mutate=mutate_toy_lb_booking_window),
+    ExperimentSpec(name='toy_lb_waiting_costs', config_type='toy', val_args=[6],
+                   mutate=mutate_toy_lb_waiting_costs),
+]
+
+
 def occupancy_experiment_name(epsilon, sample_path_number):
     return (f"case_study_099_occupancy_l{str(epsilon).replace('.', '')}"
             f"_scenario_{sample_path_number}")
@@ -118,24 +140,9 @@ EXPERIMENT_SPECS = {
             mutate=mutate_initial_state_congestion,
         ),
         *_toy_stratified_experiment_specs(),
-        ExperimentSpec(name='toy_lb_occupancy', config_type='toy', val_args=[0.2, 0.5, 0.9],
-                       mutate=mutate_toy_lb_occupancy),
-        ExperimentSpec(name='toy_lb_type1_share', config_type='toy', val_args=[0.3, 0.5, 0.9],
-                       mutate=mutate_toy_lb_type1_share),
-        ExperimentSpec(name='toy_lb_type2_target', config_type='toy', val_args=[1, 3, 5],
-                       mutate=mutate_toy_lb_type2_target),
-        ExperimentSpec(name='toy_lb_type1_cost', config_type='toy', val_args=[10, 100, 200],
-                       mutate=mutate_toy_lb_type1_cost),
-        ExperimentSpec(name='toy_lb_treatment_pattern', config_type='toy', val_args=[3],
-                       mutate=mutate_toy_lb_treatment_pattern),
-        ExperimentSpec(name='toy_lb_arrival_rates', config_type='toy', val_args=[9 / 7],
-                       mutate=mutate_toy_lb_arrival_rates),
-        ExperimentSpec(name='toy_lb_pattern_arrival_rates', config_type='toy', val_args=[9 / 7],
-                       mutate=mutate_toy_lb_pattern_arrival_rates),
-        ExperimentSpec(name='toy_lb_booking_window', config_type='toy', val_args=[21],
-                       mutate=mutate_toy_lb_booking_window),
-        ExperimentSpec(name='toy_lb_waiting_costs', config_type='toy', val_args=[6],
-                       mutate=mutate_toy_lb_waiting_costs),
+        *TOY_LB_SPECS,
+        *[ExperimentSpec(name=spec.name.replace('toy_lb_', 'toy64_lb_', 1), config_type='toy64',
+                         val_args=spec.val_args, mutate=spec.mutate) for spec in TOY_LB_SPECS],
         ExperimentSpec(name='small_lb', config_type='small', val_args=[6]),
         ExperimentSpec(name='toy_scaled', config_type='toy', val_args=[1, 5, 10], mutate=mutate_toy_scaled),
         ExperimentSpec(

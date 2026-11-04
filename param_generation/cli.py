@@ -12,7 +12,11 @@ from scipy.stats import geom
 import numpy as np
 
 from experiments import get_config_by_type
-from param_generation.caching import load_trained_coefficient_record_from_folder, load_trained_coefficients_from_folder
+from param_generation.caching import (
+    load_trained_coefficient_record_from_folder,
+    load_trained_coefficients_from_folder,
+    training_uid,
+)
 from param_generation.command_files import read_command_file_records, write_command_file, write_grouped_command_file
 from param_generation.datasets import (
     generate_alp_coefficient_training_env,
@@ -396,6 +400,10 @@ def build_parser():
                  'per mutate_val for several variants. On lowerbound it adds the '
                  'policy-cost-centered fields around that anchor; on eval it is also the penalty '
                  'of the alp_penalized_hindsight policy')
+        sub_parser.add_argument(
+            '--penalty-coefficients', default=None, metavar='PATH',
+            help='coefficients of the penalized bound: a folder with one record per mutate_val (e.g. the PO '
+                 'training results), read without training; excludes --alp-penalty')
         sub_parser.add_argument('--skip-ir', action='store_true',
                                 help='mark records skip_information_relaxation')
         sub_parser.add_argument('--partial-ir', action='store_true',
@@ -1000,6 +1008,8 @@ def _groups_by_variant(records, text):
 
 
 def _per_variant_coefficients(path, test_envs):
+    if path is not None and not os.path.isdir(path) and _is_training_cache(path):
+        return _coefficients_by_training_uid(path, test_envs)
     if path is None or not os.path.isdir(path):
         return {key: _load_initial_coefficients(path)[0] for key in test_envs}
     coefficients = {}
@@ -1011,20 +1021,42 @@ def _per_variant_coefficients(path, test_envs):
     return coefficients
 
 
+def _is_training_cache(path):
+    with open(path, encoding='utf-8') as handle:
+        rows = [json.loads(line) for line in handle if line.strip()]
+    return len({row.get('uid') for row in rows if 'result' in row}) > 1
+
+
+def _coefficients_by_training_uid(path, test_envs):
+    with open(path, encoding='utf-8') as handle:
+        rows = {row['uid']: row for row in map(json.loads, filter(str.strip, handle)) if 'result' in row}
+    coefficients = {}
+    for key, variant in test_envs.items():
+        row = rows.get(training_uid(json.loads(json.dumps(variant['env_args']))))
+        if row is None:
+            raise ValueError(f'{path} holds no training record for mutate_val {key[2]}')
+        coefficients[key] = [float(value) for value in row['result']['args']['coefficients']]
+    return coefficients
+
+
 def _evaluation_records(args, policy_ids):
     test_envs = _select_variants(
         build_variation_test_env(EXPERIMENT_SPECS[args.experiment]), args.variants)
     alp_path = getattr(args, 'alp_coefficients', None)
     alp_policy_path = args.alp_policy_coefficients
-    if not any(path is not None and os.path.isdir(path) for path in (alp_path, alp_policy_path)):
+    penalty_path = getattr(args, 'penalty_coefficients', None)
+    per_variant = penalty_path is not None or any(
+        path is not None and (os.path.isdir(path) or _is_training_cache(path)) for path in (alp_path, alp_policy_path))
+    if not per_variant:
         return _rename(_variant_evaluation_records(args, policy_ids, test_envs, _load_initial_coefficients(
             alp_path)[0], _load_initial_coefficients(alp_policy_path)[0]), args.name)
     alp_coefficients = _per_variant_coefficients(alp_path, test_envs)
     alp_policy_coefficients = _per_variant_coefficients(alp_policy_path, test_envs)
+    penalty_coefficients = _per_variant_coefficients(penalty_path, test_envs)
     records = []
     for key, variant in test_envs.items():
         records += _variant_evaluation_records(args, policy_ids, {key: variant}, alp_coefficients[key],
-                                               alp_policy_coefficients[key])
+                                               alp_policy_coefficients[key], penalty_coefficients[key])
     return _rename(records, args.name)
 
 
@@ -1035,7 +1067,8 @@ def _rename(records, name):
     return records
 
 
-def _variant_evaluation_records(args, policy_ids, test_envs, alp_coefficients, alp_policy_coefficients):
+def _variant_evaluation_records(args, policy_ids, test_envs, alp_coefficients, alp_policy_coefficients,
+                                penalty_coefficients=None):
     penalty_ratios = _parse_penalty_ratios(getattr(args, 'penalty_ratios', None))
     alp_penalty = getattr(args, 'alp_penalty', False)
     if args.init_occupancy is not None:
@@ -1067,6 +1100,7 @@ def _variant_evaluation_records(args, policy_ids, test_envs, alp_coefficients, a
         policy_centering=getattr(args, 'policy_centering', False),
         relax_first_decision=getattr(args, 'relax_first_decision', False),
         alp_policy_coefficients=alp_policy_coefficients,
+        penalty_coefficients=penalty_coefficients,
     )
     if args.skip_ir:
         for record in records:
