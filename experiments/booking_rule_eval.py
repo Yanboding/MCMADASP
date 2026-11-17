@@ -42,6 +42,32 @@ def variant_records(source_records, experiment_name, limit=None):
     return records
 
 
+def from_stored_warm_up(records, saved_warm_up_states):
+    """Start each path from its saved post-warm-up state instead of rerunning the warm-up."""
+    out = []
+    for record in records:
+        state = saved_warm_up_states[record['uid']]
+        w = record['warm_up_periods']
+        out.append({**record, 'init_state': state, 'sample_path': record['sample_path'][w:],
+                    'warm_up_periods': 0, 'warm_up_policy_id': None})
+    return out
+
+
+def load_saved_warm_up_states(results_dir, policy_id='row_gen_alp'):
+    """{uid: warmup_state} from existing evaluation records of the same paths."""
+    import glob
+    import json
+    import os
+    states = {}
+    for path in sorted(glob.glob(os.path.join(results_dir, '[0-9]*.jsonl'))):
+        with open(path) as handle:
+            for line in handle:
+                record = json.loads(line)
+                if record.get('policy_id') == policy_id:
+                    states.setdefault(record['uid'], record['warmup_state'])
+    return states
+
+
 def _evaluate_chunk(args):
     import inspect
     import os
@@ -71,8 +97,14 @@ def main(argv=None):
     parser.add_argument('--name', required=True, help='results folder under experiments/results')
     parser.add_argument('--limit', type=int, default=None)
     parser.add_argument('--workers', type=int, default=6)
+    parser.add_argument('--offset', type=int, default=0, help='skip the first OFFSET source paths')
+    parser.add_argument('--warm-up-states-from', default=None, metavar='DIR',
+                        help='results folder whose row_gen_alp records give each path its saved warm-up state')
     args = parser.parse_args(argv)
-    records = variant_records(read_command_file_records(args.source_dat), args.name, args.limit)
+    source = read_command_file_records(args.source_dat)[args.offset:]
+    records = variant_records(source, args.name, args.limit)
+    if args.warm_up_states_from:
+        records = from_stored_warm_up(records, load_saved_warm_up_states(args.warm_up_states_from))
     chunks = [(records[k::args.workers], f'w{k}') for k in range(args.workers)]
     with get_context('spawn').Pool(args.workers) as pool:
         for job_id in pool.imap_unordered(_evaluate_chunk, chunks):

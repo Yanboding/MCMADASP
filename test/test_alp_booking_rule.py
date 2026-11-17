@@ -147,3 +147,20 @@ def test_variant_records_keep_the_source_paths_and_add_six_variants_after_the_al
     assert len(VARIANTS) == 6
     assert {tuple(v[1]) for v in VARIANTS} == {tuple(LONG), tuple(TEN_DAY)}
     assert {v[2] for v in VARIANTS} == {0, 10, 20}
+
+
+def test_stored_warm_up_records_start_from_the_saved_state_and_skip_the_warm_up():
+    from experiments.booking_rule_eval import from_stored_warm_up
+    record = {'uid': 'u1', 'init_state': [[0], [0], [0]], 'sample_path': [[1], [2], [3], [4]],
+              'warm_up_periods': 3, 'warm_up_policy_id': 'row_gen_alp', 'period_weights': [1.0, 0.99],
+              'policy_specs': [{'policy_id': 'row_gen_alp'}]}
+    saved = {'u1': [[5], [6], [7]]}
+    out = from_stored_warm_up([record], saved)[0]
+    assert out['init_state'] == [[5], [6], [7]]
+    assert out['sample_path'] == [[4]]
+    assert out['warm_up_periods'] == 0
+    assert out['warm_up_policy_id'] is None
+    assert out['period_weights'] == [1.0, 0.99] and out['uid'] == 'u1'
+    assert record['warm_up_periods'] == 3   # source record is not modified
+    with pytest.raises(KeyError):
+        from_stored_warm_up([{**record, 'uid': 'missing'}], saved)
