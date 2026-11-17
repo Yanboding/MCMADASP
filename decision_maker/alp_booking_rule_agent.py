@@ -21,19 +21,30 @@ class ALPBookingRuleAgent(ALPRowGenerationAgent):
         super().__init__(env, discount_factor, **kwargs)
         self.restricted_types = list(restricted_types)
         self.reserve = float(reserve)
+        self._rule_matrix = self._build_rule_matrix()
+
+    def _build_rule_matrix(self):
+        N, I = self.env.booking_window_size, self.env.num_types
+        matrix = np.zeros((N, N * I))
+        first_session = self.env.treatment_pattern[0]
+        for j in range(N):
+            for i in self.restricted_types:
+                matrix[j, j * I + i] = first_session[i]
+        return matrix
+
+    def rule_matrix(self):
+        """Row j gives the first-session slots of restricted types started on booking day j (x flattened row-major)."""
+        return self._rule_matrix
+
+    def rule_limits(self, regular_bookings):
+        """max(C_r - u_j - reserve, 0) for every booking day j."""
+        u = np.asarray(regular_bookings, dtype=float)[:self.env.booking_window_size]
+        return np.maximum(self.env.regular_capacity - u - self.reserve, 0.0)
 
     def add_action_space_constraints(self, model, state_var, action_var):
         super().add_action_space_constraints(model, state_var, action_var)
         if not self.restricted_types:
             return model
-        regular_bookings = np.asarray(state_var[0], dtype=float)
-        advance_scheduling_decision_vars = action_var[0]
-        first_session = self.env.treatment_pattern[0]
-        for j in range(self.env.booking_window_size):
-            limit = max(self.env.regular_capacity - regular_bookings[j] - self.reserve, 0.0)
-            model.addConstr(
-                sum(first_session[i] * advance_scheduling_decision_vars[j, i] for i in self.restricted_types)
-                <= limit,
-                name=f"booking_rule_{j}",
-            )
+        x = action_var[0].reshape(-1)
+        model.addConstr(self._rule_matrix @ x <= self.rule_limits(state_var[0]), name="booking_rule")
         return model

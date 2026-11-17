@@ -55,3 +55,13 @@ def test_cost_split_separates_waiting_from_the_rest_of_the_discounted_cost():
     waiting, other = cost_split({'a': record}, waiting_coeffs, {'a': [1.0, 0.5]})
     assert waiting == pytest.approx(20.0 + 0.5 * 10.0)
     assert other == pytest.approx(100.0)
+
+
+def test_stratum_mean_weights_strata_equally_when_strata_are_incomplete():
+    from experiments.booking_rule_report import stratum_mean
+    # stratum 0 has one path with value 0, stratum 1 has three paths with value 10
+    values = np.array([0.0, 10.0, 10.0, 10.0])
+    strata = np.array([0, 1, 1, 1])
+    mean, half_width = stratum_mean(values, strata)
+    assert mean == pytest.approx(5.0)
+    assert half_width >= 0

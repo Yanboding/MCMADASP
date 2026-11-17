@@ -164,3 +164,42 @@ def test_stored_warm_up_records_start_from_the_saved_state_and_skip_the_warm_up(
     assert record['warm_up_periods'] == 3   # source record is not modified
     with pytest.raises(KeyError):
         from_stored_warm_up([{**record, 'uid': 'missing'}], saved)
+
+
+def test_remaining_batches_sample_every_stratum_and_skip_finished_paths():
+    from experiments.booking_rule_eval import remaining_batch
+    source = [{'uid': f's{s}p{k}', 'path_stratum': s} for s in range(4) for k in range(16)]
+    done = {'s0p0', 's1p3'}
+    batches = [remaining_batch(source, done, n_batches=8, batch=b) for b in range(8)]
+    flat = [r['uid'] for batch in batches for r in batch]
+    assert len(flat) == len(set(flat)) == 64 - 2 and not (done & set(flat))
+    for batch in batches:
+        counts = {s: sum(r['path_stratum'] == s for r in batch) for s in range(4)}
+        assert all(1 <= c <= 2 for c in counts.values())
+
+
+def test_variant_records_can_restrict_variants_and_drop_the_alp_policy():
+    from experiments.booking_rule_eval import variant_records
+    source = [{'uid': 'u', 'policy_specs': [{'policy_id': 'row_gen_alp', 'agent_name': 'row_gen_alp',
+                                             'agent_args': {'coefficients': [1.0]}}]}]
+    r = variant_records(source, 'exp', variants=['alp_rule_tenday_R10', 'alp_rule_long_R10'], include_alp=False)[0]
+    assert [s['policy_id'] for s in r['policy_specs']] == ['alp_rule_tenday_R10', 'alp_rule_long_R10']
+
+
+def test_matrix_form_of_the_rule_matches_the_elementwise_definition(case, grb_env):
+    env, _ = case
+    agent = _rule_agent(case, grb_env, restricted_types=TEN_DAY, reserve=10)
+    A = agent.rule_matrix()
+    N, I = env.booking_window_size, env.num_types
+    assert A.shape == (N, N * I)
+    rng = np.random.default_rng(3)
+    x = rng.integers(0, 3, size=(N, I)).astype(float)
+    expected = np.array([sum(env.treatment_pattern[0, i] * x[j, i] for i in TEN_DAY) for j in range(N)])
+    np.testing.assert_allclose(A @ x.reshape(-1), expected)
+    u = np.zeros(env.planning_horizon)
+    u[0] = env.regular_capacity            # no room: limit 0
+    u[1] = env.regular_capacity - 25       # room: 25 - 10 = 15
+    u[2] = env.regular_capacity - 5        # less than the reserve: limit 0
+    limits = agent.rule_limits(u)
+    assert limits[0] == 0 and limits[1] == 15 and limits[2] == 0
+    assert limits[3] == env.regular_capacity - 10

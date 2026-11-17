@@ -27,19 +27,31 @@ VARIANTS = [(f'alp_rule_{name}_R{reserve}', types, reserve)
             for reserve in (0, 10, 20)]
 
 
-def variant_records(source_records, experiment_name, limit=None):
-    """Copy each source path record, keep its ALP spec first, append the six booking-rule variants."""
+def variant_records(source_records, experiment_name, limit=None, variants=None, include_alp=True):
+    """Copy each source path record, keep its ALP spec first, append the booking-rule variants.
+
+    ``variants`` selects and orders variant ids (default: all six); ``include_alp`` keeps the ALP policy.
+    """
+    chosen = [v for v in VARIANTS] if variants is None else [next(v for v in VARIANTS if v[0] == name)
+                                                                for name in variants]
     records = []
     for source in source_records[:limit]:
         alp_spec = next(spec for spec in source['policy_specs'] if spec['policy_id'] == 'row_gen_alp')
-        specs = [alp_spec] + [
+        specs = ([alp_spec] if include_alp else []) + [
             {'policy_id': policy_id, 'agent_name': 'alp_booking_rule',
              'agent_args': {'coefficients': alp_spec['agent_args']['coefficients'],
                             'restricted_types': list(types), 'reserve': reserve}}
-            for policy_id, types, reserve in VARIANTS]
+            for policy_id, types, reserve in chosen]
         records.append({**source, 'policy_specs': specs, 'experiment_name': experiment_name,
                         'skip_information_relaxation': True})
     return records
+
+
+def remaining_batch(source_records, done_uids, n_batches, batch):
+    """Batch ``batch`` of the unfinished paths: systematic sample of every n_batches-th path in stratum order."""
+    remaining = sorted((r for r in source_records if r['uid'] not in done_uids),
+                       key=lambda r: r.get('path_stratum', 0))
+    return remaining[batch::n_batches]
 
 
 def from_stored_warm_up(records, saved_warm_up_states):
@@ -66,6 +78,23 @@ def load_saved_warm_up_states(results_dir, policy_id='row_gen_alp'):
                 if record.get('policy_id') == policy_id:
                     states.setdefault(record['uid'], record['warmup_state'])
     return states
+
+
+def finished_uids(results_dir, variants=None):
+    """uids that have a record for every requested variant in results_dir (empty set if no folder)."""
+    import glob
+    import json
+    import os
+    if not results_dir:
+        return set()
+    wanted = set(variants or [v[0] for v in VARIANTS])
+    seen = {}
+    for path in glob.glob(os.path.join(results_dir, '*.jsonl')):
+        with open(path) as handle:
+            for line in handle:
+                record = json.loads(line)
+                seen.setdefault(record['uid'], set()).add(record['policy_id'])
+    return {uid for uid, ids in seen.items() if wanted <= ids}
 
 
 def _evaluate_chunk(args):
@@ -98,11 +127,21 @@ def main(argv=None):
     parser.add_argument('--limit', type=int, default=None)
     parser.add_argument('--workers', type=int, default=6)
     parser.add_argument('--offset', type=int, default=0, help='skip the first OFFSET source paths')
+    parser.add_argument('--variants', default=None, help='comma-separated variant ids (default: all six)')
+    parser.add_argument('--no-alp', action='store_true', help='do not evaluate the ALP policy itself')
+    parser.add_argument('--batch', default=None, metavar='B/K',
+                        help='run batch B of K of the paths not yet finished in --done-from (systematic by stratum)')
+    parser.add_argument('--done-from', default=None, metavar='DIR',
+                        help='results folder whose finished uids (all requested variants present) are skipped')
     parser.add_argument('--warm-up-states-from', default=None, metavar='DIR',
                         help='results folder whose row_gen_alp records give each path its saved warm-up state')
     args = parser.parse_args(argv)
     source = read_command_file_records(args.source_dat)[args.offset:]
-    records = variant_records(source, args.name, args.limit)
+    variants = args.variants.split(',') if args.variants else None
+    if args.batch:
+        b, k = map(int, args.batch.split('/'))
+        source = remaining_batch(source, finished_uids(args.done_from, variants), k, b)
+    records = variant_records(source, args.name, args.limit, variants=variants, include_alp=not args.no_alp)
     if args.warm_up_states_from:
         records = from_stored_warm_up(records, load_saved_warm_up_states(args.warm_up_states_from))
     chunks = [(records[k::args.workers], f'w{k}') for k in range(args.workers)]

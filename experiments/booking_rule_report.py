@@ -91,3 +91,28 @@ def cost_split(records, waiting_cost_coeffs, period_weights):
         other_total += weight * float(discount @ (costs - waiting))
         weight_total += weight
     return waiting_total / weight_total, other_total / weight_total
+
+
+def stratum_mean(values, strata, confidence=0.95):
+    """Mean of stratum means with equal stratum weights, for subsamples with unequal paths per stratum.
+
+    The variance collapses adjacent strata in pairs (stratum // 2) so that strata with a single path
+    still contribute; deviations are taken from the collapsed group's mean, which is conservative.
+    """
+    from scipy.stats import norm
+    values = np.asarray(values, dtype=float)
+    strata = np.asarray(strata)
+    labels = np.unique(strata)
+    means = np.array([values[strata == h].mean() for h in labels])
+    estimate = float(means.mean())
+    groups = labels // 2
+    variance = 0.0
+    for g in np.unique(groups):
+        members = labels[groups == g]
+        mask = np.isin(strata, members)
+        group_values = values[mask]
+        if group_values.size < 2:
+            continue
+        weight = len(members) / len(labels)
+        variance += weight ** 2 * group_values.var(ddof=1) / group_values.size
+    return estimate, float(norm.ppf(0.5 + confidence / 2) * np.sqrt(variance))
