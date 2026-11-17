@@ -203,3 +203,32 @@ def test_matrix_form_of_the_rule_matches_the_elementwise_definition(case, grb_en
     limits = agent.rule_limits(u)
     assert limits[0] == 0 and limits[1] == 15 and limits[2] == 0
     assert limits[3] == env.regular_capacity - 10
+
+
+def test_runner_accepts_the_meta_farm_job_id_and_names_output_files_after_it(monkeypatch, tmp_path):
+    import experiments.booking_rule_eval as eval_module
+    source = [{'uid': 'u', 'policy_specs': [{'policy_id': 'row_gen_alp', 'agent_name': 'row_gen_alp',
+                                             'agent_args': {'coefficients': [1.0]}}],
+               'warm_up_periods': 1, 'sample_path': [[1], [2]]}]
+    monkeypatch.setattr('param_generation.command_files.read_command_file_records', lambda path: source)
+    seen = []
+    monkeypatch.setattr(eval_module, '_run_chunks', lambda chunks, workers: seen.extend(chunks))
+    eval_module.main(['--name', 'exp', '--workers', '1', '--job_id', '123_7'])
+    assert [job_id for _, job_id in seen] == ['123_7-w0']
+
+
+def test_runner_reads_saved_warm_up_states_from_a_json_file(monkeypatch, tmp_path):
+    import json
+    import experiments.booking_rule_eval as eval_module
+    source = [{'uid': 'u', 'policy_specs': [{'policy_id': 'row_gen_alp', 'agent_name': 'row_gen_alp',
+                                             'agent_args': {'coefficients': [1.0]}}],
+               'warm_up_periods': 1, 'sample_path': [[1], [2]], 'init_state': [[0]]}]
+    states = tmp_path / 'states.json'
+    states.write_text(json.dumps({'u': [[9]]}))
+    monkeypatch.setattr('param_generation.command_files.read_command_file_records', lambda path: source)
+    seen = []
+    monkeypatch.setattr(eval_module, '_run_chunks', lambda chunks, workers: seen.extend(chunks))
+    eval_module.main(['--name', 'exp', '--workers', '1', '--warm-up-states-json', str(states)])
+    records = seen[0][0]
+    assert all(r['init_state'] == [[9]] and r['sample_path'] == [[2]] and r['warm_up_periods'] == 0
+               for r in records)

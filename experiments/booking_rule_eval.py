@@ -119,7 +119,7 @@ def _evaluate_chunk(args):
 
 def main(argv=None):
     import argparse
-    from multiprocessing import get_context
+    import json
     from param_generation.command_files import read_command_file_records
     parser = argparse.ArgumentParser()
     parser.add_argument('--source-dat', default='table_alp_steady_state.dat')
@@ -135,6 +135,10 @@ def main(argv=None):
                         help='results folder whose finished uids (all requested variants present) are skipped')
     parser.add_argument('--warm-up-states-from', default=None, metavar='DIR',
                         help='results folder whose row_gen_alp records give each path its saved warm-up state')
+    parser.add_argument('--warm-up-states-json', default=None, metavar='FILE',
+                        help='json file {uid: saved warm-up state}, used instead of --warm-up-states-from')
+    parser.add_argument('--job_id', default=None,
+                        help='Meta Farm meta-job id; output files are named <job_id>-w<k>.jsonl')
     args = parser.parse_args(argv)
     source = read_command_file_records(args.source_dat)[args.offset:]
     variants = args.variants.split(',') if args.variants else None
@@ -144,8 +148,21 @@ def main(argv=None):
     records = variant_records(source, args.name, args.limit, variants=variants, include_alp=not args.no_alp)
     if args.warm_up_states_from:
         records = from_stored_warm_up(records, load_saved_warm_up_states(args.warm_up_states_from))
-    chunks = [(records[k::args.workers], f'w{k}') for k in range(args.workers)]
-    with get_context('spawn').Pool(args.workers) as pool:
+    if args.warm_up_states_json:
+        with open(args.warm_up_states_json) as handle:
+            records = from_stored_warm_up(records, json.load(handle))
+    prefix = f'{args.job_id}-' if args.job_id else ''
+    chunks = [(records[k::args.workers], f'{prefix}w{k}') for k in range(args.workers)]
+    _run_chunks(chunks, args.workers)
+
+
+def _run_chunks(chunks, workers):
+    from multiprocessing import get_context
+    if workers == 1:
+        for chunk in chunks:
+            print(f'worker {_evaluate_chunk(chunk)} finished', flush=True)
+        return
+    with get_context('spawn').Pool(workers) as pool:
         for job_id in pool.imap_unordered(_evaluate_chunk, chunks):
             print(f'worker {job_id} finished', flush=True)
 
