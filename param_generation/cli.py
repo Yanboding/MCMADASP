@@ -35,7 +35,6 @@ from param_generation.partial_relaxation import (
     partial_relaxation_records,
     warm_up_states,
 )
-from param_generation.potential_improvement import generate_potential_improvement_records
 from param_generation.registry import EXPERIMENT_SPECS
 from param_generation.training import train_alp_coefficients
 from decision_maker.alp_rg_agent import alp_expected_initial_state
@@ -496,22 +495,6 @@ def build_parser():
     comparison.add_argument('--groups', type=int, default=500)
     comparison.add_argument('--dat', default='table.dat')
 
-    improvement = sub.add_parser(
-        'improvement', help='Upper bound on the potential penalty improvement over theta_ALP.')
-    improvement.add_argument('experiment', choices=sorted(EXPERIMENT_SPECS))
-    improvement.add_argument('--variants', default=None)
-    improvement.add_argument('--paths', type=int, default=2048)
-    improvement.add_argument('--groups', type=int, default=2048)
-    improvement.add_argument('--dat', default='table.dat')
-    improvement.add_argument('--random-init', action='store_true')
-    improvement.add_argument('--init-occupancy', type=float, default=None, metavar='FRACTION',
-                             help='start every replication from the fixed state with this fraction of '
-                                  'total capacity booked on every day (mutate_initial_state_congestion)')
-    improvement.add_argument('--penalty-dir', required=True)
-    improvement.add_argument('--eval-proposal', required=True, metavar='JSON')
-    improvement.add_argument('--prefix-periods', type=int, default=None, metavar='T')
-    improvement.add_argument('--seed-offset', type=int, default=4004)
-    improvement.add_argument('--name', required=True)
     return parser
 
 
@@ -1136,23 +1119,6 @@ def _run_partial_ir(args):
     return records
 
 
-def _run_improvement(args):
-    test_envs = _select_variants(
-        build_variation_test_env(EXPERIMENT_SPECS[args.experiment]), args.variants)
-    if len(test_envs) != 1:
-        raise ValueError(f'--name needs exactly one variant; got {len(test_envs)}')
-    if args.init_occupancy is not None:
-        if args.random_init:
-            raise ValueError('--init-occupancy and --random-init are mutually exclusive')
-        test_envs = _apply_init_occupancy(test_envs, args.init_occupancy)
-    records = generate_potential_improvement_records(
-        test_envs=test_envs, size=args.paths, proposal_spec=json.loads(args.eval_proposal),
-        penalty_dir=args.penalty_dir, seed_offset=args.seed_offset, is_random_initial_state=args.random_init,
-        experiment_name=args.name, prefix_periods=args.prefix_periods)
-    write_grouped_command_file(results=records, num_groups=args.groups, dat_file=args.dat)
-    return records
-
-
 def main(argv=None):
     parser = build_parser()
     argv = list(sys.argv[1:] if argv is None else argv)
@@ -1181,8 +1147,6 @@ def main(argv=None):
         return recipe_toy_eval_proposal_comparison(
             test_sample_path_num=args.paths, num_groups=args.groups,
             dat_file=args.dat)
-    if args.command == 'improvement':
-        return _run_improvement(args)
     if args.command == 'partial-ir':
         return _run_partial_ir(args)
     raise ValueError(f'Unknown command: {args.command}')

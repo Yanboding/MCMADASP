@@ -23,7 +23,6 @@ from utils import iter_to_tuple, get_uid, safe_open, RunningStats, encode, decod
 from decision_maker import MyopicAgent, ALPRowGenerationAgent, ApproxQAgent
 from decision_maker.approximate_q_agent import dispose_agent_models
 from policy_evaluator import PolicyEvaluator
-from policy_evaluator.potential_improvement import arrival_informed_schedule_cost
 from generating_function import AbsorptionALPPenaltyFunction, AbsorptionLinearPenaltyFunction, LinearPenaltyFunction
 from importance_sampling.sample_path import sample_path_from_record
 
@@ -192,38 +191,6 @@ def build_policy_agent(env, agent_name, agent_args, grb_env=None, grb_sub_envs=N
     if agent_name == 'row_gen_alp':
         return ALPRowGenerationAgent(env, discount_factor=env.discount_factor, grb_env=grb_env, **runtime_agent_args)
     raise ValueError(f"Unsupported policy: {agent_name}")
-
-
-def matched_state_decisions(uid, experiment_name, env_args, policy_specs, states, grb_env, grb_sub_envs, job_id):
-    output_file = _result_file(experiment_name, job_id)
-    pending = [state for state in states if not jsonl_uid_exists(output_file, state['state_uid'])]
-    if not pending:
-        print(f"Skip existing matched-state batch uid={uid}")
-        return []
-    env = get_config_by_type(case_type='infinite_custom', args=env_args).env
-    agents = {spec['policy_id']: build_policy_agent(env, spec['agent_name'], spec['agent_args'], grb_env, grb_sub_envs)
-              for spec in policy_specs}
-    records = []
-    for state in pending:
-        s = tuple(np.asarray(component) for component in state['state'])
-        decisions = {}
-        for policy_id, agent in agents.items():
-            start = time.time()
-            _, (bookings, overtime), _ = agent.solve(s, state['period'])
-            decisions[policy_id] = {
-                'bookings': np.asarray(bookings).astype(int).tolist(),
-                'overtime': np.asarray(overtime).astype(int).tolist(),
-                'solve_seconds': time.time() - start,
-            }
-        record = {key: value for key, value in state.items() if key != 'state_uid'}
-        record.update({'uid': state['state_uid'], 'policy_id': 'matched_state_decisions', 'batch_uid': uid,
-                       'decisions': decisions})
-        with open(output_file, 'a') as handle:
-            handle.write(json.dumps(record) + '\n')
-        records.append(record)
-        print(f"Matched state {state['state_uid']}: " + ', '.join(
-            f"{policy_id} {decision['solve_seconds']:.1f}s" for policy_id, decision in decisions.items()))
-    return records
 
 
 def calculate_policy_costs_with_penalty(uid,
@@ -465,61 +432,6 @@ def information_relaxation_bounds(env, generating_function_spec, penalty_ratios,
               f"{time.time() - start:.1f} seconds: {bound}")
         bounds[float(penalty_ratio)] = bound
     return bounds
-
-
-def estimate_potential_improvement(uid, experiment_name, mutate_val, group_id, env_args, init_state,
-                                   arrival_stream, baseline_length, baseline_period_weights, baseline_terminal,
-                                   prefix_periods, continuation_length, continuation_period_weights,
-                                   path_weight, path_stratum, generating_function_spec, alp_coefficients,
-                                   grb_env, grb_sub_envs, job_id):
-    output_file = _result_file(experiment_name, job_id)
-    if jsonl_uid_exists(output_file, uid):
-        print(f"Skip existing potential-improvement replication uid={uid}")
-        return None
-    start = time.time()
-    env = get_config_by_type(case_type='infinite_custom', args=env_args).env
-    init_state = tuple(np.array(component) for component in init_state)
-    stream = np.array(arrival_stream)
-    penalized_cost = float(information_relaxation_bounds(
-        env, generating_function_spec, [1.0], init_state, stream[:baseline_length], baseline_period_weights,
-        baseline_terminal, grb_env, grb_sub_envs, remove_path_noise=True)[1.0])
-    alp_agent = ALPRowGenerationAgent(env, discount_factor=env.discount_factor,
-                                      coefficients=alp_coefficients, grb_env=grb_env)
-    relaxation_agent = ApproxQAgent(
-        env,
-        discount_factor=env.discount_factor,
-        current_decision_var_type='integer',
-        future_decision_var_type='integer',
-        generating_function=_build_generating_function(env=env, spec=generating_function_spec),
-        penalty_ratio=0.0,
-        grb_env=grb_env,
-        subproblem_grb_envs=grb_sub_envs,
-    )
-    schedule = arrival_informed_schedule_cost(env, alp_agent, relaxation_agent, init_state, stream,
-                                              prefix_periods, continuation_length, continuation_period_weights,
-                                              action_periods=baseline_length + 1)
-    schedule_penalized_cost = float(information_relaxation_bounds(
-        env, generating_function_spec, [1.0], init_state, stream[:baseline_length], baseline_period_weights,
-        baseline_terminal, grb_env, grb_sub_envs, remove_path_noise=True,
-        fixed_actions=schedule['actions'][:baseline_length + 1])[1.0])
-    record = {
-        'uid': uid,
-        'group_id': group_id,
-        'penalized_information_relaxation_cost': penalized_cost,
-        'partial_information_relaxation_cost': schedule['schedule_cost'],
-        'potential_gap': schedule['schedule_cost'] - penalized_cost,
-        'prefix_partial_information_relaxation_cost': schedule['prefix_cost'],
-        'tail_error_bound': schedule['continuation_cost'],
-        'schedule_penalized_information_relaxation_cost': schedule_penalized_cost,
-        'run_time_seconds': time.time() - start,
-        'path_weight': path_weight,
-        'path_stratum': path_stratum,
-    }
-    with open(output_file, 'a') as handle:
-        handle.write(json.dumps(record) + '\n')
-    print(f"Potential improvement uid={uid}: partial {record['partial_information_relaxation_cost']:.4f}, "
-          f"penalized {penalized_cost:.4f}, gap {record['potential_gap']:.4f}")
-    return record
 
 
 def partial_information_relaxation_cost(env, state, arrival_stream, grb_env, grb_sub_envs):
@@ -1243,14 +1155,7 @@ def main(argv=None):
             #   * generate_penalty_coefficient_training_env -> contains
             #     'init_state_mode' -> train one set of penalty coefficients per env
             #     over sample_path_number scenarios.
-            if param.pop('matched_state_decision', False):
-                matched_state_decisions(
-                    **param,
-                    grb_env=grb_env,
-                    grb_sub_envs=grb_sub_envs,
-                    job_id=args.job_id,
-                )
-            elif 'policy_specs' in param:
+            if 'policy_specs' in param:
                 print('Wow, this is an evaluation record with policy_specs:')
                 evaluate_policy_costs_with_information_relaxation(
                     **param,
@@ -1260,13 +1165,6 @@ def main(argv=None):
                 )
             elif param.pop('partial_information_relaxation', False):
                 partial_information_relaxation_for_path(
-                    **param,
-                    grb_env=grb_env,
-                    grb_sub_envs=grb_sub_envs,
-                    job_id=args.job_id,
-                )
-            elif param.pop('potential_improvement', False):
-                estimate_potential_improvement(
                     **param,
                     grb_env=grb_env,
                     grb_sub_envs=grb_sub_envs,
@@ -1288,9 +1186,9 @@ def main(argv=None):
                 )
             else:
                 raise ValueError(
-                    "Unrecognized params payload: expected 'matched_state_decision', 'policy_specs' "
-                    "(evaluation), 'partial_information_relaxation', 'potential_improvement', "
-                    "'init_state_mode' (penalty-coefficient training) or 'alp_training' in record."
+                    "Unrecognized params payload: expected 'policy_specs' (evaluation), "
+                    "'partial_information_relaxation', 'init_state_mode' (penalty-coefficient training) "
+                    "or 'alp_training' in record."
                 )
     finally:
         for environment in reversed(grb_sub_envs):
