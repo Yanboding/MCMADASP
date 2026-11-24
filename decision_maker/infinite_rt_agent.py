@@ -16,13 +16,21 @@ class InfiniteRTAgent:
             self.Q = defaultdict(lambda: defaultdict(float))
         if V is None:
             self.V = {}
-        if grb_env is None:
-            self.grb_env = acquire_grb_env({"Threads": 0}, verbose=False, wait=InfiniteRTAgent.TOKEN_WAIT)
-        else:
-            self.grb_env = grb_env
+        self._grb_env = grb_env
 
         self.state_var_counter = 0
         self.action_var_counter = 0
+
+    @property
+    def grb_env(self):
+        # The Gurobi token is acquired at first use, so an agent that solves no model holds none.
+        if self._grb_env is None:
+            self._grb_env = acquire_grb_env({"Threads": 0}, verbose=False, wait=InfiniteRTAgent.TOKEN_WAIT)
+        return self._grb_env
+
+    @grb_env.setter
+    def grb_env(self, grb_env):
+        self._grb_env = grb_env
 
     def regular_first_overtime(self, state, advance_scheduling_decision):
         new_booking_slots = self.env.convert_action_to_booking_slots(advance_scheduling_decision)

@@ -15,6 +15,32 @@ DEFAULT_AGENT_ARGS = {
     },
 }
 
+# Starting values of atomic policy training by PPO. They are not tuned.
+DEFAULT_ATOMIC_PPO_AGENT_ARGS = {
+    'agent_name': 'atomic_ppo',
+    'agent_args': {
+        # None is replaced by the geometric proposal with the discount factor of the environment.
+        'sample_path_length_proposal': None,
+        'policy_network_spec': {'hidden_sizes': [64, 64], 'activation': 'tanh'},
+        'value_network_spec': {'hidden_sizes': [64, 64], 'activation': 'tanh'},
+        'arrival_sample_number': 16,
+        'max_iterations': 200,
+        'clip_parameter': 0.2,
+        'value_epochs': 10,
+        'policy_epochs': 10,
+        'batch_size': 4096,
+        'value_learning_rate': 0.001,
+        'policy_learning_rate': 0.0003,
+        'checkpoint_every': 10,
+        'seed': 0,
+    },
+}
+
+# Fields of AtomicActionAgent that a record holds only when --agent-args gives them, so that the uid of a
+# record without them does not change. Without a field the agent takes scenarios='new', penalty=False and
+# arrival_expectation='sampled'.
+OPTIONAL_ATOMIC_PPO_AGENT_ARGS = ('scenarios', 'penalty', 'arrival_expectation')
+
 
 class ExperimentSpec:
     def __init__(self, name, config_type, val_args, mutate=None, agent_mutate=None):

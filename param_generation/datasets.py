@@ -14,6 +14,7 @@ from param_generation.caching import (
     load_trained_coefficients_from_folder as _load_trained_coefficients_from_folder,
     training_result_path as _training_result_path,
 )
+from param_generation.experiment_specs import DEFAULT_ATOMIC_PPO_AGENT_ARGS, OPTIONAL_ATOMIC_PPO_AGENT_ARGS
 from param_generation.command_files import (
     write_command_file,
     write_grouped_command_file as _split_list_into_groups,
@@ -31,6 +32,8 @@ from param_generation.training import (
 
 
 _ABSORPTION_PENALTY_FUNCTIONS = ('absorption_linear_penalty', 'absorption_alp_penalty')
+# A policy id that starts with this prefix is an atomic policy trained by PPO.
+ATOMIC_POLICY_PREFIX = 'atomic_ppo'
 _FITTED_PENALTY_POLICIES = {'approx_penalized_hindsight', 'po_penalized_hindsight'}
 
 
@@ -122,9 +125,21 @@ def _warn_initial_state_mismatch(coefficients_source, is_random_initial_state):
               "use --init-occupancy to match the training state instead.")
 
 
-def generate_test_paths_and_init_state(test_envs, test_sample_path_num, warm_up_periods=0, num_periods=None, dat_file=None, num_groups=None, is_require_penalty_coefficients=True, is_random_initial_state=False, policy_ids=None, warm_up_policy_id=None, evaluation_proposal_spec=None, penalty_coefficients_dir=None, warm_up_paths=None, sample_gen_seed_offset=1001, penalty_ratios=None, alp_coefficients=None, alp_penalty=False, policy_centering=False, alp_policy_coefficients=None, relax_first_decision=False, penalty_coefficients=None):
+def generate_test_paths_and_init_state(test_envs, test_sample_path_num, warm_up_periods=0, num_periods=None, dat_file=None, num_groups=None, is_require_penalty_coefficients=True, is_random_initial_state=False, policy_ids=None, warm_up_policy_id=None, evaluation_proposal_spec=None, penalty_coefficients_dir=None, warm_up_paths=None, sample_gen_seed_offset=1001, penalty_ratios=None, alp_coefficients=None, alp_penalty=False, policy_centering=False, alp_policy_coefficients=None, relax_first_decision=False, penalty_coefficients=None, atomic_policies=None):
     policy_ids = list(policy_ids or [])
     policy_id_set = set(policy_ids)
+    atomic_policies = list(atomic_policies or [])
+    if atomic_policies and len(test_envs) > 1:
+        raise ValueError(
+            "atomic_policies are the trained atomic policies of a single environment, so they need exactly "
+            f"one variant; got {len(test_envs)}.")
+    missing_atomic_policies = sorted(
+        {policy_id for policy_id in policy_id_set if policy_id.startswith(ATOMIC_POLICY_PREFIX)}
+        - {policy['policy_id'] for policy in atomic_policies})
+    if missing_atomic_policies:
+        raise ValueError(
+            f"the atomic policies {missing_atomic_policies} need a policy spec from build_atomic_policy; "
+            "generate the evaluation with generate_params eval.")
     if penalty_coefficients is not None and (alp_penalty or penalty_coefficients_dir is not None or len(test_envs) > 1):
         raise ValueError('penalty_coefficients fix the penalized bound of a single environment; they exclude '
                          'alp_penalty and penalty_coefficients_dir.')
@@ -225,6 +240,7 @@ def generate_test_paths_and_init_state(test_envs, test_sample_path_num, warm_up_
                 'agent_args': {
                 },
             })
+        policies.extend(copy.deepcopy(policy) for policy in atomic_policies if policy['policy_id'] in policy_id_set)
 
         direct_coefficients = _zero_penalty_coefficients(env, lowerbound_generating_function_spec)
         coefficients_source = None
@@ -498,6 +514,82 @@ def generate_penalty_coefficient_training_env(
         save_params['uid'] = get_uid({
             'env_args': base_env_args,
             'agent_args': agent_args,
+            'init_state_mode': init_state_mode,
+            'init_state': normalized_init_state,
+            'init_state_seed': init_state_seed,
+            'sample_path_number': sample_path_number,
+        })
+        results.append(save_params)
+
+    write_command_file(results, dat_file)
+    return results
+
+
+def _deep_merge(target, updates):
+    for key, value in updates.items():
+        if isinstance(value, dict) and isinstance(target.get(key), dict):
+            _deep_merge(target[key], value)
+        else:
+            target[key] = value
+    return target
+
+
+def atomic_policy_training_agent_args(env_args, overrides=None):
+    """The agent_args of an atomic policy training record: the starting values, with the given
+    overrides of the inner agent_args merged in. A field of OPTIONAL_ATOMIC_PPO_AGENT_ARGS is in the
+    record only when the overrides give it."""
+    agent_args = copy.deepcopy(DEFAULT_ATOMIC_PPO_AGENT_ARGS)
+    inner = agent_args['agent_args']
+    known = set(inner) | set(OPTIONAL_ATOMIC_PPO_AGENT_ARGS)
+    unknown = sorted(set(overrides or {}) - known)
+    if unknown:
+        raise ValueError(f"unknown atomic policy training agent_args {unknown}; use {sorted(known)}")
+    _deep_merge(inner, copy.deepcopy(overrides or {}))
+    if inner['sample_path_length_proposal'] is None:
+        inner['sample_path_length_proposal'] = {
+            'type': 'geometric', 'discount_factor_proposal': env_args['discount_factor']}
+    return agent_args
+
+
+def generate_atomic_policy_training_env(
+    test_envs,
+    dat_file=None,
+    init_state=None,
+    sample_path_number=256,
+    init_state_seed=12345,
+    sample_paths_seed=42,
+    agent_args=None,
+):
+    """Emit run.py records that train the atomic policy of every environment by PPO. The record keeps
+    the structure and the uid of the penalty-training record. sample_path_number is the number of
+    scenarios of one PPO iteration, and agent_args overrides the starting values of the training."""
+    init_state_mode, normalized_init_state = _normalize_penalty_training_init_state(
+        init_state, sample_path_number
+    )
+    if init_state_mode == 'per_scenario':
+        raise ValueError(
+            "atomic policy training draws new scenarios in every iteration, so init_state must be None "
+            "(a newly generated state per scenario) or a single state shared by all scenarios.")
+    results = []
+    for (env_uid, experiment_name, mutate_val), variant in test_envs.items():
+        base_env_args = copy.deepcopy(variant['env_args'])
+        _pin_sampling_seeds(base_env_args, sample_paths_seed)
+        training_agent_args = atomic_policy_training_agent_args(base_env_args, agent_args)
+
+        save_params = {
+            'experiment_name': experiment_name,
+            'mutate_val': mutate_val,
+            'sample_path_number': sample_path_number,
+            'init_state_mode': init_state_mode,
+            'init_state': normalized_init_state,
+            'init_state_seed': init_state_seed,
+            'env_args': base_env_args,
+            'agent_args': training_agent_args,
+            'atomic_policy_training': True,
+        }
+        save_params['uid'] = get_uid({
+            'env_args': base_env_args,
+            'agent_args': training_agent_args,
             'init_state_mode': init_state_mode,
             'init_state': normalized_init_state,
             'init_state_seed': init_state_seed,

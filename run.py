@@ -191,7 +191,36 @@ def build_policy_agent(env, agent_name, agent_args, grb_env=None, grb_sub_envs=N
         return MyopicAgent(env, discount_factor=env.discount_factor, grb_env=grb_env, **runtime_agent_args)
     if agent_name == 'row_gen_alp':
         return ALPRowGenerationAgent(env, discount_factor=env.discount_factor, grb_env=grb_env, **runtime_agent_args)
+    if agent_name == 'atomic_ppo':
+        return build_atomic_policy_agent(env, **runtime_agent_args)
     raise ValueError(f"Unsupported policy: {agent_name}")
+
+
+def _atomic_policy_file(experiment_name, uid):
+    return os.path.join('experiments', 'results', experiment_name, 'atomic_policy', f'{uid}.pkl')
+
+
+def build_atomic_policy_agent(env, training_experiment_name, training_uid, action_selection='greedy', seed=0):
+    # PyTorch is imported here so that every other policy runs without it.
+    import torch
+    from decision_maker.atomic_action_agent import AtomicActionAgent
+    torch.set_num_threads(1)
+    path = _atomic_policy_file(training_experiment_name, training_uid)
+    saved = load_pickle_if_exists(path)
+    if saved is None:
+        raise FileNotFoundError(f"No trained atomic policy at {path}")
+    if not saved.get('finished'):
+        raise ValueError(
+            f"The atomic policy training at {path} is not finished: it stopped after iteration {saved.get('iteration')}")
+    training_agent_args = saved['record']['agent_args']['agent_args']
+    return AtomicActionAgent(
+        env,
+        discount_factor=env.discount_factor,
+        policy_network_spec=training_agent_args['policy_network_spec'],
+        policy_coefficients=saved['policy_coefficients'],
+        action_selection=action_selection,
+        seed=seed,
+    )
 
 
 def matched_state_decisions(uid, experiment_name, env_args, policy_specs, states, grb_env, grb_sub_envs, job_id):
@@ -1165,6 +1194,96 @@ def train_penalty_coefficients_for_env(
         f.write(json.dumps(record) + '\n')
     return record
 
+_ATOMIC_PPO_SOLVER_OPTIONS = (
+    'max_iterations', 'clip_parameter', 'value_epochs', 'policy_epochs', 'batch_size',
+    'value_learning_rate', 'policy_learning_rate', 'checkpoint_every',
+)
+
+
+def _atomic_initial_state_sampler(env_args, init_state_mode, init_state, init_state_seed):
+    """Returns sampler(iteration, size): the initial states of the scenarios of one PPO iteration."""
+    if init_state_mode == 'shared':
+        shared_state = tuple(np.array(component) for component in init_state)
+        return lambda iteration, size: [shared_state] * size
+    if init_state_mode != 'generate':
+        raise ValueError(
+            f"init_state_mode must be 'generate' or 'shared' for atomic policy training; got {init_state_mode!r}")
+    sampler_env_args = copy.deepcopy(env_args)
+    sampler_env_args['env_random_seed'] = init_state_seed
+    sampler_env = get_config_by_type('infinite_custom', args=sampler_env_args).env
+
+    def sampler(iteration, size):
+        # Iteration k takes the states k * size, ..., (k + 1) * size - 1 of the sequence that
+        # _draw_per_scenario_init_states draws, so a continued training draws the same states.
+        sampler_env.reset_random_seeds()
+        if iteration:
+            sampler_env.init_state_qmc_sampler.fast_forward(iteration * size)
+        return [tuple(np.array(component) for component in sampler_env.generate_initial_state())
+                for _ in range(size)]
+
+    return sampler
+
+
+def train_atomic_policy_for_env(
+    uid,
+    experiment_name,
+    mutate_val,
+    sample_path_number,
+    init_state_mode,
+    init_state,
+    init_state_seed,
+    env_args,
+    agent_args,
+    job_id=None,
+):
+    """Trains the atomic policy of one environment by PPO. The file <uid>.pkl is the saved policy, the
+    checkpoint and the log. A finished file is skipped and an unfinished one is continued."""
+    # PyTorch is imported here so that every other record type runs without it.
+    import torch
+    from decision_maker.atomic_action_agent import AtomicActionAgent
+    torch.set_num_threads(1)
+    output_file = _atomic_policy_file(experiment_name, uid)
+    os.makedirs(os.path.dirname(output_file), exist_ok=True)
+    saved = load_pickle_if_exists(output_file)
+    if saved is not None and saved.get('finished'):
+        print(f"Skip finished atomic policy training: uid={uid}")
+        return saved
+    if saved is not None:
+        print(f"Continue atomic policy training uid={uid} after iteration {saved['iteration']}")
+
+    record = {
+        'uid': uid,
+        'experiment_name': experiment_name,
+        'mutate_val': mutate_val,
+        'sample_path_number': sample_path_number,
+        'init_state_mode': init_state_mode,
+        'init_state': init_state,
+        'init_state_seed': init_state_seed,
+        'env_args': env_args,
+        'agent_args': agent_args,
+        'atomic_policy_training': True,
+    }
+    env = get_config_by_type('infinite_custom', args=env_args).env
+    inner = copy.deepcopy((agent_args or {}).get('agent_args', {}))
+    solver_options = {key: inner.pop(key) for key in _ATOMIC_PPO_SOLVER_OPTIONS if key in inner}
+    _set_sample_path_proposal(inner)
+    if 'sample_path_proposal' not in inner:
+        raise ValueError("Atomic policy training needs sample_path_length_proposal in agent_args.")
+    agent = AtomicActionAgent(
+        env,
+        discount_factor=env.discount_factor,
+        sample_path_number=sample_path_number,
+        initial_state_sampler=_atomic_initial_state_sampler(env_args, init_state_mode, init_state, init_state_seed),
+        **inner,
+    )
+
+    def checkpoint(state):
+        atomic_pickle_dump(output_file, {'uid': uid, 'record': record, **state})
+
+    state = agent.train(checkpoint=checkpoint, state=saved, **solver_options)
+    return {'uid': uid, 'record': record, **state}
+
+
 def train_alp_coefficients_for_env(uid, experiment_name, env_args, grb_env, grb_sub_envs, job_id):
     # The training cache is the single ALP output, reused across job IDs.
     return train_alp_coefficients(env_args=env_args, experiment_name=experiment_name)
@@ -1211,8 +1330,10 @@ def main(argv=None):
             .get('agent_args', {})
             .get('sample_path_number', 0)
         )
+    # An atomic policy training record uses no Gurobi model, so it does not count here.
     sample_path_number = max(
-                (_sample_path_number_for_param(param) for param in params),
+                (_sample_path_number_for_param(param) for param in params
+                 if not param.get('atomic_policy_training')),
                 default=0,
             )
     slurm_cpus = os.environ.get("SLURM_CPUS_PER_TASK") or os.environ.get("SLURM_CPUS_ON_NODE")
@@ -1230,13 +1351,19 @@ def main(argv=None):
     if any(isinstance(n, bool) or int(n) != n or n < 1 for n in requested_workers):
         raise ValueError('workers must be a positive integer')
     num_sub_envs = min(sample_path_number, num_cpus, max(requested_workers)) if sample_path_number else 0
-    grb_env = acquire_grb_env({"Threads": 1}, verbose=False, wait=15)
+    grb_env = None
     grb_sub_envs = []
     try:
-        for _ in range(num_sub_envs):
-            grb_sub_envs.append(acquire_grb_env({"Threads": 1}, verbose=False, wait=15))
-        print('grb_sub_envs:',len(grb_sub_envs))
         for param in params:
+            if param.pop('atomic_policy_training', False):
+                train_atomic_policy_for_env(**param, job_id=args.job_id)
+                continue
+            if grb_env is None:
+                # The Gurobi tokens are acquired before the first record that needs them.
+                grb_env = acquire_grb_env({"Threads": 1}, verbose=False, wait=15)
+                for _ in range(num_sub_envs):
+                    grb_sub_envs.append(acquire_grb_env({"Threads": 1}, verbose=False, wait=15))
+                print('grb_sub_envs:',len(grb_sub_envs))
             # Dispatch on the shape of the params record:
             #   * generate_test_paths_and_init_state -> contains 'policy_specs'
             #     -> evaluate policy costs against information-relaxation bounds.
@@ -1288,14 +1415,15 @@ def main(argv=None):
                 )
             else:
                 raise ValueError(
-                    "Unrecognized params payload: expected 'matched_state_decision', 'policy_specs' "
-                    "(evaluation), 'partial_information_relaxation', 'potential_improvement', "
+                    "Unrecognized params payload: expected 'atomic_policy_training', 'matched_state_decision', "
+                    "'policy_specs' (evaluation), 'partial_information_relaxation', 'potential_improvement', "
                     "'init_state_mode' (penalty-coefficient training) or 'alp_training' in record."
                 )
     finally:
         for environment in reversed(grb_sub_envs):
             environment.dispose()
-        grb_env.dispose()
+        if grb_env is not None:
+            grb_env.dispose()
 
 
 if __name__ == '__main__':

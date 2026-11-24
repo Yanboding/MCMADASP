@@ -19,7 +19,9 @@ from param_generation.caching import (
 )
 from param_generation.command_files import read_command_file_records, write_command_file, write_grouped_command_file
 from param_generation.datasets import (
+    ATOMIC_POLICY_PREFIX,
     generate_alp_coefficient_training_env,
+    generate_atomic_policy_training_env,
     generate_penalty_coefficient_training_env,
     generate_test_paths_and_init_state,
     offset_sample_generation_seeds,
@@ -30,6 +32,7 @@ from param_generation.generate_figure1_po import (
 )
 from param_generation.generating_functions import GENERATING_FUNCTION_CLASSES, build_generating_function, normalize_generating_function_spec
 from param_generation.mutators import mutate_initial_state_congestion, mutate_stratified_geometric_scenario
+from param_generation.policies import build_atomic_policy
 from param_generation.partial_relaxation import (
     attach_partial_information_arrivals,
     partial_relaxation_records,
@@ -235,6 +238,12 @@ def recipe_saure_ejor_case_study(
     return replication_records, steady_state_records
 
 
+_ATOMIC_TRAIN_OPTIONS = ('--method', '--variants', '--name', '--dat', '--agent-args', '--sample-path-number',
+                         '--init-state-seed', '--sample-paths-seed', '--reset-init-state')
+_ATOMIC_POLICY_SPEC_KEYS = ('agent_args', 'sample_path_number', 'init_state_seed', 'sample_paths_seed',
+                            'reset_init_state', 'name', 'action_selection', 'seed')
+
+
 def build_parser():
     parser = argparse.ArgumentParser(
         prog='generate_params',
@@ -242,11 +251,16 @@ def build_parser():
     sub = parser.add_subparsers(dest='command', required=True)
 
     train = sub.add_parser(
-        'train', help='ALP or PO coefficient-training commands (default: PO).')
+        'train', help='ALP, PO or atomic-policy training commands (default: PO).')
     train.add_argument('experiment', choices=sorted([*EXPERIMENT_SPECS, 'figure1']))
-    train.add_argument('--method', choices=('po', 'alp'), default='po',
+    train.add_argument('--method', choices=('po', 'alp', 'atomic_ppo'), default='po',
                        help='alp emits one ALP fit per variant without local training; '
-                            'only --variants, --name and --dat apply in ALP mode')
+                            'only --variants, --name and --dat apply in ALP mode. '
+                            'atomic_ppo emits one PPO training of the atomic policy per variant; '
+                            'only ' + ', '.join(_ATOMIC_TRAIN_OPTIONS) + ' apply, --sample-path-number '
+                            'is the number of scenarios of one iteration (default 256), and --agent-args '
+                            'overrides the starting values in DEFAULT_ATOMIC_PPO_AGENT_ARGS and takes the fields '
+                            'scenarios, penalty and arrival_expectation of the PPO algorithm with the penalty')
     train.add_argument('--variants', default=None,
                        help='comma-separated mutate_val values to keep '
                             '(default: all variants of the experiment)')
@@ -433,6 +447,14 @@ def build_parser():
             '--allow-retrain', action='store_true',
             help='with --policy-spec: permit training penalty coefficients '
                  'when the overridden configuration has no cached ones')
+        sub_parser.add_argument(
+            '--atomic-policy-spec', default=None, metavar='JSON',
+            help='JSON file, or inline JSON object, mapping each atomic policy id of --policies (an id that '
+                 f'starts with {ATOMIC_POLICY_PREFIX}) to the options of its training command: '
+                 + ', '.join(_ATOMIC_POLICY_SPEC_KEYS) + '. agent_args, sample_path_number, init_state_seed, '
+                 'sample_paths_seed, reset_init_state and name are the values given to train --method atomic_ppo, '
+                 'so that the policy is the training with the same uid; action_selection is greedy (default) or '
+                 'sample, with seed. An id without an entry uses the default training command')
 
     eval_parser = sub.add_parser('eval', help='Policy-evaluation sample paths.')
     add_eval_arguments(eval_parser)
@@ -783,6 +805,88 @@ def _figure1_train_inputs(args):
     return configs, display, test_envs
 
 
+def _atomic_training_records(test_envs, agent_args=None, sample_path_number=None, init_state_seed=12345,
+                             sample_paths_seed=None, reset_init_state=False, name=None):
+    """The atomic policy training record of every variant. Training and evaluation both build the
+    records here, so that an evaluation finds the trained policy by the uid of its training."""
+    if isinstance(agent_args, str):
+        agent_args = json.loads(agent_args)
+    sample_path_number = 256 if sample_path_number is None else sample_path_number
+    if isinstance(sample_path_number, bool) or int(sample_path_number) != sample_path_number or sample_path_number < 1:
+        raise ValueError('sample_path_number must be a positive integer')
+    records = []
+    for key, variant in test_envs.items():
+        init_state = None
+        if reset_init_state:
+            init_state = variant['env_args'].get('reset_params', {}).get('init_state')
+            if init_state is None:
+                raise ValueError(
+                    f"--reset-init-state: variant {key} has no env_args['reset_params']['init_state']")
+            init_state = tuple(np.array(component) for component in init_state)
+        records.extend(generate_atomic_policy_training_env(
+            {key: variant},
+            dat_file=None,
+            init_state=init_state,
+            sample_path_number=int(sample_path_number),
+            init_state_seed=init_state_seed,
+            sample_paths_seed=42 if sample_paths_seed is None else sample_paths_seed,
+            agent_args=agent_args,
+        ))
+    if name is not None:
+        for record in records:
+            record['experiment_name'] = name
+    return records
+
+
+def _run_atomic_train(args):
+    if args.experiment == 'figure1':
+        raise ValueError('--method atomic_ppo requires a registered experiment, not the figure1 PO group')
+    test_envs = _select_variants(
+        build_variation_test_env(EXPERIMENT_SPECS[args.experiment]), args.variants)
+    records = _atomic_training_records(
+        test_envs, agent_args=args.agent_args, sample_path_number=args.sample_path_number,
+        init_state_seed=args.init_state_seed, sample_paths_seed=args.sample_paths_seed,
+        reset_init_state=args.reset_init_state, name=args.name)
+    write_command_file(records, args.dat)
+    return records
+
+
+def _atomic_policy_options(args, policy_ids):
+    """Maps each atomic policy id of the evaluation to the options of --atomic-policy-spec."""
+    atomic_policy_ids = [policy_id for policy_id in policy_ids if policy_id.startswith(ATOMIC_POLICY_PREFIX)]
+    text = getattr(args, 'atomic_policy_spec', None)
+    spec = {}
+    if text:
+        if text.lstrip().startswith('{'):
+            spec = json.loads(text)
+        else:
+            with open(text, encoding='utf-8') as handle:
+                spec = json.load(handle)
+    not_evaluated = sorted(set(spec) - set(atomic_policy_ids))
+    if not_evaluated:
+        raise ValueError(
+            f"--atomic-policy-spec names {not_evaluated}, which are not atomic policy ids of --policies "
+            f"(ids that start with {ATOMIC_POLICY_PREFIX}): {atomic_policy_ids}")
+    for policy_id, options in spec.items():
+        unknown = sorted(set(options) - set(_ATOMIC_POLICY_SPEC_KEYS))
+        if unknown:
+            raise ValueError(
+                f"--atomic-policy-spec has unknown options {unknown} for {policy_id}; "
+                f"use {list(_ATOMIC_POLICY_SPEC_KEYS)}")
+    return {policy_id: dict(spec.get(policy_id, {})) for policy_id in atomic_policy_ids}
+
+
+def _atomic_policies(variant_env, atomic_policy_options):
+    policies = []
+    for policy_id, options in atomic_policy_options.items():
+        options = dict(options)
+        action_selection = options.pop('action_selection', 'greedy')
+        seed = options.pop('seed', None)
+        training_record, = _atomic_training_records(variant_env, **options)
+        policies.append(build_atomic_policy(training_record, policy_id, action_selection, seed))
+    return policies
+
+
 def _run_alp_train(args):
     if args.experiment == 'figure1':
         raise ValueError('--method alp requires a registered experiment, not the figure1 PO group')
@@ -1060,7 +1164,8 @@ def _evaluation_records(args, policy_ids):
     alp_path = getattr(args, 'alp_coefficients', None)
     alp_policy_path = args.alp_policy_coefficients
     penalty_path = getattr(args, 'penalty_coefficients', None)
-    per_variant = penalty_path is not None or any(
+    atomic_policy_options = _atomic_policy_options(args, policy_ids)
+    per_variant = penalty_path is not None or bool(atomic_policy_options) or any(
         path is not None and (os.path.isdir(path) or _is_training_cache(path)) for path in (alp_path, alp_policy_path))
     if not per_variant:
         return _rename(_variant_evaluation_records(args, policy_ids, test_envs, _load_initial_coefficients(
@@ -1070,8 +1175,11 @@ def _evaluation_records(args, policy_ids):
     penalty_coefficients = _per_variant_coefficients(penalty_path, test_envs)
     records = []
     for key, variant in test_envs.items():
+        # The atomic policy of a variant is found by the uid of its training record, which is built
+        # from the variant before any evaluation setting changes it.
         records += _variant_evaluation_records(args, policy_ids, {key: variant}, alp_coefficients[key],
-                                               alp_policy_coefficients[key], penalty_coefficients[key])
+                                               alp_policy_coefficients[key], penalty_coefficients[key],
+                                               atomic_policies=_atomic_policies({key: variant}, atomic_policy_options))
     return _rename(records, args.name)
 
 
@@ -1083,7 +1191,7 @@ def _rename(records, name):
 
 
 def _variant_evaluation_records(args, policy_ids, test_envs, alp_coefficients, alp_policy_coefficients,
-                                penalty_coefficients=None):
+                                penalty_coefficients=None, atomic_policies=None):
     penalty_ratios = _parse_penalty_ratios(getattr(args, 'penalty_ratios', None))
     alp_penalty = getattr(args, 'alp_penalty', False)
     if args.init_occupancy is not None:
@@ -1116,6 +1224,7 @@ def _variant_evaluation_records(args, policy_ids, test_envs, alp_coefficients, a
         relax_first_decision=getattr(args, 'relax_first_decision', False),
         alp_policy_coefficients=alp_policy_coefficients,
         penalty_coefficients=penalty_coefficients,
+        atomic_policies=atomic_policies,
     )
     if args.skip_ir:
         for record in records:
@@ -1166,6 +1275,12 @@ def main(argv=None):
             if incompatible:
                 raise ValueError(f"--method alp does not support: {', '.join(incompatible)}")
             return _run_alp_train(args)
+        if args.method == 'atomic_ppo':
+            incompatible = sorted({arg.split('=', 1)[0] for arg in argv
+                                   if arg.startswith('--') and arg.split('=', 1)[0] not in _ATOMIC_TRAIN_OPTIONS})
+            if incompatible:
+                raise ValueError(f"--method atomic_ppo does not support: {', '.join(incompatible)}")
+            return _run_atomic_train(args)
         return _run_train(args)
     if args.command == 'eval':
         policy_ids = [p for p in args.policies.split(',') if p]

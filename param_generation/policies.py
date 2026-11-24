@@ -23,3 +23,17 @@ def build_penalty_policy(base_agent_args, policy_id, solver_name, penalty_coeffi
     spec['coefficients'] = penalty_coefficients
     policy['agent_args']['generating_function_spec'] = spec
     return policy
+
+
+def build_atomic_policy(training_record, policy_id='atomic_ppo', action_selection='greedy', seed=None):
+    """Policy spec of the atomic policy that the training record trains. run.py loads its file by uid."""
+    if action_selection not in ('greedy', 'sample'):
+        raise ValueError(f"action_selection must be 'greedy' or 'sample'; got {action_selection!r}")
+    agent_args = {
+        'training_experiment_name': training_record['experiment_name'],
+        'training_uid': training_record['uid'],
+        'action_selection': action_selection,
+    }
+    if action_selection == 'sample':
+        agent_args['seed'] = 0 if seed is None else int(seed)
+    return {'policy_id': policy_id, 'agent_name': 'atomic_ppo', 'agent_args': agent_args}
