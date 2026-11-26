@@ -782,20 +782,6 @@ class ApproxQAgent(InfiniteRTAgent):
         finally:
             model.dispose()
 
-    def information_relaxation_schedule(self, state, sample_path, period_weights, terminal, start_actions=None,
-                                        verbose=False):
-        model, _, _, action_vars = self._information_relaxation_model(state, sample_path, period_weights, terminal)
-        if start_actions is not None:
-            for (x_var, y_var), (x, y) in zip(action_vars, start_actions):
-                x_var.Start = np.asarray(x, dtype=float)
-                y_var.Start = np.asarray(y, dtype=float)
-        if not solve_and_handle_errors(model, verbose=verbose):
-            raise RuntimeError("information relaxation schedule not solved to optimality")
-        actions = [(np.round(x_var.X).astype(int), np.round(y_var.X).astype(int)) for x_var, y_var in action_vars]
-        info = {'objective': float(model.ObjVal), 'bound': float(model.ObjBound),
-                'gap': float(model.MIPGap), 'runtime': float(model.Runtime)}
-        return float(model.ObjVal), actions, info
-
     def hindsight_scenario_weights(self, form):
         if form.hindsight_scenario_weights == 'kappa':
             return np.asarray(self.sample_path_weights, dtype=float)
